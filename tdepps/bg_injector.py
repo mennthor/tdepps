@@ -1,5 +1,3 @@
-from ._utils import doc_inherit
-
 import numpy as np
 from sklearn.utils import check_random_state
 
@@ -115,13 +113,14 @@ class KDEBGInjector(BGInjector):
     """
     def __init__(self, glob_bw="silverman", alpha=0.5,
                  diag_cov=False, max_gb=2.):
+        # Class defaults
+        self._n_features = None
         # Create KDE model
         self.kde_model = KDE.GaussianKDE(glob_bw=glob_bw, alpha=alpha,
                                          diag_cov=diag_cov, max_gb=max_gb)
 
         return
 
-    @doc_inherit
     def fit(self, X, bounds=None):
         self._n_features = X.shape[1]
         self._bounds = self._check_bounds(bounds)
@@ -129,8 +128,10 @@ class KDEBGInjector(BGInjector):
         self.kde_model.fit(X)
         return
 
-    @doc_inherit
     def sample(self, n_samples=1, random_state=None):
+        if self._n_features is None:
+            raise RuntimeError("Injector was not fit to data yet.")
+
         random_state = self._check_sample_params(n_samples, random_state)
         rng = self._bounds
 
@@ -154,6 +155,7 @@ class DataBGInjector(BGInjector):
     Background Injector selecting random data events from the given sample.
     """
     def __init__(self):
+        self._n_features = None
         return
 
     def fit(self, X):
@@ -171,8 +173,10 @@ class DataBGInjector(BGInjector):
         self._n_features = X.shape[1]
         return
 
-    @doc_inherit
     def sample(self, n_samples=1, random_state=None):
+        if self._n_features is None:
+            raise RuntimeError("Injector was not fit to data yet.")
+
         rndgen = self._check_sample_params(n_samples, random_state)
         # Draw indices uniformly from the data
         idx = rndgen.randint(self.X.shape[0], size=n_samples)
@@ -205,7 +209,6 @@ class UniformBGInjector(BGInjector):
         """
         raise AttributeError("Function disabled. Generating pesudo data only.")
 
-    @doc_inherit
     def sample(self, n_samples=1, random_state=None):
         random_state = self._check_sample_params(n_samples, random_state)
         X = np.zeros((n_samples, self._n_features), dtype=np.float)
