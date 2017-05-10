@@ -27,7 +27,6 @@ class DocInherit(object):
 
     Now, Bar.foo.__doc__ == Bar().foo.__doc__ == Foo.foo.__doc__ == "Frobber".
     """
-
     def __init__(self, mthd):
         self.mthd = mthd
         self.name = mthd.__name__
@@ -39,7 +38,6 @@ class DocInherit(object):
             return self.get_no_inst(cls)
 
     def get_with_inst(self, obj, cls):
-
         overridden = getattr(super(cls, obj), self.name, None)
 
         @wraps(self.mthd, assigned=('__name__', '__module__'))
@@ -49,7 +47,6 @@ class DocInherit(object):
         return self.use_parent_doc(f, overridden)
 
     def get_no_inst(self, cls):
-
         for parent in cls.__mro__[1:]:
             overridden = getattr(parent, self.name, None)
             if overridden:
