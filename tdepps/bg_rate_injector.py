@@ -1,12 +1,10 @@
 import os
+import json
 import numpy as np
 from sklearn.utils import check_random_state
-import json
 from astropy.time import Time as astrotime
 
-# from ._utils import doc_inherit
-# Reuse docstrings
-import docrep
+import docrep  # Reuse docstrings
 docs = docrep.DocstringProcessor()
 
 
@@ -17,12 +15,12 @@ class BGRateInjector(object):
     Samples times of BG-like events for a given time frame.
     Describes a `fit` and a `sample` method.
     """
+    # Set up globals for shared inherited constants
+    _SECINDAY = 24. * 60. * 60.
+
     def __init__(self):
         self._DESCRIBES = ["fit", "sample"]
         print("Interface only. Describes functions: ", self._DESCRIBES)
-
-        # Set up globals for inheritance
-        self._secinday = 24. * 60. * 60.
         return
 
     @docs.get_summaryf("BGRateInjector.fit")
@@ -44,84 +42,84 @@ class BGRateInjector(object):
     @docs.get_sectionsf("BGRateInjector.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def sample(self, n_samples=1, random_state=None):
+    def sample(self, t, trange, n_samples=1, random_state=None):
         """
         Generate random samples from the fitted model.
 
         Parameters
         ----------
+        t : array-like
+            Times of the occurance of each source event in MJD.
+        trange : [float, float] or array_like, shape (len(t), 2)
+            Time window(s) in seconds relativ to the given time(s) t.
+            - If [float, float], the same window [lower, upper] is used for
+              every time t.
+            - If array-like [lower, upper] bounds of the time
+              window per source in each row.
         n_samples : int, optional
-            Number of samples to generate. (defaults: 1)
+            Number of samples to generate. (default: 1)
         random_state : RandomState, optional
             A random number generator instance. (default: None)
 
         Returns
         -------
-        X : array_like, shape (n_samples, n_features)
-            Generated samples from the fitted model.
+        nevents : array-like, shape (len(t), ntrials)
+            The number of events to inject for each trial in each source time
+            window.
         """
         raise NotImplementedError("BGInjector is an interface.")
 
 
-@docs.get_sectionsf("RunlistBGRateInjector", sections=["Parameters", "Notes"])
-@docs.dedent
 class RunlistBGRateInjector():
-    """
-    Runlist Background Rate Injector
+    @docs.get_sectionsf("RunlistBGRateInjector",
+                        sections=["Parameters", "Notes"])
+    @docs.dedent
+    def __init__(self, runlist, filter_runs, rate_func):
+        """
+        Runlist Background Rate Injector
 
-    Creates the time depending rate from a given runlist.
-    Parameters are passed to `create_goodrun_dict` method.
+        Creates the time depending rate from a given runlist.
+        Parameters are passed to `create_goodrun_dict` method.
 
-    Parameters
-    ----------
-    runlist : str
-        Path to a valid good run runlist snapshot from [1]_ in JSON format.
-        Must have keys 'latest_snapshot' and 'runs'.
-    filter_runs : function
-        Filter function to remove unwanted runs from the goodrun list.
-        Called as `filter_runs(run)`. Function must operate on a single
-        dictionary `run`, with keys:
+        Parameters
+        ----------
+        runlist : str
+            Path to a valid good run runlist snapshot from [1]_ in JSON format.
+            Must have keys 'latest_snapshot' and 'runs'.
+        filter_runs : function
+            Filter function to remove unwanted runs from the goodrun list.
+            Called as `filter_runs(run)`. Function must operate on a single
+            dictionary `run`, with keys:
 
-            ['good_i3', 'good_it', 'good_tstart', 'good_tstop', 'run',
-             'reason_i3', 'reason_it', 'source_tstart', 'source_tstop',
-             'snapshot', 'sha']
+                ['good_i3', 'good_it', 'good_tstart', 'good_tstop', 'run',
+                 'reason_i3', 'reason_it', 'source_tstart', 'source_tstop',
+                 'snapshot', 'sha']
+        rate_func : `rate_function.RateFunction` instance
+            Class defining the function to describe the time dependent
+            background rate. Must provide functions ["fun", "integral", "fit"].
 
-    Notes
-    -----
-    .. [1] https://live.icecube.wisc.edu/snapshots/
-    """
-    def __init__(self, runlist, filter_runs):
+        Notes
+        -----
+        .. [1] https://live.icecube.wisc.edu/snapshots/
+        """
+        # Class defaults
+        self.best_estimator = None
+
         # Create a goodrun list from the JSON snapshot
         runlist = os.path.abspath(runlist)
         self.goodrun_dict = self.create_goodrun_dict(runlist, filter_runs)
+
+        self.rate_func = rate_func
         return
 
     @docs.dedent
-    def fit(self, X, X0=None, remove_zero_runs=False, kwargs):
+    def fit(self, X, x0=None, remove_zero_runs=False, **kwargs):
         """
         %(BGRateInjector.fit.summary)s
 
         Takes data and a binning derived from the runlist. Bins the data,
         normalizes to a rate in HZ and fits a periodic function over the whole
         time span to it. This function serves as a rate per time model.
-
-        The function is chosen to be a sinus with:
-
-        ..math:: f(t|a,b,c,d) = a \sin(b (t - c)) + d
-
-        where
-
-        - a is the Amplitude in Hz
-        - b is the period scale in 1/MJD
-        - c is the x-offset in MJD
-        - d the y-offset in Hz
-
-        Default seed values are physically motivated:
-
-        - a0: (max(rate) + min(rate)) / 2, max amplitude of data bins
-        - b0: 2pi / 365, as the usual seasonal variation is 1 year
-        - c0: min(X), earliest time in X
-        - d0: np.average(rate, weights=rate_std**2), weighted average baseline
 
         Parameters
         ----------
@@ -140,30 +138,21 @@ class RunlistBGRateInjector():
         rate_fun : function
             Function with the best fit parameters plugged in.
         """
+        # Put data into run bins to fit them
         h = self._create_runtime_hist(X, self.goodrun_dict, remove_zero_runs)
         rate = h["rate"]
         rate_std = h["rate_std"]
         binmids = 0.5 * (h["start_mjd"] + h["stop_mjd"])
 
-        if x0 is None:
-            # Use default seed, might not always work
-            a0 = 0.5 * (np.amax(rate) - np.amin(rate))
-            b0 = 2. * np.pi / 365.
-            c0 = np.amin(X)
-            d0 = np.average(rate, weights=rate_std**2)
-            x0 = [a0, b0, c0, d0]
+        resx = self.rate_func.fit(binmids, rate, p0=None, rate_std=rate_std)
 
-        # x, y, weights are fixed
-        args = (binmids, rate, 1. / rate_std)
-
-        res = sco.minimize(fun=self.lstsq, x0=x0, args=args, **kwargs)
-        self.best_pars = res.x
-        self.best_estimator = (lambda t: self._rate_fun(t, *self.best_pars))
+        self.best_pars = resx
+        self.best_estimator = self.rate_func.best_fun
 
         return self.best_estimator
 
     @docs.dedent
-    def sample(self, n_samples=1, random_state=None):
+    def sample(self, t, trange, n_samples=1, random_state=None):
         """
         %(BGRateInjector.sample.summary)s
 
@@ -175,9 +164,30 @@ class RunlistBGRateInjector():
         -------
         %(BGRateInjector.sample.returns)s
         """
+        if self.best_estimator is None:
+            raise RuntimeError("Injector was not fit to data yet.")
+
         rndgen = check_random_state(random_state)
-        raise NotImplementedError("Not implemented yet")
-        return
+
+        # Expectations are the integrals over each time frames
+        expect = self.rate_func.best_integral(t, trange)
+
+        # Sample event numbers from poisson distribution
+        nevents = rndgen.poisson(lam=expect, size=(len(t), n_samples))
+
+        # For each event number sample times from the best fit rate function
+        pdf = self.best_estimator
+
+        t, trange = _prep_times(t, trange)
+
+        sample = []
+        nsamples = np.atleast_1d(nsamples)
+
+        for i, ni in enumerate(nsamples):
+            sam, _ = rejection_sampling(_pdf, bounds=trange, n=ni)
+            sample.append(sam)
+
+        return nevents
 
     @docs.get_sectionsf("RunlistBGRateInjector.create_goodrun_dict",
                         sections=["Returns"])
@@ -232,50 +242,7 @@ class RunlistBGRateInjector():
         return goodrun_dict
 
     # Private Methods
-    @docs.dedent
-    def _rate_fun(self, X, a, b, c, d):
-        """
-        Returns the rate at a given time in MJD.
-        Fitted parameters are:
-        - a is the Amplitude in Hz
-        - b is the period scale in 1/MJD
-        - c is the t-offset in MJD
-        - d the y-offset in Hz
-
-        Parameters
-        ----------
-        %(BGRateInjector.fit.parameters)s
-
-        Returns
-        -------
-        rate : array-like
-            Rate in Hz for each time t.
-        """
-        return a * np.sin(b * (X - c)) + d
-
-    def _lstsq(self, pars, *args):
-        """
-        Weighted leastsquares loss: sum_i((wi * (yi - fi))**2)
-
-        Parameters
-        ----------
-        pars : tuple
-            Fitparameter for `self._rate_fun` that gets fitted.
-        args : tuple
-            Fixed values for the loss function (x, y, weights)
-
-        Returns
-        -------
-        loss : float
-            The weighted least squares loss for the given `pars` and `args`.
-        """
-        # data x, y-values and weights are fixed
-        x, y, w = args[0], args[1], args[2]
-        # Target function
-        f = self._rate_fun(x, *pars)
-        return np.sum((w * (y - f))**2)
-
-    def _create_runtime_bins(self, X, goodrun_dict, remove_zero_runs=False):
+    def _create_runtime_hist(self, X, goodrun_dict, remove_zero_runs=False):
         """
         Creates time bins [start_MJD_i, stop_MJD_i] for each run i and bin the
         experimental data to calculate the rate for each run.
@@ -323,19 +290,19 @@ class RunlistBGRateInjector():
         if remove_zero_runs:
             # Remove all zero event runs and update livetime
             m = (evts > 0)
-            _livetime = np.sum(stop_mjd - start_mjd)
+            _livetime = np.sum(stop_mjd[~m] - start_mjd[~m])
             evts, run = evts[m], run[m]
             start_mjd, stop_mjd = start_mjd[m], stop_mjd[m]
             print("Removing runs with zero events")
             print("  Number of runs with 0 events : {:d}".format(np.sum(~m)))
-            print("  Total livetime of those runs : {} d".format(_livetime))
+            print("  Total livetime of those runs : {:.3f} d".format(_livetime))
 
         # Normalize to rate in Hz
         runtime = stop_mjd - start_mjd
-        rate = evts / (runtime * self._secinday)
+        rate = evts / (runtime * BGRateInjector._SECINDAY)
 
         # Calculate 1 / sqrt(N) stddev for scaled rates
-        rate_std = np.sqrt(rate) / np.sqrt(runtime * self._secinday)
+        rate_std = np.sqrt(rate) / np.sqrt(runtime * BGRateInjector._SECINDAY)
 
         # Create record-array
         names = ["run", "rate", "runtime", "start_mjd",
@@ -346,37 +313,8 @@ class RunlistBGRateInjector():
         a = np.vstack((run, rate, runtime, start_mjd, stop_mjd, evts, rate_std))
         rate_rec = np.core.records.fromarrays(a, dtype=dtype)
 
-        # Final total livetime
+        # Final total livetime and store stuff
         self.livetime = np.sum(rate_rec["runtime"])
+        self.rate_rec = rate_rec
 
         return rate_rec
-
-
-# class TimebinBGRateInjector():
-    # bins : array-like, shape (nbins, 2)
-    #     Time bins, where every row represents the start and end time in MJD
-    #     for a single run. This can be preselected from a goodrun list.
-
-
-
-# class FunctionBGRateInjector():
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
