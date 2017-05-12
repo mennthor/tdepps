@@ -42,7 +42,7 @@ class BGRateInjector(object):
     @docs.get_sectionsf("BGRateInjector.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def sample(self, t, trange, random_state=None):
+    def sample(self, t, trange, ntrials=1, random_state=None):
         """
         Generate random samples from the fitted model for one source event time
         and corrseponding time frame.
@@ -57,14 +57,16 @@ class BGRateInjector(object):
             Time of the occurance of the source event in MJD.
         trange : [float, float]
             Time window in seconds relativ to the given time t.
+        ntrials : int, optional
+            Number of trials to sample at once. (default: 1)
         random_state : seed, optional
             Turn seed into a np.random.RandomState instance. See
             `sklearn.utils.check_random_state`. (default: None)
 
         Returns
         -------
-        event_times : array_like, shape (nevts)
-            The time in MJD for each sampled event. Might be empty.
+        event_times : list of arrays, length (ntrials)
+            The times in MJD for each sampled trial. Slices might be empty.
         """
         raise NotImplementedError("BGInjector is an interface.")
 
@@ -100,7 +102,7 @@ class RunlistBGRateInjector():
     """
     def __init__(self, runlist, filter_runs, rate_func):
         # Class defaults
-        self.best_estimator = None
+        self.best_pars = None
 
         # Create a goodrun list from the JSON snapshot
         runlist = os.path.abspath(runlist)
@@ -144,12 +146,14 @@ class RunlistBGRateInjector():
         resx = self.rate_func.fit(binmids, rate, p0=None, rate_std=rate_std)
 
         self.best_pars = resx
-        self.best_estimator = self.rate_func.best_fun
+        self.best_estimator = (lambda t: self.rate_func.fun(t, resx))
+        self.best_estimator_integral = (
+            lambda t, trange: self.rate_func.integral(t, trange, resx))
 
         return self.best_estimator
 
     @docs.dedent
-    def sample(self, t, trange, random_state=None):
+    def sample(self, t, trange, ntrials=1, random_state=None):
         """
         %(BGRateInjector.sample.summary)s
 
@@ -161,20 +165,28 @@ class RunlistBGRateInjector():
         -------
         %(BGRateInjector.sample.returns)s
         """
-        if self.best_estimator is None:
+        if self.best_pars is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
         rndgen = check_random_state(random_state)
 
         # Expectations are the integrals over each time frames
-        expect = self.rate_func.best_integral(t, trange)
+        expect = self.best_estimator_integral(t, trange)
 
-        # Sample event numbers from poisson distribution
-        nevents = rndgen.poisson(lam=expect, size=1)
+        # Sample single number of events from poisson distribution
+        nevents = np.random.poisson(lam=expect, size=ntrials)
 
-        # Sample so nevents times from the rate function
-        return self.rate_func.sample(t, trange, n_samples=nevents,
-                                     random_state=None)
+        # Sample all nevents samples from the rate function at once
+        tot_nevts = np.sum(nevents)
+        times = self.rate_func.sample(t, trange, self.best_pars,
+                                      n_samples=tot_nevts, random_state=rndgen)
+
+        # Split up correctly in trials with fast list comprehension
+        start = np.cumsum(np.append(0, nevents[:-1]))
+        end = np.cumsum(nevents)
+        trials = [times[i:k] for i, k in zip(start, end)]
+
+        return trials
 
     def create_goodrun_dict(self, runlist, filter_runs):
         """

@@ -72,7 +72,7 @@ class RateFunction(object):
     @docs.get_sectionsf("RateFunction.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def sample(self, t, trange, n_samples=1, random_state=None):
+    def sample(self, t, trange, pars, n_samples=1, random_state=None):
         """
         Generate random samples from the rate function for one time and a single
         time window.
@@ -81,8 +81,11 @@ class RateFunction(object):
         ----------
         t : float
             Time of the occurance of the source event in MJD.
-        trange : [float, float]
-            Time window in seconds relativ to the given time t.
+        trange : array-like, shape(2)
+            Time window `[t0, t1]` in seconds around the source time t.
+        pars : tuple, optional
+            Parameters for the fit function. If not None the local parameters
+            are prefered over the global ones. (default: None)
         n_samples : int
             Number of events to sample. (default: 1)
         random_state : RandomState, optional
@@ -201,19 +204,19 @@ class SinusRateFunction(RateFunction):
         a, b, c, d = pars
 
         # Transform time window to MJD
-        t0, t1 = np.array(t + trange / RateFunction._SECINDAY)
+        t0, t1 = self._transform_trange_mjd(t, trange)
 
         # Split analytic expression for readability only
         per = a / b * (np.cos(b * (t0 - c)) - np.cos(b * (t1 - c)))
         lin = d * (t1 - t0)
 
         # Match units with secinday = 24 * 60 * 60 s/MJD = 86400 / (Hz*MJD)
-        #     [a], [d] = Hz, [b], [c], [ti] = MJD
-        #     [a / b] = Hz * MJD, [d * (t1 - t0)] = HZ * MJD
+        #     [a], [d] = Hz;M [b] = 1/MJD; [c], [t] = MJD
+        #     [a / b] = Hz * MJD; [d * (t1 - t0)] = HZ * MJD
         return (per + lin) * RateFunction._SECINDAY
 
     @docs.dedent
-    def sample(self, t, trange, n_samples=1, random_state=None):
+    def sample(self, t, trange, pars, n_samples=1, random_state=None):
         """
         %(RateFunction.sample.summary)s
 
@@ -227,8 +230,14 @@ class SinusRateFunction(RateFunction):
         """
         rndgen = check_random_state(random_state)
 
-        times = rejection_sampling(self.fun, bounds=trange, n=n_samples,
-                                   random_state=rndgen).flatten()
+        # rejection_sampling needs bounds in shape (1, 2)
+        trange = self._transform_trange_mjd(t, trange).T
+
+        def sample_fun(t):
+            return self.fun(t, pars)
+
+        times = rejection_sampling(sample_fun, bounds=trange, n=n_samples,
+                                   random_state=rndgen)[0]
 
         return times
 
@@ -255,12 +264,26 @@ class SinusRateFunction(RateFunction):
         args = (t, rate, 1. / rate_std)
         res = sco.minimize(fun=self._lstsq, x0=p0, args=args, **kwargs)
 
-        self.best_pars = res.x
-        self.best_fun = (lambda t: self.fun(t, self.best_pars))
-        self.best_integral = (lambda t, trange:
-                              self.integral(t, self.best_pars, trange))
-
         return res.x
+
+    def _transform_trange_mjd(self, t, trange):
+        """
+        Transform time window to MJD
+
+        Parameters
+        ----------
+        t : array-like
+            MJD times of experimental data.
+        trange : array-like, shape(2)
+            Time window `[t0, t1]` in seconds around the source times t.
+
+        Returns
+        -------
+        trange : array-like, shape(2, len(t))
+            Reshaped time window `[[t0], [t1]]` in MJD for each time t.
+        """
+        t = np.atleast_1d(t)
+        return t + np.array(trange).reshape(2, 1) / RateFunction._SECINDAY
 
     def _get_default_seed(self, t, rate, rate_std):
         """
