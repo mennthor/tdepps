@@ -189,9 +189,11 @@ class UniformBGInjector(BGInjector):
 
     Background Injector creating uniform events on the whole sky.
     Created features are:
-        - logE from a gaussian with mean 3 and stddev .5
-        - Declination in rad uniformly distributed in sinDec
-        - Sigma in rad from 3^2 * x * exp(-3 * x)
+
+    - logE from a gaussian with mean 3 and stddev 0.5
+    - Declination in radian uniformly distributed in sinDec
+    - Sigma in radian from `f(x) = 3^2 * x * exp(-3 * x)`
+
     """
     def __init__(self):
         # "Close" to real data
