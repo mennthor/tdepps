@@ -87,14 +87,13 @@ class RunlistBGRateInjector():
         Filter function to remove unwanted runs from the goodrun list.
         Called as `filter_runs(run)`. Function must operate on a single
         dictionary `run`, with keys:
-
-            ['good_i3', 'good_it', 'good_tstart', 'good_tstop', 'run',
-             'reason_i3', 'reason_it', 'source_tstart', 'source_tstop',
-             'snapshot', 'sha']
+        ['good_i3', 'good_it', 'good_tstart', 'good_tstop', 'run', 'reason_i3',
+        'reason_it', 'source_tstart', 'source_tstop', 'snapshot', 'sha']
 
     rate_func : `rate_function.RateFunction` instance
         Class defining the function to describe the time dependent
-        background rate. Must provide functions ["fun", "integral", "fit"].
+        background rate. Must provide functions ['fun', 'integral', 'fit',
+        'sample'].
 
     Notes
     -----
