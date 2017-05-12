@@ -42,66 +42,63 @@ class BGRateInjector(object):
     @docs.get_sectionsf("BGRateInjector.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def sample(self, t, trange, n_samples=1, random_state=None):
+    def sample(self, t, trange, random_state=None):
         """
-        Generate random samples from the fitted model.
+        Generate random samples from the fitted model for one source event time
+        and corrseponding time frame.
+
+        Sample size is drawn from a poisson distribtuion each time, with
+        expectation value determined by the time window, so each call might
+        produce a different number of events.
 
         Parameters
         ----------
-        t : array-like
-            Times of the occurance of each source event in MJD.
-        trange : [float, float] or array_like, shape (len(t), 2)
-            Time window(s) in seconds relativ to the given time(s) t.
-            - If [float, float], the same window [lower, upper] is used for
-              every time t.
-            - If array-like [lower, upper] bounds of the time
-              window per source in each row.
-        n_samples : int, optional
-            Number of samples to generate. (default: 1)
-        random_state : RandomState, optional
-            A random number generator instance. (default: None)
+        t : float
+            Time of the occurance of the source event in MJD.
+        trange : [float, float]
+            Time window in seconds relativ to the given time t.
+        random_state : seed, optional
+            Turn seed into a np.random.RandomState instance. See
+            `sklearn.utils.check_random_state`. (default: None)
 
         Returns
         -------
-        nevents : array-like, shape (len(t), ntrials)
-            The number of events to inject for each trial in each source time
-            window.
+        event_times : array_like, shape (nevts)
+            The time in MJD for each sampled event. Might be empty.
         """
         raise NotImplementedError("BGInjector is an interface.")
 
 
 class RunlistBGRateInjector():
-    @docs.get_sectionsf("RunlistBGRateInjector",
-                        sections=["Parameters", "Notes"])
-    @docs.dedent
+    """
+    Runlist Background Rate Injector
+
+    Creates the time depending rate from a given runlist.
+    Parameters are passed to `create_goodrun_dict` method.
+
+    Parameters
+    ----------
+    runlist : str
+        Path to a valid good run runlist snapshot from [1]_ in JSON format.
+        Must have keys 'latest_snapshot' and 'runs'.
+    filter_runs : function
+        Filter function to remove unwanted runs from the goodrun list.
+        Called as `filter_runs(run)`. Function must operate on a single
+        dictionary `run`, with keys:
+
+            ['good_i3', 'good_it', 'good_tstart', 'good_tstop', 'run',
+             'reason_i3', 'reason_it', 'source_tstart', 'source_tstop',
+             'snapshot', 'sha']
+
+    rate_func : `rate_function.RateFunction` instance
+        Class defining the function to describe the time dependent
+        background rate. Must provide functions ["fun", "integral", "fit"].
+
+    Notes
+    -----
+    .. [1] https://live.icecube.wisc.edu/snapshots/
+    """
     def __init__(self, runlist, filter_runs, rate_func):
-        """
-        Runlist Background Rate Injector
-
-        Creates the time depending rate from a given runlist.
-        Parameters are passed to `create_goodrun_dict` method.
-
-        Parameters
-        ----------
-        runlist : str
-            Path to a valid good run runlist snapshot from [1]_ in JSON format.
-            Must have keys 'latest_snapshot' and 'runs'.
-        filter_runs : function
-            Filter function to remove unwanted runs from the goodrun list.
-            Called as `filter_runs(run)`. Function must operate on a single
-            dictionary `run`, with keys:
-
-                ['good_i3', 'good_it', 'good_tstart', 'good_tstop', 'run',
-                 'reason_i3', 'reason_it', 'source_tstart', 'source_tstop',
-                 'snapshot', 'sha']
-        rate_func : `rate_function.RateFunction` instance
-            Class defining the function to describe the time dependent
-            background rate. Must provide functions ["fun", "integral", "fit"].
-
-        Notes
-        -----
-        .. [1] https://live.icecube.wisc.edu/snapshots/
-        """
         # Class defaults
         self.best_estimator = None
 
@@ -152,7 +149,7 @@ class RunlistBGRateInjector():
         return self.best_estimator
 
     @docs.dedent
-    def sample(self, t, trange, n_samples=1, random_state=None):
+    def sample(self, t, trange, random_state=None):
         """
         %(BGRateInjector.sample.summary)s
 
@@ -173,25 +170,12 @@ class RunlistBGRateInjector():
         expect = self.rate_func.best_integral(t, trange)
 
         # Sample event numbers from poisson distribution
-        nevents = rndgen.poisson(lam=expect, size=(len(t), n_samples))
+        nevents = rndgen.poisson(lam=expect, size=1)
 
-        # For each event number sample times from the best fit rate function
-        pdf = self.best_estimator
+        # Sample so nevents times from the rate function
+        return self.rate_func.sample(t, trange, n_samples=nevents,
+                                     random_state=None)
 
-        t, trange = _prep_times(t, trange)
-
-        sample = []
-        nsamples = np.atleast_1d(nsamples)
-
-        for i, ni in enumerate(nsamples):
-            sam, _ = rejection_sampling(_pdf, bounds=trange, n=ni)
-            sample.append(sam)
-
-        return nevents
-
-    @docs.get_sectionsf("RunlistBGRateInjector.create_goodrun_dict",
-                        sections=["Returns"])
-    @docs.dedent
     def create_goodrun_dict(self, runlist, filter_runs):
         """
         Create a dict of lists from a runlist in JSON format.
@@ -199,17 +183,14 @@ class RunlistBGRateInjector():
 
         Parameters
         ----------
-        %(RunlistBGRateInjector.parameters)s
+        runlist, filter_runs
+            See RunlistBGRateInjector, Parameters
 
         Returns
         -------
         goodrun_dict : dict
             Dictionary with run attributes as keys. The values are stored in
-            lists in each key. One list item is one run.
-
-        Notes
-        -----
-        %(RunlistBGRateInjector.notes)s
+            arrays in each key.
         """
         with open(runlist, 'r') as jsonFile:
             goodruns = json.load(jsonFile)
@@ -249,11 +230,10 @@ class RunlistBGRateInjector():
 
         Parameters
         ----------
-        %(BGRateInjector.fit.parameters)s
-        %(RunlistBGRateInjector.create_goodrun_dict.returns)s
-        remove_zero_runs : bool, optional
-            If True, remove all runs with zero events and adapt the livetime.
-            (default: False)
+        X, remove_zero_runs
+            See RunlistBGRateInjector.fit, Parameters
+        goodrun_dict
+            See RunlistBGRateInjector.create_goodrun_dict, Returns
 
         Returns
         -------
