@@ -6,6 +6,7 @@ Motivation
 
 What do we want to do and how can we do it?
 
+
 Likelihood Formalism
 --------------------
 
@@ -82,9 +83,9 @@ likelihood.
 To further simplify, we can use a measured and fixed background
 expectation rate :math:`\langle n_B\rangle` and fit only for the number
 of signal events. Then we only fit for the number of signal events
-:math:`n_S`. The fixed background rate can be extracted from data by
-using the PDF of a larger timescale and average over that (or fit a
-function) to ensure that local fluctuations don't matter.
+:math:`n_S`.
+Also we are only interested in the number of signal events.
+The fixed background rate can be extracted from data by using the pdf of a larger timescale and average over that (or fit a function) to ensure that local fluctuations don't matter.
 
 Then we end up with our full Likelihood (the denominator in :math:`P_i`
 cancels with the term from the Poisson PDF):
@@ -94,16 +95,20 @@ cancels with the term from the Poisson PDF):
 
        \ln\mathcal{L}(N | n_S) = -(n_S + \langle n_B\rangle) -\ln(N!) + \sum_{i=1}^N \ln(n_S S_i + \langle n_B\rangle B_i)
 
-For the test statistic we want to test the hypothesis of having no
-signal :math:`n_S=0` vs. the alternative with a free parameter
+For the test statistic :math:`\Lambda = -2T` we want to test the hypothesis of having no signal :math:`n_S=0` vs. the alternative with a free parameter
 :math:`n_S`:
 
 .. math::
 
 
-       \Lambda = \ln\frac{\mathcal(\hat{n}_S)}{\mathcal{n_S=0}}
-               = \frac{-(\hat{n}_S + \langle n_B\rangle) -\ln(N!) + \sum_{i=1}^N \ln(\hat{n}_S S_i + \langle n_B\rangle B_i)}{-\langle n_B\rangle -\ln(N!) + \sum_{i=1}^N \ln(\langle n_B\rangle B_i)}
-               = -\hat{n}_S + \sum_{i=1}^N \ln\left( \frac{\hat{n}_S S_i}{\langle n_B\rangle B_i} + 1 \right)
+       T &= \ln\frac{\mathcal{L}_0}{\mathcal{L}_1}
+          = \ln\frac{\mathcal{L}(n_S=0)}{\mathcal{L}{\hat{n}_S}} \\
+         &= -(\hat{n}_S + \langle n_B\rangle) -\ln(N!) +
+              \sum_{i=1}^N \ln(\hat{n}_S S_i + \langle n_B\rangle B_i) \\
+         &\phantom{=} +\langle n_B\rangle +\ln(N!) -
+               \sum_{i=1}^N \ln(\langle n_B\rangle B_i) \\
+         &= -\hat{n}_S + \sum_{i=1}^N
+             \ln\left( \frac{\hat{n}_S S_i}{\langle n_B\rangle B_i} + 1 \right)
 
 The per event PDFs :math:`S_i` and :math:`B_i` can depend on arbitrary
 parameters. The common choise here is to use a time, energy proxy and
@@ -127,22 +132,18 @@ not on the absilute position on the sphere. The time part
 :math:`S_T, B_T` is equivalent to that, only using the distance in time
 between source event and event.
 
-Note
-^^^^
-
-It seems that in M. Richmans analysis there has only been used a
-1D energy only PDF.
-This lacks separation power, when using both hemispheres, as in the southern sky the energy threshold is much higher.
 
 Inference
 ---------
 
 How we get our best fit parameters from likelihood fitting.
 
+
 Performance
 -----------
 
 Describe sensitivity and limits.
+
 
 Code Example
 ------------
