@@ -3,6 +3,9 @@ from sklearn.utils import check_random_state
 
 import anapymods3.stats.KDE as KDE
 
+import docrep  # Reuse docstrings
+docs = docrep.DocstringProcessor()
+
 
 class BGInjector(object):
     """
@@ -16,6 +19,8 @@ class BGInjector(object):
         print("Interface only. Describes functions: ", self._DESCRIBES)
         return
 
+    @docs.get_sectionsf("BGInjector.fit", sections=["Parameters", "Returns"])
+    @docs.dedent
     def fit(self, X, bounds=None):
         """
         Build the injection model with the provided data
@@ -23,13 +28,16 @@ class BGInjector(object):
         Parameters
         ----------
         X : array_like, shape (n_samples, n_features)
-            List of n_features-dimensional data points.  Each row
-            corresponds to a single data point.
-        bounds : array-like, shape (n_features, 2)
-            Boundary conditions for each dimension. (default: None)
+            List of n_features-dimensional data points. Each row is a single
+            data point.
+        bounds : None or array-like, shape (n_features, 2)
+            Boundary conditions for each dimension. If None, [-inf, +inf] is
+            used in each dimension. (default: None)
         """
         raise NotImplementedError("BGInjector is an interface.")
 
+    @docs.get_sectionsf("BGInjector.sample", sections=["Parameters", "Returns"])
+    @docs.dedent
     def sample(self, n_samples=1, random_state=None):
         """
         Generate random samples from the fitted model.
@@ -54,6 +62,11 @@ class BGInjector(object):
         """
         Check if bounds are OK. Create numerical values when None is given.
 
+        Parameters
+        ----------
+        bounds
+            See BGInjector.fit, Parameters
+
         Returns
         -------
         bounds : array-like, shape (n_features, 2)
@@ -72,20 +85,6 @@ class BGInjector(object):
         bounds[:, 1][bounds[:, 1] == np.array(None)] = +np.inf
 
         return bounds
-
-    def _check_sample_params(self, n_samples, random_state):
-        """
-        Check if bounds are OK.
-
-        Returns
-        -------
-        random_state : np.random.RandomState
-            Random state instance created by `sklearn.utils.check_random_state`.
-        """
-        if n_samples < 1:
-            raise ValueError("'n_samples' must be at least 1.")
-
-        return check_random_state(random_state)
 
 
 class KDEBGInjector(BGInjector):
@@ -113,7 +112,6 @@ class KDEBGInjector(BGInjector):
     """
     def __init__(self, glob_bw="silverman", alpha=0.5,
                  diag_cov=False, max_gb=2.):
-        # Class defaults
         self._n_features = None
         # Create KDE model
         self.kde_model = KDE.GaussianKDE(glob_bw=glob_bw, alpha=alpha,
@@ -121,22 +119,48 @@ class KDEBGInjector(BGInjector):
 
         return
 
+    @docs.dedent
     def fit(self, X, bounds=None):
+        """
+        Fit a KDE model to the given data.
+
+        Parameters
+        ----------
+        %(BGInjector.fit.parameters)s
+
+        Returns
+        -------
+        %(BGInjector.fit.returns)s
+        """
         self._n_features = X.shape[1]
         self._bounds = self._check_bounds(bounds)
         # TODO: Use real bounds via mirror method in KDE class
         self.kde_model.fit(X)
         return
 
+    @docs.dedent
     def sample(self, n_samples=1, random_state=None):
+        """
+        Sample from a KDE model that has been build on given data.
+
+        Parameters
+        ----------
+        %(BGInjector.sample.parameters)s
+
+        Returns
+        -------
+        %(BGInjector.sample.returns)s
+        """
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
+        if n_samples < 1:
+            raise ValueError("'n_samples' must be at least 1.")
 
-        random_state = self._check_sample_params(n_samples, random_state)
-        rng = self._bounds
+        random_state = check_random_state(random_state)
 
         # Check which samples are in range, redraw those that are not
         X = []
+        rng = self._bounds
         while n_samples > 0:
             gen = self.kde_model.sample(n_samples, random_state)
             accepted = np.all(np.logical_and(gen >= rng[:, 0],
@@ -160,24 +184,39 @@ class DataBGInjector(BGInjector):
 
     def fit(self, X):
         """
-        Build the injection model with the provided data.
-        Here the 'model' is simply the data itself.
+        Build the injection model with the provided data. Here the 'model' is
+        simply the data itself.
 
         Parameters
         ----------
         X : array_like, shape (n_samples, n_features)
-            List of n_features-dimensional data points.  Each row
-            corresponds to a single data point.
+            List of n_features-dimensional data points. Each row is a single
+            data point.
         """
         self.X = np.copy(X)
         self._n_features = X.shape[1]
         return
 
+    @docs.dedent
     def sample(self, n_samples=1, random_state=None):
+        """
+        Sample by choosing random events from the given data.
+
+        Parameters
+        ----------
+        %(BGInjector.sample.parameters)s
+
+        Returns
+        -------
+        %(BGInjector.sample.returns)s
+        """
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
+        if n_samples < 1:
+            raise ValueError("'n_samples' must be at least 1.")
 
-        rndgen = self._check_sample_params(n_samples, random_state)
+        rndgen = check_random_state(random_state)
+
         # Draw indices uniformly from the data
         idx = rndgen.randint(self.X.shape[0], size=n_samples)
         return self.X[idx]
@@ -211,19 +250,34 @@ class UniformBGInjector(BGInjector):
         """
         raise AttributeError("Function disabled. Generating pesudo data only.")
 
+    @docs.dedent
     def sample(self, n_samples=1, random_state=None):
-        random_state = self._check_sample_params(n_samples, random_state)
+        """
+        Sample pseudo events that look somewhat similar to data.
+
+        Parameters
+        ----------
+        %(BGInjector.sample.parameters)s
+
+        Returns
+        -------
+        %(BGInjector.sample.returns)s
+        """
+        if n_samples < 1:
+            raise ValueError("'n_samples' must be at least 1.")
+
+        rndgen = check_random_state(random_state)
         X = np.zeros((n_samples, self._n_features), dtype=np.float)
 
         # Sample logE from gaussian, sinDec uniform, sigma from x*exp(-x)
-        X[:, 0] = random_state.normal(self._logE_mean,
-                                      self._logE_sigma, size=n_samples)
+        X[:, 0] = rndgen.normal(self._logE_mean,
+                                self._logE_sigma, size=n_samples)
 
-        X[:, 1] = (np.arccos(random_state.uniform(-1, 1, size=n_samples)) -
+        X[:, 1] = (np.arccos(rndgen.uniform(-1, 1, size=n_samples)) -
                    np.pi / 2.)
 
         # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html
-        u1, u2 = np.random.uniform(size=(2, n_samples))
+        u1, u2 = rndgen.uniform(size=(2, n_samples))
         X[:, 2] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
 
         return X
