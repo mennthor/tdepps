@@ -71,7 +71,7 @@ class BGRateInjector(object):
         raise NotImplementedError("BGInjector is an interface.")
 
 
-class RunlistBGRateInjector():
+class RunlistBGRateInjector(BGRateInjector):
     """
     Runlist Background Rate Injector
 
