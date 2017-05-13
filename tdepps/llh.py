@@ -23,17 +23,19 @@ class LLH(object):
         Return the natural logarithm ln-Likelihood (ln-LLH) value for a given
         set of data `X` and parameters `theta`.
 
-        The Likelihood of a parameter `theta` of a parametric probability model
+        The ln-LLH of a parameter `theta` of a parametric probability model
         under the given data `X` is the product of all probability values of
         the given data under the model assumption:
 
         .. math::
 
-          P(X|\theta) = \mathcal{L}(\theta|X) = \prod_{i=1}^N f(x_i|\theta)
+          \ln P(X|\theta) = \ln \mathcal{L}(\theta|X)
+                          = \ln \prod_{i=1}^N f(x_i|\theta)
+                          = \sum_{i=1}^N \ln f(x_i|\theta)
 
 
         The most likely set of parameters `theta` can be found by finding the
-        maximum of the LLH function by variation of the parameter set.
+        maximum of the ln-LLH function by variation of the parameter set.
 
         Parameters
         ----------
@@ -54,7 +56,7 @@ class LLH(object):
     @docs.dedent
     def lnllh_ratio(self, X, theta):
         r"""
-        Return the natural logarithm ratio of the Likelihood under the null
+        Return the natural logarithm of the ratio of Likelihoods under the null
         hypothesis and the alternative hypothesis.
 
         The ratio :math:`\Lambda` used here is defined as:
@@ -109,6 +111,8 @@ class GRBLLH(LLH):
 
     Other parameters :math:`\theta` might be used in the per event signal and
     background PDFs :math:`S_i` and :math:`B_i`.
+    The expected background :math:`\langle n_B \rangle` is derived from the
+    detector properties at a given time and is not a free parameter here.
 
     The ln-LLH is then derived by taking the natural logarithm of the LLH:
 
@@ -141,23 +145,16 @@ class GRBLLH(LLH):
         %(LLH.lnllh.returns)s
         """
 
+    @docs.dedent
+    def lnllh_ratio(self, X, theta):
+        """
+        %(LLH.lnllh_ratio.summary)s
 
+        Parameters
+        ----------
+        %(LLH.lnllh_ratio.parameters)s
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        Returns
+        -------
+        %(LLH.lnllh_ratio.returns)s
+        """
