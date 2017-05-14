@@ -304,18 +304,24 @@ class MRichmanBGInjector(BGInjector):
             List of n_features-dimensional data points. Each row is a single
             data point.
         nbins : int or array-like, shape(n_features), optional
+            (default: 10)
+
             - If int, same number of bins is used for all dimensions.
             - If array-like, number of bins for each dimension is used.
-            (default: 10)
+
         minmax : bool, optional
             If True, use global min/max for outermost bin edges. Else use the
             min/max bounds in current data bin. Can be used for a global
-            bounding box.(default: False)
+            bounding box. (default: False)
 
         Returns
         -------
-        bins : array-like, shape ([nbins+1, nbins+1, nbins+1]) or (*nbins+1)
-            The bin borders in each dimension.
+        ax0_bins : array-like, shape (nbins[0] + 1)
+            The bin borders for the first dimension.
+        ax1_bins : array-like, shape (nbins[0], nbins[1] + 1)
+            The bin borders for the second dimension.
+        ax2_bins : array-like, shape (nbins[0], nbins[1] nbins[2] + 1)
+            The bin borders for the third dimension.
         """
         def bin_equal_stats(data, nbins, minmax=None):
             """
@@ -403,6 +409,7 @@ class MRichmanBGInjector(BGInjector):
         self._ax2_bins = ax2_bins
         return ax0_bins, ax1_bins, ax2_bins
 
+    @docs.dedent
     def sample(self, n_samples=1, random_state=None):
         """
         Sample pseudo events uniformly from each bin.
