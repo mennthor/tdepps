@@ -292,7 +292,7 @@ class MRichmanBGInjector(BGInjector):
         self._n_features = 3
         return
 
-    def fit(self, X, nbins=10, minmax=None):
+    def fit(self, X, nbins=10, minmax=False):
         """
         Build the injection model with the provided data.
 
