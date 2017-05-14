@@ -281,3 +281,168 @@ class UniformBGInjector(BGInjector):
         X[:, 2] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
 
         return X
+
+
+class MRichmanBGInjector(BGInjector):
+    """
+    Injector binning up data space in [a x b x c] bins with equal statistics and
+    then sampling uniformly from those bins. Data must have 3 dimensions.
+    """
+    def __init__(self):
+        self._n_features = 3
+        return
+
+    def fit(self, X, nbins=10, minmax=None):
+        """
+        Build the injection model with the provided data.
+
+        Dimensions fixed to 3. For a variable solution we would need recursion.
+
+        Parameters
+        ----------
+        X : array_like, shape (n_samples, n_features)
+            List of n_features-dimensional data points. Each row is a single
+            data point.
+        nbins : int or array-like, shape(n_features), optional
+            - If int, same number of bins is used for all dimensions.
+            - If array-like, number of bins for each dimension is used.
+            (default: 10)
+        minmax : bool, optional
+            If True, use global min/max for outermost bin edges. Else use the
+            min/max bounds in current data bin. Can be used for a global
+            bounding box.(default: False)
+
+        Returns
+        -------
+        bins : array-like, shape ([nbins+1, nbins+1, nbins+1]) or (*nbins+1)
+            The bin borders in each dimension.
+        """
+        def bin_equal_stats(data, nbins, minmax=None):
+            """
+            Bin with nbins of equal statistics by using percentiles.
+
+            Parameters
+            ----------
+            data : array-like, shape(n_samples)
+                The data to bin.
+            nbins : int
+                How many bins to create, must be smaller than len(data).
+            minmax : array-like, shape (2), optional
+                If [min, max] these values are used for the outer bin edges. If
+                None, the min/max of the given data is used. (default: None)
+
+            Returns
+            -------
+            bins : array-like
+                (nbins + 1) bin edges for the given data.
+            """
+            if nbins > len(data):
+                raise ValueError("Cannot create more bins than datapoints.")
+            nbins += 1  # We need 1 more edge than bins
+            if minmax is not None:
+                # Use global min/max for outermost bin edges
+                bins = np.percentile(data, np.linspace(0, 100, nbins)[1:-1])
+                return np.hstack((minmax[0], bins, minmax[1]))
+            else:
+                # Else just use the bounds from the given data
+                return np.percentile(data, np.linspace(0, 100, nbins))
+
+        self._n_features = X.shape[1]
+        if self._n_features != 3:
+            raise ValueError("Only 3 dimensions supported.")
+
+        # Repeat bins, if only int was given
+        nbins = np.atleast_1d(nbins)
+        if (len(nbins) == 1) and (len(nbins) != self._n_features):
+            nbins = np.repeat(nbins, repeats=self._n_features)
+        elif len(nbins) != self._n_features:
+            raise ValueError("Given 'nbins' doesn't match dim of data.")
+        self._nbins = nbins
+
+        # Get bounding box, we sample the maximum distance in each direction
+        if minmax is True:
+            minmax = np.vstack((np.amin(X, axis=0), np.amax(X, axis=0))).T
+        else:
+            minmax = self._n_features * [False]
+
+        # First axis is the main binning and only an 1D array
+        ax0_dat = X[:, 0]
+        ax0_bins = bin_equal_stats(ax0_dat, nbins[0], minmax[0])
+
+        # 2nd axis array has bins[1] bins per bin in ax0_bins, so it's 2D
+        ax1_bins = np.zeros((nbins[0], nbins[1] + 1))
+        # 3rd axis is 3D: nbins[2] bins per bin in ax0_bins and ax1_bins
+        ax2_bins = np.zeros((nbins[0], nbins[0], nbins[2] + 1))
+
+        # Fill bins by looping over all possible combinations
+        for i in range(nbins[0]):
+            # Bin left inclusive, except last bin
+            m = (ax0_dat >= ax0_bins[i]) & (ax0_dat < ax0_bins[i + 1])
+            if (i == nbins[1] - 1):
+                m = (ax0_dat >= ax0_bins[i]) & (ax0_dat <= ax0_bins[i + 1])
+
+            # Bin ax1 subset of data in current ax0 bin
+            _X = X[m]
+            ax1_dat = _X[:, 1]
+            ax1_bins[i] = bin_equal_stats(ax1_dat, nbins[1], minmax[1])
+
+            # Directly proceed to axis 2 and repeat procedure
+            for k in range(nbins[1]):
+                m = ((ax1_dat >= ax1_bins[i, k]) &
+                     (ax1_dat < ax1_bins[i, k + 1]))
+                if (k == nbins[2] - 1):
+                    m = ((ax1_dat >= ax1_bins[i, k]) &
+                         (ax1_dat <= ax1_bins[i, k + 1]))
+
+                # Bin ax2 subset of data in current ax0 & ax1 bin
+                ax2_bins[i, k] = bin_equal_stats(_X[m][:, 2],
+                                                 nbins[2], minmax[2])
+
+        self._ax0_bins = ax0_bins
+        self._ax1_bins = ax1_bins
+        self._ax2_bins = ax2_bins
+        return ax0_bins, ax1_bins, ax2_bins
+
+    def sample(self, n_samples=1, random_state=None):
+        """
+        Sample pseudo events uniformly from each bin.
+
+        Parameters
+        ----------
+        %(BGInjector.sample.parameters)s
+
+        Returns
+        -------
+        %(BGInjector.sample.returns)s
+        """
+        if self._n_features is None:
+            raise RuntimeError("Injector was not fit to data yet.")
+        if n_samples < 1:
+            raise ValueError("'n_samples' must be at least 1.")
+
+        rndgen = check_random_state(random_state)
+
+        # Sample indices to select from which bin is injected
+        ax0_idx = rndgen.randint(0, self._nbins[0], size=n_samples)
+        ax1_idx = rndgen.randint(0, self._nbins[1], size=n_samples)
+        ax2_idx = rndgen.randint(0, self._nbins[2], size=n_samples)
+
+        # Sample uniform in [0, 1] to decide where each point lies in the bins
+        r = rndgen.uniform(0, 1, size=(n_samples, self._n_features))
+
+        # Get edges of each bin
+        ax0_edges = np.vstack((self._ax0_bins[ax0_idx],
+                               self._ax0_bins[ax0_idx + 1])).T
+
+        ax1_edges = np.vstack((self._ax1_bins[ax0_idx, ax1_idx],
+                               self._ax1_bins[ax0_idx, ax1_idx + 1])).T
+
+        ax2_edges = np.vstack((self._ax2_bins[ax0_idx, ax1_idx, ax2_idx],
+                               self._ax2_bins[ax0_idx, ax1_idx, ax2_idx + 1])).T
+
+        # Sample uniformly between selected bin edges
+        ax0_pts = ax0_edges[:, 0] + r[:, 0] * np.diff(ax0_edges, axis=1).T
+        ax1_pts = ax1_edges[:, 0] + r[:, 1] * np.diff(ax1_edges, axis=1).T
+        ax2_pts = ax2_edges[:, 0] + r[:, 2] * np.diff(ax2_edges, axis=1).T
+
+        return np.vstack((ax0_pts, ax1_pts, ax2_pts)).T
