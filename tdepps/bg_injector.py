@@ -369,7 +369,7 @@ class MRichmanBGInjector(BGInjector):
         if minmax is True:
             minmax = np.vstack((np.amin(X, axis=0), np.amax(X, axis=0))).T
         else:
-            minmax = self._n_features * [False]
+            minmax = self._n_features * [None]
 
         # First axis is the main binning and only an 1D array
         ax0_dat = X[:, 0]
