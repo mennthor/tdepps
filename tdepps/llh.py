@@ -1,6 +1,10 @@
 import numpy as np
+# import numpy.lib.recfunctions
 import scipy.stats as scs
+import scipy.interpolate as sci
 from sklearn.utils import check_random_state
+
+from anapymods3.general.misc import fill_dict_defaults
 
 import docrep  # Reuse docstrings
 docs = docrep.DocstringProcessor()
@@ -151,18 +155,32 @@ class GRBLLH(LLH):
     scramble : bool, optional
         If True, scramble expiremental data `X` in right-ascension for
         blindness. (default: True)
-    bg_spline_args : dict
     random_state : seed, optional
         Turn seed into a np.random.RandomState instance. See
         `sklearn.utils.check_random_state`. (default: None)
+    bg_spline_args : dict
+        Arguments for the creation of the spatial background spline describing
+        the sin_dec distribtuion. Must contain keys:
+
+        - "bins", array-like: Explicit bin edges of the histogram created to fit
+          a spline describing the spatial background PDF.
+        - "k", int, optional: Degree of the smoothing spline. Must be
+          1 <= k <= 5. (default: 3)
+    signal_pdf_args : dict or None
+        Arguments for the spatial signal PDF. Must contain keys:
+
+        - "kent", bool, optional: If True, uses the Kent [3]_ distribution. A 2D
+          gaussian PDF is used otherwise. (default: True)
 
     Notes
     -----
     .. [1] Barlow, "Statistics - A Guide to the Use of Statistical Methods in
            the Physical Sciences". Chap. 5.4, p. 90. Wiley (1989)
     .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
+    .. [3] https://en.wikipedia.org/wiki/Kent_distribution
     """
-    def __init__(self, X, MC, livetime, scramble=True, random_state=None):
+    def __init__(self, X, MC, livetime, bg_spline_args, signal_pdf_args=None,
+                 random_state=None):
         # Check if data and MC have all needed names
         X_names = ["ra", "dec", "logE", "sigma"]
         if not all([n in X.dtype.names for n in X_names]):
@@ -171,31 +189,41 @@ class GRBLLH(LLH):
         if not all([n in MC.dtype.names for n in MC_names]):
             raise ValueError("`MC` has not all required names")
 
-        # This part is from skylab, add sinDec field for spatial PDF
-        self.X = np.lib.recfunctions.append_fields(
-            X, "sinDec", np.sin(X["dec"]), dtypes=np.float, usemask=False)
-        self.MC = np.lib.recfunctions.append_fields(
-            MC, "sinDec", np.sin(MC["dec"]), dtypes=np.float, usemask=False)
+        # Setup spatial bg spline args
+        required_keys = ["bins"]
+        opt_keys = {"k": 3}
+        self.bg_spline_args = fill_dict_defaults(bg_spline_args, required_keys,
+                                                 opt_keys)
 
-        self.livetime = livetime
+        # Setup spatial signal PDF args
+        opt_keys = {"kent": True}
+        self.signal_pdf_args = fill_dict_defaults(signal_pdf_args, [], opt_keys)
+
+        # Add sin_dec field for usage in spatial PDF (code taken from skylab)
+        # self.X = numpy.lib.recfunctions.append_fields(
+        #     X, "sin_dec", np.sin(X["dec"]), dtypes=np.float, usemask=False)
+        # self.MC = numpy.lib.recfunctions.append_fields(
+        #     MC, "sin_dec", np.sin(MC["dec"]), dtypes=np.float, usemask=False)
+
+        # Setup common variables
         self.rndgen = check_random_state(random_state)
-
+        self.X = X
+        self.MC = MC
+        self.livetime = livetime
         self._nX = len(X)
         self._nMC = len(MC)
         self._SECINDAY = 24. * 60. * 60.
 
-        # Scramble data if not unblinded. Do this after seed has been set
-        if scramble:
-            self.X["ra"] = self.rndgen.uniform(0., 2. * np.pi, self._nX)
-        else:
-            print("\t####################################\n"
-                  "\t# Working on >> UNBLINDED << data! #\n"
-                  "\t####################################\n")
-
         # Create PDFs used in the LLH from global data and MC
+        _bins = self.bg_spline_args["bins"]
+        if np.any(_bins < -1) or np.any(_bins > 1):
+            raise ValueError("Bins for BG spline not in sin_dec range [-1, 1].")
+        sin_dec = np.sin(self.X["dec"])
+        self._spatial_bg_spl = self._create_spatial_bg_spline(sin_dec)
 
         return
 
+    # Public Methods
     @docs.dedent
     def lnllh(self, X, theta, args):
         """
@@ -231,7 +259,7 @@ class GRBLLH(LLH):
 
     # Private Methods
     # Time PDFs
-    def _soverb_time(self, t, t0, dt, nsig):
+    def _soverb_time(self, t, t0, dt, nsig=4.):
         """
         Time signal over background PDF.
 
@@ -250,8 +278,9 @@ class GRBLLH(LLH):
         dt : array-like, shape (2)
             Time window [start, end] in seconds centered at t0 in which the
             signal pdf is assumed to be uniform.
-        nsig : float
-            Clip the gaussian edges at nsig * dt
+        nsig : float, optional
+            Clip the gaussian edges at nsig * dt to have finite support.
+            (default: 4.)
         """
         dt = np.atleast_1d(dt)
         if len(dt) != 2:
@@ -292,74 +321,73 @@ class GRBLLH(LLH):
         ratio = pdf / bg_pdf
         return ratio
 
-    # Signal PDFs
-    def spatial_SoB(src_ra, src_dec, ev_ra, ev_dec, ev_sig,
-                    sindec_log_bg_spline, kent=True):
-        S = spatial_signal(src_ra, src_dec, ev_ra, ev_dec, ev_sig, kent)
-        B = spatial_background(ev_sin_dec, sindec_log_bg_spline)
+    # Spatial PDFs
+    # def _sob_spatial(src_ra, src_dec, ev_ra, ev_dec, ev_sig, kent=True):
+    #     S = spatial_signal(src_ra, src_dec, ev_ra, ev_dec, ev_sig, kent)
+    #     B = spatial_background(ev_sin_dec, sindec_log_bg_spline)
 
-        SoB = np.zeros_like(S)
-        B = np.repeat(B[np.newaxis, :], repeats=S.shape[0], axis=0)
-        m = B > 0
-        SoB[m] = S[m] / B[m]
+    #     SoB = np.zeros_like(S)
+    #     B = np.repeat(B[np.newaxis, :], repeats=S.shape[0], axis=0)
+    #     m = B > 0
+    #     SoB[m] = S[m] / B[m]
 
-        return SoB
+    #     return SoB
 
-    def spatial_background(ev_sin_dec, sindec_log_bg_spline):
+    def _pdf_spatial_background(self, ev_sin_dec):
         """
-        Calculate the value of the backgournd PDF for each event from a previously
-        created spline, interpolating the declination distribution of the data.
+        Calculate the value of the background PDF for each event.
+
+        PDF is uniform in right-ascension and described by a spline fitted to
+        data in sinus declination.
 
         Parameters
         ----------
-        ev_sin_dec : array-like
-            Sinus Declination coordinates of each event, [-1, 1].
-        sindec_log_bg_spline : scipy.interpolate.InterpolatingSpline
-            Spline returning the logarithm of the bg PDF at given sin_dec values.
+        ev_sin_dec : array-like, shape (nevts)
+            Sinus declination coordinates of each event, in range [-1, 1].
 
         Returns
         -------
-        B : array-like
+        B : array-like, shape (nevts)
             The value of the background PDF for each event.
         """
-        return 1. / 2. / np.pi * np.exp(sindec_log_bg_spline(ev_sin_dec))
+        return 1. / (2. * np.pi) * np.exp(self._spatial_bg_spl(ev_sin_dec))
 
-    def spatial_signal(self, src_ra, src_dec, ev_ra, ev_dec, ev_sig, kent=True):
+    def _pdf_spatial_signal(self, src_ra, src_dec, ev_ra, ev_dec, ev_sig):
         """
         Spatial distance PDF between source position(s) and event positions.
 
         Signal is assumed to cluster around source position(s).
         The PDF is a convolution of a delta function for the localized sources
-        and a Kent (gaussian on a sphere) distribution with the events
-        positional reconstruction error as width.
+        and a Kent (or gaussian) distribution with the events positional
+        reconstruction error as width.
 
-        Multiplie source positions can be given, to use it in a stacked
-        search.
+        If `self.kent` is True a Kent distribtuion is used, where the kappa
+        is chosen, so that the same amount of probability as in the 2D gaussian
+        is inside a circle with radius `ev_sig` per event.
+
+        Multiple source positions can be given, to use it in a stacked search.
 
         Parameters
         -----------
-        src_ra : array-like
-            Src positions in equatorial RA in radian: [0, 2pi].
-        src_dec : array-like
-            Src positions in equatorial DEC in radian: [-pi/2, pi/2].
-        ev_ra : array-like
-            Event positions in equatorial RA in radian: [0, 2pi].
-        ev_dec : array-like
-            Event positions in equatorial DEC in radian: [-pi/2, pi/2].
-        ev_sig : array-like
-            Event positional reconstruction error in radian (eg. Paraboloid).
+        src_ra, src_dec : array-like, shape (nsrc)
+            Source positions in equatorial right-ascension, [0, 2pi] and
+            declination, [-pi/2, pi/2], given in radian.
+        ev_ra, ev_dec : array-like, shape (nevts)
+            Event positions in equatorial right-ascension, [0, 2pi] and
+            declination, [-pi/2, pi/2], given in radian.
+        ev_sig : array-like, shape (nevts)
+            Event positional reconstruction errors in radian (eg. Paraboloid).
 
         Returns
         --------
         S : array-like, shape(n_sources, n_events)
             Spatial signal probability for each event and each source.
-
         """
         # Shape (n_sources, 1), suitable for 1 src or multiple srcs
         src_ra = np.atleast_1d(src_ra)[:, np.newaxis]
         src_dec = np.atleast_1d(src_dec)[:, np.newaxis]
 
-        # Dot product in polar coordinates
+        # Dot product in polar coordinates, broadcasting applies here
         cosDist = (np.cos(src_ra - ev_ra) *
                    np.cos(src_dec) * np.cos(ev_dec) +
                    np.sin(src_dec) * np.sin(ev_dec))
@@ -367,11 +395,11 @@ class GRBLLH(LLH):
         # Handle possible floating precision errors
         cosDist = np.clip(cosDist, -1, 1)
 
-        if kent:
+        if self.signal_pdf_args["kent"]:
             # Stabilized version for possibly large kappas
             kappa = 1. / ev_sig**2
             S = (kappa / (2. * np.pi * (1. - np.exp(-2. * kappa))) *
-                 np.exp(kappa * (cosDist - 1. )))
+                 np.exp(kappa * (cosDist - 1.)))
         else:
             # Otherwise use standard symmetric 2D gaussian
             dist = np.arccos(cosDist)
@@ -380,41 +408,42 @@ class GRBLLH(LLH):
 
         return S
 
-    def _create_spatial_bg_spline(sinDec, bins=100, range=None, k=3):
+    def _create_spatial_bg_spline(self, sin_dec):
         """
         Fit an interpolating spline to the a histogram of sin(dec).
 
-        The spline is fitted to the logarithm of the histogram, to avoid
-        ringing. Normalization is done by normalizing the hist, so it may be
-        slightly off, but that's tolerable.
+        The spline is fitted to the *natural logarithm* of the histogram, to
+        avoid ringing. Normalization is done by normalizing the hist, so it may
+        be slightly off, but that's tolerable.
+
+        Fit parameters are controlled by the `self.bg_spline_args` dict.
 
         Parameters
         ----------
-        sinDec : array-like
-            Sinus declination coorcinates of each event, [-1, 1].
-        bins : int or array-like
-            Binning passed to `np.histogram`. (default: 100)
-        range : array-like
-            Lower and upper boundary for the histogram. (default: None)
-        k : int
-            Order of the spline. (default: 3)
+        sin_dec
+            See _pdf_spatial_background, Parameters
 
         Returns
         -------
-        spl : scipy.interpolate.InterpolatingSpline
+        _spatial_bg_spl : scipy.interpolate.InterpolatingSpline
             Spline object interpolating the histogram. Must be evaluated with
-            sin(dec) and exponentiated to give the correct values.
-            Spline is interpolating outside it's definition range.
+            sin(dec) and exponentiated to give the correct PDF values.
+            Spline is interpolated outside it's definition range.
         """
-        hist, bins = np.histogram(sinDec, bins=bins,
-                                  range=range, density=True)
+        bins = self.bg_spline_args["bins"]
+        k = self.bg_spline_args["k"]
+
+        if np.any((sin_dec < bins[0]) | (sin_dec > bins[-1])):
+            raise ValueError("Not all events fall into given bins range. If " +
+                             "this is intended, please remove them beforehand.")
+
+        # Make normalised hist to fit the spline to x, y pairs
+        hist, bins = np.histogram(sin_dec, bins=bins, density=True)
 
         if np.any(hist <= 0.):
-            estr = ("Declination hist bins empty, this must not happen. Empty " +
-                    "bins: {0}".format(np.arange(len(bins) - 1)[hist <= 0.]))
-            raise ValueError(estr)
-        elif np.any((sinDec < bins[0]) | (sinDec > bins[-1])):
-            raise ValueError("Data outside of declination bins!")
+            raise ValueError("Got empty sin_dec hist bins, this must not " +
+                             "happen. Empty bins idx:\n{}".format(
+                                 np.arange(len(bins) - 1)[hist <= 0.]))
 
         mids = 0.5 * (bins[:-1] + bins[1:])
         return sci.InterpolatedUnivariateSpline(mids, np.log(hist), k=k, ext=0)
