@@ -276,7 +276,7 @@ class GRBLLH(LLH):
             - "logE": Per event energy proxy, given in log10(1/GeV).
             - "sigma": Per event positional uncertainty, given in radians. It is
               assumed, that a circle with radius `sigma` contains approximatly
-              :math:`1\sigma` (\~39\%) of probability of the reconstrucion
+              :math:`1\sigma` (~0.39) of probability of the reconstrucion
               likelihood space.
 
         theta : dict
@@ -291,7 +291,7 @@ class GRBLLH(LLH):
 
             - "ns": Number of expected background events in the time window.
             - "src_t": Source occurence time in MJD days.
-            - "dt": Time window [start, end] in seconds centered at src_t in
+            - "dt": Time window [start, end] in seconds centered at `src_t` in
               which the signal PDF is assumed to be uniform.
             - "src_ra", "src_dec": Position of the source, in equatorial
               coordinates given in radian.
