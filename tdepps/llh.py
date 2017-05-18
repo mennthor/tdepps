@@ -80,14 +80,18 @@ class LLH(object):
 
         Parameters
         ----------
-        X, theta, args
-            See LLH.lnllh, Paramters
+        X : record-array
+            Fixed data set the LLH depends on. dtypes are ["name", type].
+        theta : dict
+            Parameter set {"par_name": value} to evaluate the ln-LLH at.
+        args : dict
+            Other fixed parameters {"par_name": value}, the LLH depents on.
 
         Returns
         -------
         lnllh_ratio : float
-            Natural logarithm of the LLH ratio for the given `X`, `theta` and
-            `args`.
+            Lambda test statistic, 2 times the natural logarithm of the LLH
+            ratio for the given `X`, `theta` and `args`.
         """
         raise NotImplementedError("LLH is an interface.")
 
@@ -255,26 +259,6 @@ class GRBLLH(LLH):
             mc_sin_dec, MC["logE"], MC["trueE"], MC["ow"])
         return
 
-    # Public Methods
-    @docs.dedent
-    def lnllh(self, X, theta, args):
-        """
-        %(LLH.lnllh.summary)s
-
-        Parameters
-        ----------
-        %(LLH.lnllh.parameters)s
-            For GRBLLH, args must contain keys:
-
-            - "nb", float: Expected number of background events.
-
-        Returns
-        -------
-        %(LLH.lnllh.returns)s
-        """
-        nb = args["nb"]
-        return nb
-
     @docs.dedent
     def lnllh_ratio(self, X, theta, args):
         """
@@ -282,15 +266,69 @@ class GRBLLH(LLH):
 
         Parameters
         ----------
-        %(LLH.lnllh_ratio.parameters)s
+        X : record-array
+            Fixed data set the LLH depends on. dtypes are ["name", type].
+            Here `X` must have keys:
+
+            - "timeMJD": Per event times in MJD days.
+            - "ra", "sinDec": Per event right-ascension positions in equatorial
+              coordinates, given in radians and sinus declination in [-1, 1].
+            - "logE": Per event energy proxy, given in log10(1/GeV).
+            - "sigma": Per event positional uncertainty, given in radians. It is
+              assumed, that a circle with radius `sigma` contains approximatly
+              :math:`1\sigma` (\~39\%) of probability of the reconstrucion
+              likelihood space.
+
+        theta : dict
+            Parameter set {"par_name": value} to evaluate the ln-LLH at.
+            Here the LLH depends on:
+
+            - "ns": Number of signal events that we want to fit.
+
+        args : dict
+            Other fixed parameters {"par_name": value}, the LLH depents on.
+            Here `args` must have keys:
+
+            - "ns": Number of expected background events in the time window.
+            - "src_t": Source occurence time in MJD days.
+            - "dt": Time window [start, end] in seconds centered at src_t in
+              which the signal PDF is assumed to be uniform.
+            - "src_ra", "src_dec": Position of the source, in equatorial
+              coordinates given in radian.
+
 
         Returns
         -------
         %(LLH.lnllh_ratio.returns)s
         """
+        # Get data values
+        t = X["timeMJD"]
+        ev_ra = X["ra"]
+        ev_sin_dec = X["sinDec"]
+        ev_logE = X["logE"]
+        ev_sig = X["sigma"]
+
+        # Get variable parameters
+        ns = theta["ns"]
+
+        # Get other fixed paramters
+        nb = args["nb"]
+        src_t = args["src_t"]
+        dt = args["dt"]
+        src_ra = args["src_ra"]
+        src_dec = args["src_dec"]
+
+        # Per event probabilities
+        sob = (self._soverb_time(t, src_t, dt) *
+               self._soverb_spatial(src_ra, src_dec, ev_ra,
+                                    ev_sin_dec, ev_sig) *
+               self._soverb_energy(ev_sin_dec, ev_logE))
+
+        # Teststatistic 2 * ln(LLH-ratio) for each given ns
+        return 2. * (-ns + np.sum(np.log(ns * sob / nb + 1.)))
 
     # Signal over background probabilities for time, spatial and energy PDFs
-    def _soverb_time(self, t, t0, dt):
+    def _soverb_time(self, t, src_t, dt):
         """
         Time signal over background ratio.
 
@@ -305,11 +343,11 @@ class GRBLLH(LLH):
         ----------
         t : array-like
             Times given in MJD for which we want to evaluate the ratio.
-        t0 : float
-            Time of the source event.
+        src_t : float
+            Time of the source event in MJD.
         dt : array-like, shape (2)
-            Time window [start, end] in seconds centered at t0 in which the
-            signal pdf is assumed to be uniform.
+            Time window [start, end] in seconds centered at src_t in which the
+            signal PDF is assumed to be uniform.
 
         Returns
         -------
@@ -323,9 +361,9 @@ class GRBLLH(LLH):
         if dt[0] >= dt[1]:
             raise ValueError("Interval 'dt' must not be negative or zero.")
 
-        # Normalize times from data relative to t0 in seconds
+        # Normalize times from data relative to src_t in seconds
         # Stability: Multiply before subtracting avoids small number rounding?
-        _t = t * self._SECINDAY - t0 * self._SECINDAY
+        _t = t * self._SECINDAY - src_t * self._SECINDAY
 
         # Create signal PDF
         # Constrain sig_t to [2, 30]s regardless of uniform time window
@@ -369,8 +407,8 @@ class GRBLLH(LLH):
 
         Parameters
         ----------
-        src_ra, src_dec : array-like, shape (nsrc)
-            Source positions in equatorial right-ascension, [0, 2pi] and
+        src_ra, src_dec : float
+            Source position in equatorial right-ascension, [0, 2pi] and
             declination, [-pi/2, pi/2], given in radian.
         ev_ra, ev_sin_dec : array-like, shape (nevts)
             Event positions in equatorial right-ascension, [0, 2pi] in radian
@@ -380,9 +418,8 @@ class GRBLLH(LLH):
 
         Returns
         -------
-        soverb_spatial_ratio : array-like, shape (nsrcs, nevts)
-            Ratio of the spatial signal and background PDF for each given event
-            and each given source position.
+        soverb_spatial_ratio : array-like, shape (nevts)
+            Ratio of the spatial signal and background PDF for each given event.
         """
         S = self._pdf_spatial_signal(src_ra, src_dec, ev_ra, ev_sin_dec, ev_sig)
         B = self._pdf_spatial_background(ev_sin_dec)
@@ -483,14 +520,10 @@ class GRBLLH(LLH):
 
         Returns
         --------
-        S : array-like, shape(n_sources, n_events)
+        S : array-like, shape(n_events)
             Spatial signal probability for each event and each source.
         """
-        # Shape (n_sources, 1), suitable for 1 src or multiple srcs
-        src_ra = np.atleast_1d(src_ra)[:, np.newaxis]
-        src_dec = np.atleast_1d(src_dec)[:, np.newaxis]
-
-        # Dot product in polar coordinates, broadcasting applies here
+        # Dot product to get great circle distance
         cosDist = (np.cos(src_ra - ev_ra) *
                    np.cos(src_dec) * np.sqrt(1. - ev_sin_dec**2) +
                    np.sin(src_dec) * ev_sin_dec)
