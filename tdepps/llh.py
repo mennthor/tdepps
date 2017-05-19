@@ -192,7 +192,7 @@ class GRBLLH(LLH):
     -----
     .. [1] Barlow, "Statistics - A Guide to the Use of Statistical Methods in
            the Physical Sciences". Chap. 5.4, p. 90. Wiley (1989)
-    .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
+    .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight # noqa: 501
     .. [3] https://en.wikipedia.org/wiki/Kent_distribution
     """
     def __init__(self, X, MC, spatial_pdf_args, energy_pdf_args,
