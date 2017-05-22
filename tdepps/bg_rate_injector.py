@@ -27,13 +27,13 @@ class BGRateInjector(object):
     @docs.get_sectionsf("BGRateInjector.fit",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def fit(self, X):
+    def fit(self, T):
         """
         Build the injection model with the provided data.
 
         Parameters
         ----------
-        X : array_like, shape (n_samples)
+        T : array_like, shape (n_samples)
             MJD times of experimental data.
         """
         raise NotImplementedError("BGInjector is an interface.")
@@ -42,7 +42,7 @@ class BGRateInjector(object):
     @docs.get_sectionsf("BGRateInjector.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def sample(self, t, trange, ntrials=1, random_state=None):
+    def sample(self, t, trange, ntrials=1, poisson=True, random_state=None):
         """
         Generate random samples from the fitted model for one source event time
         and corrseponding time frame.
@@ -59,6 +59,10 @@ class BGRateInjector(object):
             Time window in seconds relativ to the given time t.
         ntrials : int, optional
             Number of trials to sample at once. (default: 1)
+        poisson : bool, optional
+            If True sample the number of events per trial using a poisson
+            distribution, otherwise they are the next integer to the expectation
+            value. (default: True)
         random_state : seed, optional
             Turn seed into a np.random.RandomState instance. See
             `sklearn.utils.check_random_state`. (default: None)
@@ -111,12 +115,12 @@ class RunlistBGRateInjector(BGRateInjector):
         return
 
     @docs.dedent
-    def fit(self, X, x0=None, remove_zero_runs=False, **kwargs):
+    def fit(self, T, x0=None, remove_zero_runs=False, **kwargs):
         """
         %(BGRateInjector.fit.summary)s
 
         Takes data and a binning derived from the runlist. Bins the data,
-        normalizes to a rate in HZ and fits a periodic function over the whole
+        normalizes to a rate in HZ and fits a RateFunction over the whole
         time span to it. This function serves as a rate per time model.
 
         Parameters
@@ -134,10 +138,10 @@ class RunlistBGRateInjector(BGRateInjector):
         Returns
         -------
         rate_fun : function
-            Function with the best fit parameters plugged in.
+            Rate function with the best fit parameters plugged in.
         """
         # Put data into run bins to fit them
-        h = self._create_runtime_hist(X, self.goodrun_dict, remove_zero_runs)
+        h = self._create_runtime_hist(T, self.goodrun_dict, remove_zero_runs)
         rate = h["rate"]
         rate_std = h["rate_std"]
         binmids = 0.5 * (h["start_mjd"] + h["stop_mjd"])
@@ -152,7 +156,7 @@ class RunlistBGRateInjector(BGRateInjector):
         return self.best_estimator
 
     @docs.dedent
-    def sample(self, t, trange, ntrials=1, random_state=None):
+    def sample(self, t, trange, ntrials=1, poisson=True, random_state=None):
         """
         %(BGRateInjector.sample.summary)s
 
@@ -173,7 +177,10 @@ class RunlistBGRateInjector(BGRateInjector):
         expect = self.best_estimator_integral(t, trange)
 
         # Sample single number of events from poisson distribution
-        nevents = np.random.poisson(lam=expect, size=ntrials)
+        if poisson:
+            nevents = np.random.poisson(lam=expect, size=ntrials)
+        else:
+            nevents = np.round(expect).astype(int)
 
         # Sample all nevents samples from the rate function at once
         tot_nevts = np.sum(nevents)
@@ -234,14 +241,14 @@ class RunlistBGRateInjector(BGRateInjector):
         return goodrun_dict
 
     # Private Methods
-    def _create_runtime_hist(self, X, goodrun_dict, remove_zero_runs=False):
+    def _create_runtime_hist(self, T, goodrun_dict, remove_zero_runs=False):
         """
         Creates time bins [start_MJD_i, stop_MJD_i] for each run i and bin the
         experimental data to calculate the rate for each run.
 
         Parameters
         ----------
-        X, remove_zero_runs
+        T, remove_zero_runs
             See RunlistBGRateInjector.fit, Parameters
         goodrun_dict
             See RunlistBGRateInjector.create_goodrun_dict, Returns
@@ -267,15 +274,15 @@ class RunlistBGRateInjector(BGRateInjector):
         # Histogram time values in each run manually
         evts = np.zeros_like(run, dtype=int)
         for i, (start, stop) in enumerate(zip(start_mjd, stop_mjd)):
-            mask = (X >= start) & (X < stop)
+            mask = (T >= start) & (T < stop)
             evts[i] = np.sum(mask)
             tot_evts += np.sum(mask)
 
         # Crosscheck, if we got all events and didn't double count
-        if not tot_evts == len(X):
+        if not tot_evts == len(T):
             print("Events selected : ", tot_evts)
-            print("Events in X     : ", len(X))
-            raise ValueError("Not all events in 'X' were sorted in bins. If " +
+            print("Events in T     : ", len(T))
+            raise ValueError("Not all events in 'T' were sorted in bins. If " +
                              "this is intended, please remove them beforehand.")
 
         if remove_zero_runs:
