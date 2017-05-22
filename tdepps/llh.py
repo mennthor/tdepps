@@ -16,7 +16,7 @@ class LLH(object):
     Classes must implement functions ["lnllh", "lnllh_ratio"].
     """
     def __init__(self):
-        self._DESCRIBES = ["llh"]
+        self._DESCRIBES = ["lnllh_ratio"]
         print("Interface only. Describes functions: ", self._DESCRIBES)
         return
 
