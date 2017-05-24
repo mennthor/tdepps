@@ -308,7 +308,7 @@ class GRBLLH(LLH):
         ev_logE = X["logE"]
         ev_sig = X["sigma"]
 
-        # Get variable parameters
+        # Get variable parameters, gradient for each par in theta
         ns = theta["ns"]
 
         # Get other fixed paramters
@@ -325,7 +325,10 @@ class GRBLLH(LLH):
                self._soverb_energy(ev_sin_dec, ev_logE))
 
         # Teststatistic 2 * ln(LLH-ratio) for each given ns
-        return 2. * (-ns + np.sum(np.log(ns * sob / nb + 1.)))
+        x = ns * sob / nb + 1.
+        TS = 2. * (-ns + np.sum(np.log(x)))
+        grad = 2. * (-1. + np.sum(1. / x * sob / nb))
+        return TS, np.atleast_1d(grad)
 
     # Signal over background probabilities for time, spatial and energy PDFs
     def _soverb_time(self, t, src_t, dt):
