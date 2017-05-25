@@ -358,20 +358,11 @@ class GRBLLH(LLH):
             Ratio of the time signal and background PDF for each given time t.
         """
         nsig = self.time_pdf_args["nsig"]
-        nevts = len(t)
-        nsrc = len(src_t)
-        src_t = np.atleast_1d(src_t)
-        dt = np.atleast_2d(dt)
-        if dt.shape[1] != 2:
-            raise ValueError("Timeframe 'dt' must be [start, end] in seconds" +
-                             " for each source.")
-        if dt.shape[0] != nsrc:
-            raise ValueError("Length of 'src_t' and 'dt' must be equal.")
-        if np.any(dt[:, 0] >= dt[:, 1]):
+        dt = np.atleast_1d(dt)
+        if len(dt) != 2:
+            raise ValueError("Timeframe 'dt' must be [start, end] in seconds.")
+        if dt[0] >= dt[1]:
             raise ValueError("Interval 'dt' must not be negative or zero.")
-
-        # Each src in its own dimension for proper broadcasting
-        src_t = np.atleast_2d(src_t).reshape(nsrc, 1)
 
         # Normalize times from data relative to src_t in seconds
         # Stability: Multiply before subtracting avoids small number rounding?
@@ -382,38 +373,28 @@ class GRBLLH(LLH):
         dt_tot = np.diff(dt)
         sig_t = np.clip(dt_tot, 2, 30)
         sig_t_clip = nsig * sig_t
-        gaus_norm = np.sqrt(2 * np.pi) * sig_t
+        gaus_norm = (np.sqrt(2 * np.pi) * sig_t)
 
-        # Broadcast
-        dt0 = dt[:, 0].reshape(nsrc, 1)
-        dt1 = dt[:, 1].reshape(nsrc, 1)
         # Split in PDF regions: gauss rising, uniform, gauss falling
-        gr = (_t < dt0) & (_t >= dt0 - sig_t_clip)
-        gf = (_t > dt1) & (_t <= dt1 + sig_t_clip)
-        uni = (_t >= dt0) & (_t <= dt1)
+        gr = (_t < dt[0]) & (_t >= dt[0] - sig_t_clip)
+        gf = (_t > dt[1]) & (_t <= dt[1] + sig_t_clip)
+        uni = (_t >= dt[0]) & (_t <= dt[1])
 
-        # Broadcast
-        _dt0 = np.repeat(dt[:, 0].reshape(nsrc, 1), axis=1, repeats=nevts)
-        _dt1 = np.repeat(dt[:, 1].reshape(nsrc, 1), axis=1, repeats=nevts)
-        _sig_t = np.repeat(sig_t.reshape(nsrc, 1), axis=1, repeats=nevts)
-        _gaus_norm = np.repeat(gaus_norm.reshape(nsrc, 1), axis=1, repeats=nevts)
-        # Get pdf values in the masked regions
-        pdf = np.zeros_like(_t, dtype=np.float)
-        pdf[gr] = scs.norm.pdf(_t[gr], loc=_dt0[gr], scale=_sig_t[gr])
-        pdf[gf] = scs.norm.pdf(_t[gf], loc=_dt1[gf], scale=_sig_t[gf])
+        pdf = np.zeros_like(t, dtype=np.float)
+        pdf[gr] = scs.norm.pdf(_t[gr], loc=dt[0], scale=sig_t)
+        pdf[gf] = scs.norm.pdf(_t[gf], loc=dt[1], scale=sig_t)
         # Connect smoothly with the gaussians
-        pdf[uni] = 1. / _gaus_norm[uni]
+        pdf[uni] = 1. / gaus_norm
 
-        # Normalize signal distribtuion: Prob in half gaussians + uniform part
-        dcdf = (scs.norm.cdf(nsig, loc=0, scale=1) -
-                scs.norm.cdf(-nsig, loc=0, scale=1))
+        # Normalize signal distribtuion: Prob in gaussians + uniform part
+        dcdf = (scs.norm.cdf(dt[1] + sig_t_clip, loc=dt[1], scale=sig_t) -
+                scs.norm.cdf(dt[0] - sig_t_clip, loc=dt[0], scale=sig_t))
         norm = dcdf + dt_tot / gaus_norm
         pdf /= norm
 
         # Calculate the ratio signal / background
         bg_pdf = 1. / (dt_tot + 2 * sig_t_clip)
-        pdf /= bg_pdf
-        return pdf
+        return pdf / bg_pdf
 
     def _soverb_spatial(self, src_ra, src_dec, ev_ra, ev_sin_dec, ev_sig):
         """
