@@ -9,3 +9,4 @@ tdepps package
    tdepps.bg_rate_injector
    tdepps.rate_function
    tdepps.llh
+   tdepps.analysis
