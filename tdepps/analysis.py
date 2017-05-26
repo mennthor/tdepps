@@ -3,7 +3,8 @@ import scipy.optimize as sco
 
 from tdepps.llh import GRBLLH
 
-from anapymods3.general.misc import fill_dict_defaults
+from anapymods3.general.misc import (fill_dict_defaults,
+                                     flatten_list_of_1darrays)
 
 
 class TransientsAnalysis(object):
@@ -63,17 +64,53 @@ class TransientsAnalysis(object):
         signal_inj : `tdepps.signal_injector` instance, optional
             Injector to generate signal events. If None, pure background trials
             are done. (default: None)
+
+        Returns
+        -------
+        res : list
+            Fit results from each trial.
         """
         if signal_inj is not None:
             raise NotImplementedError("Signal injection not yet implemented.")
 
-        # These are set by the event injectors later
-        X = None
-        args = None
+        def get_pseudo_events(src_idx):
+            _X = []
+            times = []
+            rnd_ra = []
+            args = []
 
-        res = np.empty(n_trials, dtype=np.float)
+            for src_idx in range(self.n_srcs):
+                # Samples times and thus number of bg expectated events
+                _t = self.srcs["t"][src_idx]
+                dt = [self.srcs["dt0"][src_idx], self.srcs["dt1"][src_idx]]
+                _times = bg_rate_inj.sample(t=_t, trange=dt, ntrials=1)[0]
+                nb = len(_times)
+                times.append(_times)
+                args.append({"nb": nb})
+                # Sample rest of features
+                if nb > 0:
+                    _X.append(bg_inj.sample(n_samples=nb))
+                    rnd_ra.append(np.random.uniform(0, 2. * np.pi, size=nb))
+
+            names = ["ra", "sinDec", "timeMJD", "logE", "sigma"]
+            dtype = [(n, t) for (n, t) in zip(names, len(names) * [np.float])]
+            nb_tot = np.sum([d["nb"] for d in args])
+            X = np.empty((nb_tot, ), dtype=dtype)
+            # Make output array in compatible format
+            _X = flatten_list_of_1darrays(_X)
+            X["ra"] = flatten_list_of_1darrays(rnd_ra)
+            X["sinDec"] = np.sin(_X[:, 1])
+            X["logE"] = _X[:, 0]
+            X["sigma"] = _X[:, 2]
+            X["timeMJD"] = flatten_list_of_1darrays(times)
+
+            return X, args
+
+        res = []
         for i in range(n_trials):
-            res[i] = self.fit_lnllh_ratio_params(X, theta0, args, **kwargs)
+            # Inject background-like events
+            X, args = get_pseudo_events()
+            res.append(self.fit_lnllh_ratio_params(X, theta0, args, **kwargs))
 
         return res
 
@@ -107,6 +144,11 @@ class TransientsAnalysis(object):
             Here `args` must have keys:
 
             - "ns": Number of expected background events in the time window.
+
+        Returns
+        -------
+        res : `scipy.optimise.OptimizationResult`
+            Holding the information of the fit. Get result with `res.x`.
         """
         def _llh(x, weights):
             """
@@ -168,7 +210,7 @@ class TransientsAnalysis(object):
         # events to get the correct number of ns for each src window.
         weights = np.array([arg["nb"] for arg in args])
         if np.sum(weights) > 0:
-            weights /= np.sum(weights)
+            weights = weights /  np.sum(weights)
         else:  # Else uniform weights
             weights = np.ones_like(weights) / self.n_srcs
 
