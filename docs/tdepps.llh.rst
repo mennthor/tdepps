@@ -2,6 +2,6 @@ tdepps\.llh module
 ------------------
 
 .. automodule:: tdepps.llh
-    :members: LLH, GRBLLH
+    :members: GRBLLH
     :undoc-members:
     :show-inheritance:
