@@ -132,6 +132,7 @@ class KDEBGInjector(BGInjector):
         -------
         %(BGInjector.fit.returns)s
         """
+        # X = X.view(np.float).reshape(X.shape + (-1, ))
         self._n_features = X.shape[1]
         self._bounds = self._check_bounds(bounds)
         # TODO: Use real bounds via mirror method in KDE class
