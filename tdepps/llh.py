@@ -185,6 +185,10 @@ class GRBLLH(LLH):
         - "nsig", float, optional: The truncation of the gaussian edges of the
           signal PDF to have finite support. Given in units of sigma, must >= 3.
           (default: 4.)
+        - "sigma_t_min", float, optional: Minimum sigma of the gaussian edges.
+          The gaussian edges of the time signal PDF have at least this sigma.
+        - "sigma_t_max", float, optional: Maximum sigma of the gaussian edges.
+          The gaussian edges of the time signal PDF have maximal this sigma.
 
         (default: None)
 
@@ -235,7 +239,7 @@ class GRBLLH(LLH):
 
         # Setup time PDF args
         required_keys = []
-        opt_keys = {"nsig": 4.}
+        opt_keys = {"nsig": 4., "sigma_t_min": 2., "sigma_t_max": 30.}
         self.time_pdf_args = fill_dict_defaults(time_pdf_args.copy(),
                                                 required_keys, opt_keys)
         nsig = self.time_pdf_args["nsig"]
@@ -308,7 +312,7 @@ class GRBLLH(LLH):
         ev_logE = X["logE"]
         ev_sig = X["sigma"]
 
-        # Get variable parameters, gradient for each par in theta
+        # Get variable parameters
         ns = theta["ns"]
 
         # Get other fixed paramters
@@ -324,11 +328,41 @@ class GRBLLH(LLH):
                                     ev_sin_dec, ev_sig) *
                self._soverb_energy(ev_sin_dec, ev_logE))
 
+        # If mutliple srcs reduce signal, single src case is already included
+        sob = np.sum(sob, axis=1)
+
         # Teststatistic 2 * ln(LLH-ratio) for each given ns
         x = ns * sob / nb + 1.
         TS = 2. * (-ns + np.sum(np.log(x)))
         grad = 2. * (-1. + np.sum(1. / x * sob / nb))
         return TS, np.atleast_1d(grad)
+
+    def get_injection_trange(self, src_t, dt):
+        """
+        Returns the time window per source, in which the PDF ratio is defined.
+
+        Parameters
+        ----------
+        src_t : array-like, shape (nsrcs)
+            Times of each source event in MJD.
+        dt : array-like, shape (nsrcs, 2)
+            Time windows [start, end] in seconds centered at each src_t in
+            which the signal PDF is assumed to be uniform.
+
+        Returns
+        -------
+        trange : array-like, shape (nsrcs, 2)
+            Total time window per source [start, end] in seconds in which the
+            time PDF is defined and thus non-zero.
+        """
+        src_t, dt, sig_t, sig_t_clip = self._setup_time_windows(src_t, dt)
+
+        # Total time window per source in seconds
+        trange = np.empty_like(dt, dtype=np.float)
+        trange[:, 0] = dt[:, 0] - sig_t_clip.flatten()
+        trange[:, 1] = dt[:, 1] + sig_t_clip.flatten()
+
+        return trange
 
     # Signal over background probabilities for time, spatial and energy PDFs
     def _soverb_time(self, t, src_t, dt):
@@ -346,55 +380,64 @@ class GRBLLH(LLH):
         ----------
         t : array-like
             Times given in MJD for which we want to evaluate the ratio.
-        src_t : float
-            Time of the source event in MJD.
-        dt : array-like, shape (2)
-            Time window [start, end] in seconds centered at src_t in which the
-            signal PDF is assumed to be uniform.
+        src_t : array-like, shape (nsrcs)
+            Times of each source event in MJD.
+        dt : array-like, shape (nsrcs, 2)
+            Time windows [start, end] in seconds centered at each src_t in
+            which the signal PDF is assumed to be uniform.
 
         Returns
         -------
-        soverb_time_ratio : array-like, shape (len(t))
-            Ratio of the time signal and background PDF for each given time t.
+        soverb_time_ratio : array-like, shape (nsrcs, len(t))
+            Ratio of the time signal and background PDF for each given time `t`
+            and per source time `src_t`.
         """
         nsig = self.time_pdf_args["nsig"]
-        dt = np.atleast_1d(dt)
-        if len(dt) != 2:
-            raise ValueError("Timeframe 'dt' must be [start, end] in seconds.")
-        if dt[0] >= dt[1]:
-            raise ValueError("Interval 'dt' must not be negative or zero.")
 
-        # Normalize times from data relative to src_t in seconds
-        # Stability: Multiply before subtracting avoids small number rounding?
-        _t = t * self._SECINDAY - src_t * self._SECINDAY
+        # Setup input to proper shapes
+        src_t, dt, sig_t, sig_t_clip = self._setup_time_windows(src_t, dt)
+        nsrc = dt.shape[0]
+        dt_len = np.diff(dt, axis=1)
 
         # Create signal PDF
-        # Constrain sig_t to [2, 30]s regardless of uniform time window
-        dt_tot = np.diff(dt)
-        sig_t = np.clip(dt_tot, 2, 30)
-        sig_t_clip = nsig * sig_t
-        gaus_norm = (np.sqrt(2 * np.pi) * sig_t)
+        gaus_norm = np.sqrt(2 * np.pi) * sig_t
 
+        # Normalize times from data relative to src_t in seconds
+        # Stability: Multiply before subtracting avoids small number rounding(?)
+        _t = t * self._SECINDAY - src_t * self._SECINDAY
+
+        # Broadcast
+        dt0 = dt[:, 0].reshape(nsrc, 1)
+        dt1 = dt[:, 1].reshape(nsrc, 1)
         # Split in PDF regions: gauss rising, uniform, gauss falling
-        gr = (_t < dt[0]) & (_t >= dt[0] - sig_t_clip)
-        gf = (_t > dt[1]) & (_t <= dt[1] + sig_t_clip)
-        uni = (_t >= dt[0]) & (_t <= dt[1])
+        gr = (_t < dt0) & (_t >= dt0 - sig_t_clip)
+        gf = (_t > dt1) & (_t <= dt1 + sig_t_clip)
+        uni = (_t >= dt0) & (_t <= dt1)
 
-        pdf = np.zeros_like(t, dtype=np.float)
-        pdf[gr] = scs.norm.pdf(_t[gr], loc=dt[0], scale=sig_t)
-        pdf[gf] = scs.norm.pdf(_t[gf], loc=dt[1], scale=sig_t)
+        # Broadcast
+        nevts = len(t)
+        _dt0 = np.repeat(dt[:, 0].reshape(nsrc, 1), axis=1, repeats=nevts)
+        _dt1 = np.repeat(dt[:, 1].reshape(nsrc, 1), axis=1, repeats=nevts)
+        _sig_t = np.repeat(sig_t.reshape(nsrc, 1), axis=1, repeats=nevts)
+        _gaus_norm = np.repeat(gaus_norm.reshape(nsrc, 1),
+                               axis=1, repeats=nevts)
+        # Get pdf values in the masked regions
+        pdf = np.zeros_like(_t, dtype=np.float)
+        pdf[gr] = scs.norm.pdf(_t[gr], loc=_dt0[gr], scale=_sig_t[gr])
+        pdf[gf] = scs.norm.pdf(_t[gf], loc=_dt1[gf], scale=_sig_t[gf])
         # Connect smoothly with the gaussians
-        pdf[uni] = 1. / gaus_norm
+        pdf[uni] = 1. / _gaus_norm[uni]
 
-        # Normalize signal distribtuion: Prob in gaussians + uniform part
-        dcdf = (scs.norm.cdf(dt[1] + sig_t_clip, loc=dt[1], scale=sig_t) -
-                scs.norm.cdf(dt[0] - sig_t_clip, loc=dt[0], scale=sig_t))
-        norm = dcdf + dt_tot / gaus_norm
+        # Normalize signal distribtuion: Prob in half gaussians + uniform part
+        dcdf = (scs.norm.cdf(nsig, loc=0, scale=1) -
+                scs.norm.cdf(-nsig, loc=0, scale=1))
+        norm = dcdf + dt_len / gaus_norm
         pdf /= norm
 
         # Calculate the ratio signal / background
-        bg_pdf = 1. / (dt_tot + 2 * sig_t_clip)
-        return pdf / bg_pdf
+        bg_pdf = 1. / (dt_len + 2 * sig_t_clip)
+        pdf /= bg_pdf
+        return pdf
 
     def _soverb_spatial(self, src_ra, src_dec, ev_ra, ev_sin_dec, ev_sig):
         """
@@ -410,8 +453,8 @@ class GRBLLH(LLH):
 
         Parameters
         ----------
-        src_ra, src_dec : float
-            Source position in equatorial right-ascension, [0, 2pi] and
+        src_ra, src_dec : array-like, shape (nsrcs)
+            Source positions in equatorial right-ascension, [0, 2pi] and
             declination, [-pi/2, pi/2], given in radian.
         ev_ra, ev_sin_dec : array-like, shape (nevts)
             Event positions in equatorial right-ascension, [0, 2pi] in radian
@@ -421,8 +464,9 @@ class GRBLLH(LLH):
 
         Returns
         -------
-        soverb_spatial_ratio : array-like, shape (nevts)
-            Ratio of the spatial signal and background PDF for each given event.
+        soverb_spatial_ratio : array-like, shape (nsrcs, nevts)
+            Ratio of the spatial signal and background PDF for each given event
+            and for each source position.
         """
         S = self._pdf_spatial_signal(src_ra, src_dec, ev_ra, ev_sin_dec, ev_sig)
         B = self._pdf_spatial_background(ev_sin_dec)
@@ -433,7 +477,7 @@ class GRBLLH(LLH):
         """
         Energy signal over background ratio.
 
-        Energy has alot of seperation power, because signal is following an
+        Energy has a lot of seperation power, because signal is following an
         astrophysical flux, which becomes dominant at higher energies over the
         flux of atmospheric background neutrinos.
 
@@ -471,6 +515,50 @@ class GRBLLH(LLH):
         sob[valid] = np.exp(self._energy_spl(pts))
 
         return sob
+
+    # Time PDF helpers
+    def _setup_time_windows(self, src_t, dt):
+        """
+        Bring the given source times and time windows in proper shape.
+
+        Parameters
+        ----------
+        src_t, dt
+            See GRBLLH._soverb_time, Parameters
+
+        Returns
+        -------
+        src_t, dt
+            See GRBLLH._soverb_time, Parameters
+        sig_t : array-like, shape (nsrcs)
+            sigma of the gaussian edges of the time signal PDF.
+        sig_t_clip : array-like, shape (nsrcs)
+            Total length nsig * sig_t of the gaussian edges of each time window.
+        """
+        nsig = self.time_pdf_args["nsig"]
+        sigma_t_min = self.time_pdf_args["sigma_t_min"]
+        sigma_t_max = self.time_pdf_args["sigma_t_max"]
+
+        nsrc = len(src_t)
+        src_t = np.atleast_1d(src_t)
+        dt = np.atleast_2d(dt)
+        if dt.shape[1] != 2:
+            raise ValueError("Timeframe 'dt' must be [start, end] in seconds" +
+                             " for each source.")
+        if dt.shape[0] != nsrc:
+            raise ValueError("Length of 'src_t' and 'dt' must be equal.")
+        if np.any(dt[:, 0] >= dt[:, 1]):
+            raise ValueError("Interval 'dt' must not be negative or zero.")
+
+        # Each src in its own array for proper broadcasting
+        src_t = np.atleast_2d(src_t).reshape(nsrc, 1)
+
+        # Constrain sig_t to given min/max, regardless of uniform time window
+        dt_len = np.diff(dt, axis=1)
+        sig_t = np.clip(dt_len, sigma_t_min, sigma_t_max)
+        sig_t_clip = nsig * sig_t
+
+        return src_t, dt, sig_t, sig_t_clip
 
     # Spatial PDFs
     def _pdf_spatial_background(self, ev_sin_dec):
@@ -523,10 +611,15 @@ class GRBLLH(LLH):
 
         Returns
         --------
-        S : array-like, shape(n_events)
-            Spatial signal probability for each event and each source.
+        S : array-like, shape (nsrcs, nevts)
+            Spatial signal probability for each event and each source position.
         """
-        # Dot product to get great circle distance
+        nsrcs = len(np.atleast_1d(src_ra))
+        # Shape (nsrcs, 1) to use broadcasting to shape (nsrcs, nevts)
+        src_ra = np.atleast_2d(src_ra).reshape(nsrcs, 1)
+        src_dec = np.atleast_2d(src_dec).reshape(nsrcs, 1)
+
+        # Dot product to get great circle distance for every evt to every src
         cosDist = (np.cos(src_ra - ev_ra) *
                    np.cos(src_dec) * np.sqrt(1. - ev_sin_dec**2) +
                    np.sin(src_dec) * ev_sin_dec)
@@ -591,7 +684,7 @@ class GRBLLH(LLH):
         y = np.concatenate((y[[0]], y, y[[-1]]))
         return sci.InterpolatedUnivariateSpline(x, y, k=k, ext="extrapolate")
 
-    # Energy PDF
+    # Energy PDF helpers
     def _create_sin_dec_logE_spline(self, ev_sin_dec, ev_logE,
                                     mc_sin_dec, mc_logE, trueE, ow):
         """
