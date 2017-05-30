@@ -321,6 +321,7 @@ class GRBLLH(LLH):
         dt = args["dt"]
         src_ra = args["src_ra"]
         src_dec = args["src_dec"]
+        src_w_theo = args["src_w"]
 
         # Per event probabilities
         sob = (self._soverb_time(t, src_t, dt) *
@@ -328,14 +329,21 @@ class GRBLLH(LLH):
                                     ev_sin_dec, ev_sig) *
                self._soverb_energy(ev_sin_dec, ev_logE))
 
-        # If mutliple srcs reduce signal, single src case is already included
-        sob = np.sum(sob, axis=1)
+        # If mutliple srcs: sum over signal. Single src case already included
+        src_w = self.get_src_weights(src_ra, src_dec, src_w_theo)
+        nsrcs = len(src_ra)
+        src_w = src_w.reshape(nsrcs, 1) / np.sum(src_w)
+        sob = np.sum(sob * src_w, axis=0)
 
         # Teststatistic 2 * ln(LLH-ratio) for each given ns
         x = ns * sob / nb + 1.
         TS = 2. * (-ns + np.sum(np.log(x)))
         grad = 2. * (-1. + np.sum(1. / x * sob / nb))
         return TS, np.atleast_1d(grad)
+
+    def get_src_weights(self, src_ra, src_dec, src_w_theo):
+        # TODO: get detector weights from eff. Area for a specific gamma
+        return src_w_theo
 
     def get_injection_trange(self, src_t, dt):
         """
@@ -620,23 +628,23 @@ class GRBLLH(LLH):
         src_dec = np.atleast_2d(src_dec).reshape(nsrcs, 1)
 
         # Dot product to get great circle distance for every evt to every src
-        cosDist = (np.cos(src_ra - ev_ra) *
-                   np.cos(src_dec) * np.sqrt(1. - ev_sin_dec**2) +
-                   np.sin(src_dec) * ev_sin_dec)
+        cos_dist = (np.cos(src_ra - ev_ra) *
+                    np.cos(src_dec) * np.sqrt(1. - ev_sin_dec**2) +
+                    np.sin(src_dec) * ev_sin_dec)
 
         # Handle possible floating precision errors
-        cosDist = np.clip(cosDist, -1, 1)
+        cos_dist = np.clip(cos_dist, -1, 1)
 
         if self.spatial_pdf_args["kent"]:
             # Stabilized version for possibly large kappas
             kappa = 1. / ev_sig**2
             S = (kappa / (2. * np.pi * (1. - np.exp(-2. * kappa))) *
-                 np.exp(kappa * (cosDist - 1.)))
+                 np.exp(kappa * (cos_dist - 1.)))
         else:
             # Otherwise use standard symmetric 2D gaussian
-            dist = np.arccos(cosDist)
+            dist = np.arccos(cos_dist)
             ev_sig_2 = 2 * ev_sig**2
-            S = np.exp(-dist**2 / (ev_sig_2)) / (np.pi * ev_sig_2)
+            S = np.exp(-dist**2 / ev_sig_2) / (np.pi * ev_sig_2)
 
         return S
 
