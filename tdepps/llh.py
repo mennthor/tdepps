@@ -5,98 +5,8 @@ import scipy.interpolate as sci
 from anapymods3.general.misc import fill_dict_defaults
 from anapymods3.plots.general import get_binmids
 
-import docrep  # Reuse docstrings
-docs = docrep.DocstringProcessor()
 
-
-class LLH(object):
-    """
-    Interface for Likelihood functions used in PS analyses.
-
-    Classes must implement functions ["lnllh", "lnllh_ratio"].
-    """
-    def __init__(self):
-        self._DESCRIBES = ["lnllh_ratio"]
-        print("Interface only. Describes functions: ", self._DESCRIBES)
-        return
-
-    @docs.get_summaryf("LLH.lnllh")
-    @docs.get_sectionsf("LLH.lnllh", sections=["Parameters", "Returns"])
-    @docs.dedent
-    def lnllh(self, X, theta, args):
-        r"""
-        Return the natural logarithm ln-Likelihood (ln-LLH) value for a given
-        set of data `X` and parameters `theta`.
-
-        The ln-LLH of a parameter `theta` of a parametric probability model
-        under the given data `X` is the product of all probability values of
-        the given data under the model assumption:
-
-        .. math::
-
-          \ln P(X|\theta) = \ln \mathcal{L}(\theta|X)
-                          = \ln \prod_{i=1}^N f(x_i|\theta)
-                          = \sum_{i=1}^N \ln f(x_i|\theta)
-
-
-        The most likely set of parameters `theta` can be found by finding the
-        maximum of the ln-LLH function by variation of the parameter set.
-
-        Parameters
-        ----------
-        X : record-array
-            Fixed data set the LLH depends on. dtypes are ["name", type].
-        theta : dict
-            Parameter set {"par_name": value} to evaluate the ln-LLH at.
-        args : dict
-            Other fixed parameters {"par_name": value}, the LLH depents on.
-
-        Returns
-        -------
-        lnllh : float
-            Natural logarithm of the LLH for the given `X`, `theta` and `args`.
-        """
-        raise NotImplementedError("LLH is an interface.")
-
-    @docs.get_summaryf("LLH.lnllh_ratio")
-    @docs.get_sectionsf("LLH.lnllh_ratio", sections=["Parameters", "Returns"])
-    @docs.dedent
-    def lnllh_ratio(self, X, theta, args):
-        r"""
-        Return the natural logarithm of the ratio of Likelihoods under the null
-        hypothesis and the alternative hypothesis.
-
-        The ratio :math:`\Lambda` used here is defined as:
-
-        .. math::
-
-          \Lambda = -2\ln\left(\frac{\mathcal{L}_0}
-                                     {\mathcal{L}_1}\right)
-                  =  2\ln\left(\mathcal{L}_1 - \mathcal{L}_0\right)
-
-
-        High values of :math:`\Lambda` indicate, that the null hypothesis is
-        more unlikely contrary to the alternative.
-
-        Parameters
-        ----------
-        X : record-array
-            Fixed data set the LLH depends on. dtypes are ["name", type].
-        theta : dict
-            Parameter set {"par_name": value} to evaluate the ln-LLH at.
-        args : dict
-            Other fixed parameters {"par_name": value}, the LLH depents on.
-
-        Returns
-        -------
-        lnllh_ratio : float
-            Lambda test statistic, 2 times the natural logarithm of the LLH
-            ratio for the given `X`, `theta` and `args`.
-        """
-        raise NotImplementedError("LLH is an interface.")
-
-
-class GRBLLH(LLH):
+class GRBLLH(object):
     r"""
     Implementation of the GRBLLH for time dependent analysis.
 
@@ -146,6 +56,18 @@ class GRBLLH(LLH):
           already divided by `nevts * nfiles` known from SimProd.
           Units are "GeV sr cm^2". Final event weights are obtained by
           multiplying with desired flux.
+
+    srcs : recarray, shape (n_srcs)
+        Fixed source properties, must have names:
+        - "ra", float: Right-ascension coordinate of each source in radian
+          in intervall [0, 2pi].
+        - "dec", float: Declinatiom coordinate of each source in radian in
+          intervall [-pi/2, pi/2].
+        - "t", float: Time of the occurence of the source event in MJD days.
+        - "dt0", "dt1": float: Lower/upper border of the time search window
+          in seconds, centered around each source time `t`.
+        - "src_w_theo", float: Theoretical source weight per source, eg. from a
+          known gamma flux.
 
     spatial_pdf_args : dict
         Arguments for the spatial signal and background PDF. Must contain keys:
@@ -199,15 +121,18 @@ class GRBLLH(LLH):
     .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight # noqa: 501
     .. [3] https://en.wikipedia.org/wiki/Kent_distribution
     """
-    def __init__(self, X, MC, spatial_pdf_args, energy_pdf_args,
+    def __init__(self, X, MC, srcs, spatial_pdf_args, energy_pdf_args,
                  time_pdf_args=None):
-        # Check if data and MC have all needed names
+        # Check if data, MC and srcs have all needed names
         X_names = ["dec", "logE"]
         if not all([n in X.dtype.names for n in X_names]):
             raise ValueError("`X` has not all required names")
         MC_names = X_names + ["trueE", "ow"]
         if not all([n in MC.dtype.names for n in MC_names]):
             raise ValueError("`MC` has not all required names")
+        srcs_names = ["ra", "dec", "t", "dt0", "dt1"]
+        if not all([n in srcs.dtype.names for n in srcs_names]):
+            raise ValueError("`srcs` has not all required names")
 
         # Setup spatial PDF args
         required_keys = ["bins"]
@@ -247,26 +172,46 @@ class GRBLLH(LLH):
             raise ValueError("'nsig' must be >= 3.")
 
         # Setup common variables
-        self.X = X
-        self.MC = MC
         self.energy_pdf_args["bins"] = [sin_dec_bins, logE_bins]
         self._SECINDAY = 24. * 60. * 60.
 
-        # Create background PDF used in the LLH from global data
+        # Create background spline used in the spatial PDF from global data
         ev_sin_dec = np.sin(X["dec"])
-        self._spatial_bg_spl = self._create_spatial_bg_spline(ev_sin_dec)
+        ev_bins = self.spatial_pdf_args["bins"]
+        self._spatial_bg_spl = self._create_sin_dec_spline(
+            sin_dec=ev_sin_dec, bins=ev_bins, mc=None)
 
         # Create energy PDF from global data and MC
         mc_sin_dec = np.sin(MC["trueDec"])
         self._energy_spl = self._create_sin_dec_logE_spline(
             ev_sin_dec, X["logE"],
             mc_sin_dec, MC["logE"], MC["trueE"], MC["ow"])
+
+        # Create sin_dec signal spline for the src detector weights from MC
+        mc_sin_dec = np.sin(X["dec"])
+        mc_bins = self.energy_pdf_args["bins"][0]
+        mc_dict = {"trueE": MC["trueE"], "ow": MC["ow"]}
+        self._spatial_signal_spl = self._create_sin_dec_spline(
+            sin_dec=mc_sin_dec, bins=mc_bins, mc=mc_dict)
+
         return
 
-    @docs.dedent
     def lnllh_ratio(self, X, theta, args):
         """
-        %(LLH.lnllh_ratio.summary)s
+        Return the natural logarithm of the ratio of Likelihoods under the null
+        hypothesis and the alternative hypothesis.
+
+        The ratio :math:`\Lambda` used here is defined as:
+
+        .. math::
+
+          \Lambda = -2\ln\left(\frac{\mathcal{L}_0}
+                                     {\mathcal{L}_1}\right)
+                  =  2\ln\left(\mathcal{L}_1 - \mathcal{L}_0\right)
+
+
+        High values of :math:`\Lambda` indicate, that the null hypothesis is
+        more unlikely contrary to the alternative.
 
         Parameters
         ----------
@@ -293,17 +238,14 @@ class GRBLLH(LLH):
             Other fixed parameters {"par_name": value}, the LLH depents on.
             Here `args` must have keys:
 
-            - "ns": Number of expected background events in the time window.
-            - "src_t": Source occurence time in MJD days.
-            - "dt": Time window [start, end] in seconds centered at `src_t` in
-              which the signal PDF is assumed to be uniform.
-            - "src_ra", "src_dec": Position of the source, in equatorial
-              coordinates given in radian.
+            - "nb": Number of expected background events in the time window.
 
 
         Returns
         -------
-        %(LLH.lnllh_ratio.returns)s
+        lnllh_ratio : float
+            Lambda test statistic, 2 times the natural logarithm of the LLH
+            ratio for the given `X`, `theta` and `args`.
         """
         # Get data values
         t = X["timeMJD"]
@@ -321,7 +263,7 @@ class GRBLLH(LLH):
         dt = args["dt"]
         src_ra = args["src_ra"]
         src_dec = args["src_dec"]
-        src_w_theo = args["src_w"]
+        src_w_theo = args["src_w_theo"]
 
         # Per event probabilities
         sob = (self._soverb_time(t, src_t, dt) *
@@ -331,19 +273,45 @@ class GRBLLH(LLH):
 
         # If mutliple srcs: sum over signal. Single src case already included
         src_w = self.get_src_weights(src_ra, src_dec, src_w_theo)
-        nsrcs = len(src_ra)
-        src_w = src_w.reshape(nsrcs, 1) / np.sum(src_w)
+
         sob = np.sum(sob * src_w, axis=0)
 
         # Teststatistic 2 * ln(LLH-ratio) for each given ns
-        x = ns * sob / nb + 1.
-        TS = 2. * (-ns + np.sum(np.log(x)))
-        grad = 2. * (-1. + np.sum(1. / x * sob / nb))
+        x = ns * sob / nb
+        TS = 2. * (-ns + np.sum(np.log1p(x)))
+        # Gradient in ns
+        grad = 2. * (-1. + np.sum(1. / (x + 1.) * sob / nb))
         return TS, np.atleast_1d(grad)
 
     def get_src_weights(self, src_ra, src_dec, src_w_theo):
-        # TODO: get detector weights from eff. Area for a specific gamma
-        return src_w_theo
+        """
+        Make combined, normalized source weights from the detector exposure and
+        a theoretical source weight.
+
+        Parameters
+        ----------
+        src_ra : array-like, shape (nsrcs)
+            Right-ascension coordinate of each source in radian in intervall
+            [0, 2pi].
+        src_dec : array-like, shape (nsrcs)
+            Declinatiom coordinate of each source in radian in intervall
+            [-pi/2, pi/2].
+        src_w_theo : array-like, shape (nsrcs)
+            Theoretical source weight per source, eg. from a known gamma flux.
+
+        Returns
+        -------
+        src_w : array-like, shape (nsrcs)
+            Combined normalized weight per source.
+        """
+        # Get src detector weights form signal sin_dec spline
+        src_dec_w = np.exp(self._spatial_signal_spl(np.sin(src_dec)))
+
+        # Make combined src weight set adding the theoretical weights
+        src_w = src_dec_w * src_w_theo
+        nsrcs = len(src_ra)
+        src_w = src_w.reshape(nsrcs, 1) / np.sum(src_w)
+        return src_w
 
     def get_injection_trange(self, src_t, dt):
         """
@@ -648,50 +616,6 @@ class GRBLLH(LLH):
 
         return S
 
-    def _create_spatial_bg_spline(self, ev_sin_dec):
-        """
-        Fit an interpolating spline to the a histogram of sin(dec).
-
-        The spline is fitted to the *natural logarithm* of the histogram, to
-        avoid ringing. Normalization is done by normalizing the hist, so it may
-        be slightly off, but that's tolerable.
-
-        Fit parameters are controlled by the `self.spatial_pdf_args` dict.
-
-        Parameters
-        ----------
-        ev_sin_dec
-            See `GRBLLH._soverb_spatial`, Parameters
-
-        Returns
-        -------
-        _spatial_bg_spl : scipy.interpolate.InterpolatingSpline
-            Spline object interpolating the histogram. Must be evaluated with
-            sin(dec) and exponentiated to give the correct PDF values.
-            Spline is extrapolated outside it's definition range.
-        """
-        bins = self.spatial_pdf_args["bins"]
-        k = self.spatial_pdf_args["k"]
-
-        if np.any((ev_sin_dec < bins[0]) | (ev_sin_dec > bins[-1])):
-            raise ValueError("Not all sinDec events fall into given bins. If " +
-                             "this is intended, please remove them beforehand.")
-
-        # Make normalised hist to fit the spline to x, y pairs
-        hist, bins = np.histogram(ev_sin_dec, bins=bins, density=True)
-
-        if np.any(hist <= 0.):
-            raise ValueError("Got empty ev_sin_dec hist bins, this must not " +
-                             "happen. Empty bins idx:\n{}".format(
-                                 np.arange(len(bins) - 1)[hist <= 0.]))
-
-        mids = 0.5 * (bins[:-1] + bins[1:])
-        # Add the outermost bin edges to avoid overshoots at the edges
-        x = np.concatenate((bins[[0]], mids, bins[[-1]]))
-        y = np.log(hist)
-        y = np.concatenate((y[[0]], y, y[[-1]]))
-        return sci.InterpolatedUnivariateSpline(x, y, k=k, ext="extrapolate")
-
     # Energy PDF helpers
     def _create_sin_dec_logE_spline(self, ev_sin_dec, ev_logE,
                                     mc_sin_dec, mc_logE, trueE, ow):
@@ -707,6 +631,10 @@ class GRBLLH(LLH):
 
         Parameters
         ----------
+        ev_sin_dec, ev_logE
+            See `GRBLLH._soverb_spatial`, Parameters
+        mc_sin_dec, mc_logE, trueE, ow
+            See GRBLLH, Parameters, MC
 
         Returns
         -------
@@ -790,3 +718,62 @@ class GRBLLH(LLH):
         spl = sci.RegularGridInterpolator(mids, np.log(sob), method="linear",
                                           bounds_error=False, fill_value=None)
         return spl
+
+    # Other helpers
+    def _create_sin_dec_spline(self, sin_dec, bins, mc=None):
+        """
+        Fit an interpolating spline to the a histogram of sin(dec).
+
+        Spline is extrapolated outside it's definition range.
+
+        Parameters
+        ----------
+        sin_dec : array-like, shape (nevts)
+            Equatorial sinus declination coordinates in [-1, 1].
+        bins : array-like, shape (nbins + 1)
+            Explicit bin edges to use in the sin_dec histogram.
+        mc : dict, optional
+            If dict, then it hold additional monte carlo information used to
+            create the spline on simulation data. Must then have keys:
+
+            - "ow", array: Neutrino generator oneweights, already divided by the
+              number of generated events.
+            - "trueE", array: True energy in GeV from MC simulation.
+
+            (default: None)
+
+        Returns
+        -------
+        sin_dec_spl : scipy.interpolate.InterpolatingSpline
+            Spline object interpolating the created histogram. Must be evaluated
+            with sin(dec) and exponentiated to give the correct PDF values.
+
+        """
+        k = self.spatial_pdf_args["k"]
+
+        if np.any((sin_dec < bins[0]) | (sin_dec > bins[-1])):
+            raise ValueError("Not all sinDec events fall into given bins. If " +
+                             "this is intended, please remove them beforehand.")
+
+        if mc is not None:
+            # Weight MC to power law shape only, because we normalize anyway
+            gamma = self.energy_pdf_args["gamma"]
+            weights = mc["ow"] * mc["trueE"]**(-gamma)
+        else:
+            weights = np.ones_like(sin_dec)
+
+        # Make normalised hist to fit the spline to x, y pairs
+        hist, bins = np.histogram(sin_dec, bins=bins, weights=weights,
+                                  density=True)
+
+        if np.any(hist <= 0.):
+            raise ValueError("Got empty ev_sin_dec hist bins, this must not " +
+                             "happen. Empty bins idx:\n{}".format(
+                                 np.arange(len(bins) - 1)[hist <= 0.]))
+
+        mids = get_binmids([bins])[0]
+        # Add the outermost bin edges to avoid overshoots at the edges
+        x = np.concatenate((bins[[0]], mids, bins[[-1]]))
+        y = np.log(hist)
+        y = np.concatenate((y[[0]], y, y[[-1]]))
+        return sci.InterpolatedUnivariateSpline(x, y, k=k, ext="extrapolate")
