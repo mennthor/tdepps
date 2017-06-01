@@ -8,26 +8,30 @@ from anapymods3.general.misc import (fill_dict_defaults,
 
 
 class TransientsAnalysis(object):
-    def __init__(self, srcs, llh):
-        """
-        Providing methods to do a transients analysis.
+    """
+    Providing methods to do a transients analysis.
 
-        Parameters
-        ----------
-        srcs : recarray, shape (n_srcs)
-            Source properties, must have names:
-            - "ra", float: Right-ascension coordinate of each source in radian
-              in intervall [0, 2pi].
-            - "dec", float: Declinatiom coordinate of each source in radian in
-              intervall [-pi/2, pi/2].
-            - "t", float: Time of the occurence of the source event in MJD days.
-            - "dt0", "dt1": float: Lower/upper border of the time search window
-              in seconds, centered around each source time `t`.
-        llh : `tdepps.LLH.GRBLLH` instance
-            LLH function used to test the hypothesis, that additional neutrinos
-            have been measured accompaning a source event occuring only for a
-            limited amount of time, eg. a gamma ray burst (GRB).
-        """
+    Parameters
+    ----------
+    srcs : recarray, shape (n_srcs)
+        Source properties, must have names:
+
+        - "ra", float: Right-ascension coordinate of each source in radian in
+          intervall [0, 2pi].
+        - "dec", float: Declinatiom coordinate of each source in radian in
+          intervall [-pi/2, pi/2].
+        - "t", float: Time of the occurence of the source event in MJD days.
+        - "dt0", "dt1": float: Lower/upper border of the time search window in
+          seconds, centered around each source time `t`.
+        - "w_theo", float: Theoretical source weight per source, eg. from a
+          known gamma flux.
+
+    llh : `tdepps.LLH.GRBLLH` instance
+        LLH function used to test the hypothesis, that additional neutrinos
+        have been measured accompaning a source event occuring only for a
+        limited amount of time, eg. a gamma ray burst (GRB).
+    """
+    def __init__(self, srcs, llh):
         required_names = ["ra", "dec", "t", "dt0", "dt1"]
         if not all([name in required_names for name in srcs.dtype.names]):
             raise ValueError("'srcs' is missing required names.")
@@ -50,9 +54,9 @@ class TransientsAnalysis(object):
         ----------
         n_trials : int
             Number of trials to perform.
-        heta0 : dict
+        theta0 : dict
             Seeds for the parameter set {"par_name": value} to evaluate the
-            ln-LLH at.
+            ln-LLH ratio at.
             Here GRBLLH depends on:
 
             - "ns": Number of signal events that we want to fit.
@@ -132,6 +136,7 @@ class TransientsAnalysis(object):
               assumed, that a circle with radius `sigma` contains approximatly
               :math:`1\sigma` (~0.39) of probability of the reconstrucion
               likelihood space.
+
         theta0 : dict
             Seeds for the parameter set {"par_name": value} to evaluate the
             ln-LLH at.
@@ -145,12 +150,17 @@ class TransientsAnalysis(object):
 
             - "ns": Number of expected background events in the time window.
 
+        kwargs : optional
+            Keyword arguments are passed to `scipy.optimize.minimize`.
+            `bounds=None` and `method="L-BFGS-B"` are explicitly set as
+            defaults.
+
         Returns
         -------
         res : `scipy.optimise.OptimizationResult`
             Holding the information of the fit. Get result with `res.x`.
         """
-        def _llh(x, weights):
+        def _llh(theta):
             """
             Wrapper for the LLH function.
 
@@ -159,11 +169,8 @@ class TransientsAnalysis(object):
 
             Parameters
             ----------
-            x : array-like
+            theta : array-like
                 The parameters to be fitted. Order is fixed by the initial seed.
-            weights : array-like
-                Weights for the `ns` parameter when fitting multiple sources at
-                once. Weights are expected number of background events.
 
             Returns
             -------
@@ -172,19 +179,8 @@ class TransientsAnalysis(object):
             lnllh_grad : array-like, shape (len(x))
                 Analytic gradient of the ln-LLH ratio for the minimizer.
             """
-            # Only for readability
-            ns = x[0]
-
-            # For multiple sources we sum up each contribution
-            lnllh = 0
-            lnllh_grad = np.zeros(len(x), dtype=np.float)
-            for i in range(self.n_srcs):
-                # Each source contributes a certain amount ot the total ns
-                theta = {"ns": ns * weights[i]}
-                f, g = self.llh.lnllh_ratio(X, theta, args[i])
-                lnllh += f
-                lnllh_grad += weights[i] * g  # Chain rule: g(ax)' = a*g'(ax)
-
+            theta = {"ns": theta[0]}
+            lnllh, lnllh_grad = self.llh.lnllh_ratio(X, theta, args)
             return -1. * lnllh, -1. * lnllh_grad
 
         # Check if args list is OK. Need arg dict for each src
@@ -201,20 +197,14 @@ class TransientsAnalysis(object):
             args[i]["src_t"] = self.srcs[i]["t"]
             args[i]["src_ra"] = self.srcs[i]["ra"]
             args[i]["src_dec"] = self.srcs[i]["dec"]
+            args[i]["src_w_theo"] = self.srcs[i]["w_theo"]
 
         # Setup minimizer
         bounds = kwargs.pop("bounds", None)
+        method = kwargs.pop("method", "L-BFGS-B")
         theta0 = [val for val in theta0.values()]
 
-        # When using multiple srcs, we weight ns with the expected number of BG
-        # events to get the correct number of ns for each src window.
-        weights = np.array([arg["nb"] for arg in args])
-        if np.sum(weights) > 0:
-            weights = weights /  np.sum(weights)
-        else:  # Else uniform weights
-            weights = np.ones_like(weights) / self.n_srcs
-
-        res = sco.minimize(fun=_llh, x0=theta0, jac=True, args=weights,
-                           bounds=bounds, **kwargs)
+        res = sco.minimize(fun=_llh, x0=theta0, jac=True, bounds=bounds,
+                           method=method, **kwargs)
 
         return res
