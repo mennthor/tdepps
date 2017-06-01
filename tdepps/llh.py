@@ -59,6 +59,7 @@ class GRBLLH(object):
 
     srcs : recarray, shape (n_srcs)
         Fixed source properties, must have names:
+
         - "ra", float: Right-ascension coordinate of each source in radian
           in intervall [0, 2pi].
         - "dec", float: Declinatiom coordinate of each source in radian in
@@ -66,7 +67,7 @@ class GRBLLH(object):
         - "t", float: Time of the occurence of the source event in MJD days.
         - "dt0", "dt1": float: Lower/upper border of the time search window
           in seconds, centered around each source time `t`.
-        - "src_w_theo", float: Theoretical source weight per source, eg. from a
+        - "w_theo", float: Theoretical source weight per source, eg. from a
           known gamma flux.
 
     spatial_pdf_args : dict
@@ -130,9 +131,9 @@ class GRBLLH(object):
         MC_names = X_names + ["trueE", "ow"]
         if not all([n in MC.dtype.names for n in MC_names]):
             raise ValueError("`MC` has not all required names")
-        srcs_names = ["ra", "dec", "t", "dt0", "dt1"]
-        if not all([n in srcs.dtype.names for n in srcs_names]):
-            raise ValueError("`srcs` has not all required names")
+        # srcs_names = ["ra", "dec", "t", "dt0", "dt1"]
+        # if not all([n in srcs.dtype.names for n in srcs_names]):
+        #     raise ValueError("`srcs` has not all required names")
 
         # Setup spatial PDF args
         required_keys = ["bins"]
@@ -188,7 +189,7 @@ class GRBLLH(object):
             mc_sin_dec, MC["logE"], MC["trueE"], MC["ow"])
 
         # Create sin_dec signal spline for the src detector weights from MC
-        mc_sin_dec = np.sin(X["dec"])
+        mc_sin_dec = np.sin(MC["dec"])
         mc_bins = self.energy_pdf_args["bins"][0]
         mc_dict = {"trueE": MC["trueE"], "ow": MC["ow"]}
         self._spatial_signal_spl = self._create_sin_dec_spline(
@@ -238,7 +239,7 @@ class GRBLLH(object):
             Other fixed parameters {"par_name": value}, the LLH depents on.
             Here `args` must have keys:
 
-            - "nb": Number of expected background events in the time window.
+            - "nb": Number of expected background events in each time window.
 
 
         Returns
@@ -272,8 +273,7 @@ class GRBLLH(object):
                self._soverb_energy(ev_sin_dec, ev_logE))
 
         # If mutliple srcs: sum over signal. Single src case already included
-        src_w = self.get_src_weights(src_ra, src_dec, src_w_theo)
-
+        src_w = self.get_src_weights(src_dec, src_w_theo)
         sob = np.sum(sob * src_w, axis=0)
 
         # Teststatistic 2 * ln(LLH-ratio) for each given ns
@@ -283,16 +283,13 @@ class GRBLLH(object):
         grad = 2. * (-1. + np.sum(1. / (x + 1.) * sob / nb))
         return TS, np.atleast_1d(grad)
 
-    def get_src_weights(self, src_ra, src_dec, src_w_theo):
+    def get_src_weights(self, src_dec, src_w_theo):
         """
         Make combined, normalized source weights from the detector exposure and
         a theoretical source weight.
 
         Parameters
         ----------
-        src_ra : array-like, shape (nsrcs)
-            Right-ascension coordinate of each source in radian in intervall
-            [0, 2pi].
         src_dec : array-like, shape (nsrcs)
             Declinatiom coordinate of each source in radian in intervall
             [-pi/2, pi/2].
@@ -309,7 +306,7 @@ class GRBLLH(object):
 
         # Make combined src weight set adding the theoretical weights
         src_w = src_dec_w * src_w_theo
-        nsrcs = len(src_ra)
+        nsrcs = len(src_dec)
         src_w = src_w.reshape(nsrcs, 1) / np.sum(src_w)
         return src_w
 
@@ -722,7 +719,7 @@ class GRBLLH(object):
     # Other helpers
     def _create_sin_dec_spline(self, sin_dec, bins, mc=None):
         """
-        Fit an interpolating spline to the a histogram of sin(dec).
+        Fit an interpolating spline to a histogram of sin(dec).
 
         Spline is extrapolated outside it's definition range.
 
@@ -736,9 +733,9 @@ class GRBLLH(object):
             If dict, then it hold additional monte carlo information used to
             create the spline on simulation data. Must then have keys:
 
+            - "trueE", array: True energy in GeV from MC simulation.
             - "ow", array: Neutrino generator oneweights, already divided by the
               number of generated events.
-            - "trueE", array: True energy in GeV from MC simulation.
 
             (default: None)
 
