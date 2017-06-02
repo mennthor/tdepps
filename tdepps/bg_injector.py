@@ -114,6 +114,9 @@ class BGInjector(object):
         ValueError
             When `X` does not have all names in ["logE", "dec", "sigma"].
         """
+        if X.dtype.names is None:
+            valid = "['" + "', '".join(self._X_names) + "']"
+            raise ValueError("`X` must be a record-array with names " + valid)
         for n in self._X_names:
             if n not in X.dtype.names:
                 raise ValueError("`X` is missing name '{}'.".format(n))
@@ -172,14 +175,14 @@ class KDEBGInjector(BGInjector):
         %(BGInjector.fit.returns)s
         """
         X = self._check_X_names(X)
+        self._n_features = len(X.dtype.names)
+
+        # TODO: Use advanced bounds via mirror method in KDE class.
+        # Currently bounds are used to resample events that fall outside
+        self._bounds = self._check_bounds(bounds)
 
         # Turn record-array in normal 2D array for more general KDE class
         X = np.vstack((X[n] for n in self._X_names)).T
-
-        self._n_features = len(X.dtype.names)
-        self._bounds = self._check_bounds(bounds)
-
-        # TODO: Use real bounds via mirror method in KDE class
         self.kde_model.fit(X)
         return
 
