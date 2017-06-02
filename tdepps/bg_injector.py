@@ -11,9 +11,13 @@ class BGInjector(object):
     """
     Background Injector Interface
 
-    Injects background events obtained from a given data sample.
+    Generates background events with 3 features: declination, logE proxy and
+    directional reconstruction error sigma.
+
     Describes a `fit` and a `sample` method.
     """
+    _X_names = ["logE", "dec", "sigma"]
+
     def __init__(self):
         self._DESCRIBES = ["fit", "sample"]
         print("Interface only. Describes functions: ", self._DESCRIBES)
@@ -21,18 +25,25 @@ class BGInjector(object):
 
     @docs.get_sectionsf("BGInjector.fit", sections=["Parameters", "Returns"])
     @docs.dedent
-    def fit(self, X, bounds=None):
+    def fit(self, X):
         """
         Build the injection model with the provided data
 
         Parameters
         ----------
-        X : array_like, shape (n_samples, n_features)
-            List of n_features-dimensional data points. Each row is a single
-            data point.
-        bounds : None or array-like, shape (n_features, 2)
-            Boundary conditions for each dimension. If None, [-inf, +inf] is
-            used in each dimension. (default: None)
+        X : record-array
+            Experimental data from which background-like event are generated.
+            dtypes are ["name", type]. Here `X` must have names:
+
+            - "sinDec": Per event declination, [-pi/2, pi/2], coordinates in
+              equatorial coordinates, given in radians.
+            - "logE": Per event energy proxy, given in log10(1/GeV).
+            - "sigma": Per event positional uncertainty, given in radians. It is
+              assumed, that a circle with radius `sigma` contains approximatly
+              :math:`1\sigma` (~0.39) of probability of the reconstrucion
+              likelihood space.
+
+            Other names are dropped.
         """
         raise NotImplementedError("BGInjector is an interface.")
 
@@ -52,8 +63,9 @@ class BGInjector(object):
 
         Returns
         -------
-        X : array_like, shape (n_samples, n_features)
-            Generated samples from the fitted model.
+        X : record-array
+            Generated samples from the fitted model. Has the same keys as the
+            given record-array `X` in `fit`.
         """
         raise NotImplementedError("BGInjector is an interface.")
 
@@ -65,26 +77,50 @@ class BGInjector(object):
         Parameters
         ----------
         bounds
-            See BGInjector.fit, Parameters
+            See `BGInjector.fit`, Parameters
 
         Returns
         -------
         bounds : array-like, shape (n_features, 2)
-            Boundary conditions for each dimension.
+            Boundary conditions for each dimension. Unconstrained axes have
+            bounds [-np.inf, +np.inf].
         """
         if bounds is None:
             bounds = np.repeat([[-np.inf, np.inf], ],
                                repeats=self._n_features, axis=0)
 
         bounds = np.array(bounds)
-        if bounds.shape[1] != 2:
-            raise ValueError("Invalid 'bounds'. Must be shape (n_features, 2).")
+        if bounds.shape[1] != 2 or (bounds.shape[0] != len(self._X_names)):
+            raise ValueError("Invalid `bounds`. Must be shape (n_features, 2).")
 
         # Convert None to +-np.inf depnding on low/hig bound
         bounds[:, 0][bounds[:, 0] == np.array(None)] = -np.inf
         bounds[:, 1][bounds[:, 1] == np.array(None)] = +np.inf
 
         return bounds
+
+    def _check_X_names(self, X):
+        """
+        Check if record arrays have the required names specific for PS analysis,
+        drops other given names.
+
+        Parameters
+        ----------
+        X
+            See `fit`, Parameters
+
+        Raises
+        ------
+        ValueError
+            When `X` does not have all names in ["logE", "dec", "sigma"].
+        """
+        for n in self._X_names:
+            if n not in X.dtype.names:
+                raise ValueError("`X` is missing name '{}'.".format(n))
+
+        # Drop unneded fields
+        drop = [n for n in X.dtype.names if n not in self._X_names]
+        return np.lib.recfunctions.drop_fields(X, drop, usemask=False)
 
 
 class KDEBGInjector(BGInjector):
@@ -127,14 +163,22 @@ class KDEBGInjector(BGInjector):
         Parameters
         ----------
         %(BGInjector.fit.parameters)s
+        bounds : None or array-like, shape (n_features, 2)
+            Boundary conditions for each dimension. If None, [-np.inf, +np.inf]
+            is used in each dimension. (default: None)
 
         Returns
         -------
         %(BGInjector.fit.returns)s
         """
-        # X = X.view(np.float).reshape(X.shape + (-1, ))
-        self._n_features = X.shape[1]
+        X = self._check_X_names(X)
+
+        # Turn record-array in normal 2D array for more general KDE class
+        X = np.vstack((X[n] for n in self._X_names)).T
+
+        self._n_features = len(X.dtype.names)
         self._bounds = self._check_bounds(bounds)
+
         # TODO: Use real bounds via mirror method in KDE class
         self.kde_model.fit(X)
         return
@@ -143,6 +187,9 @@ class KDEBGInjector(BGInjector):
     def sample(self, n_samples=1, random_state=None):
         """
         Sample from a KDE model that has been build on given data.
+
+        The model can only sample data in the previously fit form. So make sure
+        to use the same convention everywhere.
 
         Parameters
         ----------
@@ -155,22 +202,26 @@ class KDEBGInjector(BGInjector):
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
         if n_samples < 1:
-            raise ValueError("'n_samples' must be at least 1.")
+            raise ValueError("`n_samples` must be at least 1.")
 
         random_state = check_random_state(random_state)
 
-        # Check which samples are in range, redraw those that are not
+        # Check which samples are in bounds, redraw those that are not
         X = []
-        rng = self._bounds
+        bounds = self._bounds
         while n_samples > 0:
             gen = self.kde_model.sample(n_samples, random_state)
-            accepted = np.all(np.logical_and(gen >= rng[:, 0],
-                                             gen <= rng[:, 1]), axis=1)
+            accepted = np.all(np.logical_and(gen >= bounds[:, 0],
+                                             gen <= bounds[:, 1]), axis=1)
             n_samples = np.sum(~accepted)
             # Append accepted to final sample
             X.append(gen[accepted])
 
-        return np.concatenate(X)
+        # Combine and convert to record-array
+        X = np.concatenate(X)
+        X = np.core.records.fromarrays(X.T, names=self._X_names,
+                                       formats=self._n_features * ["float64"])
+        return X
 
 
 class DataBGInjector(BGInjector):
@@ -190,12 +241,10 @@ class DataBGInjector(BGInjector):
 
         Parameters
         ----------
-        X : array_like, shape (n_samples, n_features)
-            List of n_features-dimensional data points. Each row is a single
-            data point.
+        %(BGInjector.fit.parameters)s
         """
-        self.X = np.copy(X)
-        self._n_features = X.shape[1]
+        self.X = self._check_X_names(X)
+        self._n_features = len(X.dtype.names)
         return
 
     @docs.dedent
@@ -218,9 +267,8 @@ class DataBGInjector(BGInjector):
 
         rndgen = check_random_state(random_state)
 
-        # Draw indices uniformly from the data
-        idx = rndgen.randint(self.X.shape[0], size=n_samples)
-        return self.X[idx]
+        # Choose uniformly from given data
+        return rndgen.choice(self.X, size=n_samples)
 
 
 class UniformBGInjector(BGInjector):
@@ -268,18 +316,20 @@ class UniformBGInjector(BGInjector):
             raise ValueError("'n_samples' must be at least 1.")
 
         rndgen = check_random_state(random_state)
-        X = np.zeros((n_samples, self._n_features), dtype=np.float)
 
-        # Sample logE from gaussian, sinDec uniform, sigma from x*exp(-x)
-        X[:, 0] = rndgen.normal(self._logE_mean,
-                                self._logE_sigma, size=n_samples)
+        X = np.zeros((n_samples, ),
+                     dtype=[(n, np.float) for n in self._X_names])
 
-        X[:, 1] = (np.arccos(rndgen.uniform(-1, 1, size=n_samples)) -
-                   np.pi / 2.)
+        # Sample logE from gaussian, sinDec uniformly, sigma from x*exp(-x)
+        X["logE"] = rndgen.normal(self._logE_mean, self._logE_sigma,
+                                  size=n_samples)
+
+        X["dec"] = (np.arccos(rndgen.uniform(-1, 1, size=n_samples)) -
+                    np.pi / 2.)
 
         # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html
         u1, u2 = rndgen.uniform(size=(2, n_samples))
-        X[:, 2] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
+        X["sigma"] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
 
         return X
 
@@ -290,7 +340,7 @@ class MRichmanBGInjector(BGInjector):
     then sampling uniformly from those bins. Data must have 3 dimensions.
     """
     def __init__(self):
-        self._n_features = 3
+        self._n_features = None
         return
 
     def fit(self, X, nbins=10, minmax=False):
@@ -301,14 +351,13 @@ class MRichmanBGInjector(BGInjector):
 
         Parameters
         ----------
-        X : array_like, shape (n_samples, n_features)
-            List of n_features-dimensional data points. Each row is a single
-            data point.
+        %(BGInjector.fit.parameters)s
         nbins : int or array-like, shape(n_features), optional
-            (default: 10)
 
             - If int, same number of bins is used for all dimensions.
             - If array-like, number of bins for each dimension is used.
+
+            (default: 10)
 
         minmax : bool, optional
             If True, use global min/max for outermost bin edges. Else use the
@@ -353,6 +402,10 @@ class MRichmanBGInjector(BGInjector):
             else:
                 # Else just use the bounds from the given data
                 return np.percentile(data, np.linspace(0, 100, nbins))
+
+        # Turn record-array in normal 2D array as it is easier to handle here
+        X = self._check_X_names(X)
+        X = np.vstack((X[n] for n in self._X_names)).T
 
         self._n_features = X.shape[1]
         if self._n_features != 3:
@@ -453,4 +506,8 @@ class MRichmanBGInjector(BGInjector):
         ax1_pts = ax1_edges[:, 0] + r[:, 1] * np.diff(ax1_edges, axis=1).T
         ax2_pts = ax2_edges[:, 0] + r[:, 2] * np.diff(ax2_edges, axis=1).T
 
-        return np.vstack((ax0_pts, ax1_pts, ax2_pts)).T
+        # Combine and convert to record-array
+        X = np.vstack((ax0_pts, ax1_pts, ax2_pts))
+        X = np.core.records.fromarrays(X, names=self._X_names,
+                                       formats=self._n_features * ["float64"])
+        return X
