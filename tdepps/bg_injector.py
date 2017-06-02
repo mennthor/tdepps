@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
 
 import anapymods3.stats.KDE as KDE
@@ -15,6 +16,20 @@ class BGInjector(object):
     directional reconstruction error sigma.
 
     Describes a `fit` and a `sample` method.
+
+    Usage
+    -----
+    >>> import tdepps.bg_injector as BGInj
+    >>> data_inj = BGInj.DataBGInjector()
+    >>>
+    >>> # Generate some test data
+    >>> n_evts, n_features = 100, 3
+    >>> X = np.random.uniform(0, 1, size=(n_evts, n_features))
+    >>> X = np.core.records.fromarrays(X.T, names=["logE", "dec", "sigma"])
+    >>>
+    >>> # Fit and sample from testdata
+    >>> data_inj.fit(X)
+    >>> data_sam = data_inj.sample(n_samples=1000)
     """
     _X_names = ["logE", "dec", "sigma"]
 
@@ -123,7 +138,7 @@ class BGInjector(object):
 
         # Drop unneded fields
         drop = [n for n in X.dtype.names if n not in self._X_names]
-        return np.lib.recfunctions.drop_fields(X, drop, usemask=False)
+        return drop_fields(X, drop, usemask=False)
 
 
 class KDEBGInjector(BGInjector):
