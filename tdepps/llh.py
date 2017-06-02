@@ -57,7 +57,7 @@ class GRBLLH(object):
           Units are "GeV sr cm^2". Final event weights are obtained by
           multiplying with desired flux.
 
-    srcs : recarray, shape (n_srcs)
+    srcs : recarray, shape (nsrcs)
         Fixed source properties, must have names:
 
         - "ra", float: Right-ascension coordinate of each source in radian
@@ -206,13 +206,21 @@ class GRBLLH(object):
 
         .. math::
 
-          \Lambda = -2\ln\left(\frac{\mathcal{L}_0}
+          \Lambda &= -2\ln\left(\frac{\mathcal{L}_0}
                                      {\mathcal{L}_1}\right)
-                  =  2\ln\left(\mathcal{L}_1 - \mathcal{L}_0\right)
+                   =  2\ln\left(\mathcal{L}_1 - \mathcal{L}_0\right)
 
 
         High values of :math:`\Lambda` indicate, that the null hypothesis is
         more unlikely contrary to the alternative.
+
+        For GRBLLH this reduces to
+
+        .. math::
+
+          \Lambda = -n_S + \sum_{i=1}^N\ln\left(
+                    \frac{n_S S_i}{\langle n_B\rangle B_i} + 1\right)
+
 
         Parameters
         ----------
@@ -240,13 +248,16 @@ class GRBLLH(object):
             Here `args` must have keys:
 
             - "nb": Number of expected background events in each time window.
+              Must have shape (nsrcs).
 
 
         Returns
         -------
-        lnllh_ratio : float
+        TS : float
             Lambda test statistic, 2 times the natural logarithm of the LLH
             ratio for the given `X`, `theta` and `args`.
+        ns_grad : array-like, shape (1)
+            Gradient of the test statistic in the fit parameter ns.
         """
         # Get data values
         t = X["timeMJD"]
@@ -274,14 +285,15 @@ class GRBLLH(object):
 
         # If mutliple srcs: sum over signal. Single src case already included
         src_w = self.get_src_weights(src_dec, src_w_theo)
-        sob = np.sum(sob * src_w, axis=0)
+        nb = nb.reshape(len(nb), 1)
+        sob = np.sum(sob * src_w / nb, axis=0)
 
-        # Teststatistic 2 * ln(LLH-ratio) for each given ns
-        x = ns * sob / nb
+        # Teststatistic 2 * ln(LLH-ratio)
+        x = ns * sob
         TS = 2. * (-ns + np.sum(np.log1p(x)))
-        # Gradient in ns
-        grad = 2. * (-1. + np.sum(1. / (x + 1.) * sob / nb))
-        return TS, np.atleast_1d(grad)
+        # Gradient in ns (chain rule: ln(x + 1)' * x')
+        ns_grad = 2. * (-1. + np.sum(sob / (x + 1.)))
+        return TS, np.atleast_1d(ns_grad)
 
     def get_src_weights(self, src_dec, src_w_theo):
         """
