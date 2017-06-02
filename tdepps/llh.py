@@ -372,11 +372,8 @@ class GRBLLH(object):
         ----------
         t : array-like
             Times given in MJD for which we want to evaluate the ratio.
-        src_t : array-like, shape (nsrcs)
-            Times of each source event in MJD days.
-        dt : array-like, shape (nsrcs, 2)
-            Time windows [start, end] in seconds centered at each src_t in
-            which the signal PDF is assumed to be uniform.
+        src_t, dt
+            See `get_injection_trange`, Parameters
 
         Returns
         -------
@@ -516,12 +513,12 @@ class GRBLLH(object):
         Parameters
         ----------
         src_t, dt
-            See `GRBLLH._soverb_time`, Parameters
+            See `get_injection_trange`, Parameters
 
         Returns
         -------
         src_t, dt
-            See GRBLLH._soverb_time, Parameters
+            See `get_injection_trange`, Parameters
         sig_t : array-like, shape (nsrcs)
             sigma of the gaussian edges of the time signal PDF.
         sig_t_clip : array-like, shape (nsrcs)
