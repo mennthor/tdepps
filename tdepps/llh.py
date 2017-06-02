@@ -2,8 +2,7 @@ import numpy as np
 import scipy.stats as scs
 import scipy.interpolate as sci
 
-from anapymods3.general.misc import fill_dict_defaults
-from anapymods3.plots.general import get_binmids
+from .utils import fill_dict_defaults, get_binmids
 
 
 class GRBLLH(object):

@@ -3,8 +3,7 @@ import scipy.optimize as sco
 
 from tdepps.llh import GRBLLH
 
-from anapymods3.general.misc import (fill_dict_defaults,
-                                     flatten_list_of_1darrays)
+from .utils import fill_dict_defaults, flatten_list_of_1darrays
 
 
 class TransientsAnalysis(object):

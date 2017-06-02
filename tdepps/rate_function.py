@@ -2,7 +2,7 @@ import numpy as np
 import scipy.optimize as sco
 from sklearn.utils import check_random_state
 
-from anapymods3.stats.sampling import rejection_sampling
+from .utils import rejection_sampling
 
 import docrep  # Reuse docstrings
 docs = docrep.DocstringProcessor()
@@ -299,7 +299,7 @@ class SinusRateFunction(RateFunction):
             return self.fun(t, pars)
 
         times = rejection_sampling(sample_fun, bounds=trange, n=n_samples,
-                                   random_state=rndgen)[0]
+                                   random_state=rndgen)
 
         return times
 
