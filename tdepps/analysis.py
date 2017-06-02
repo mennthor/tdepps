@@ -126,7 +126,7 @@ class TransientsAnalysis(object):
         ----------
         X : record-array
             Fixed data set the LLH depends on. dtypes are ["name", type].
-            Here `X` must have keys:
+            Here `X` must have names:
 
             - "timeMJD": Per event times in MJD days.
             - "ra", "sinDec": Per event right-ascension positions in equatorial
