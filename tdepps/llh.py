@@ -59,16 +59,8 @@ class GRBLLH(object):
 
     srcs : recarray, shape (nsrcs)
         Fixed source properties, must have names:
-
-        - "ra", float: Right-ascension coordinate of each source in radian
-          in intervall [0, 2pi].
-        - "dec", float: Declinatiom coordinate of each source in radian in
-          intervall [-pi/2, pi/2].
-        - "t", float: Time of the occurence of the source event in MJD days.
-        - "dt0", "dt1": float: Lower/upper border of the time search window
-          in seconds, centered around each source time `t`.
-        - "w_theo", float: Theoretical source weight per source, eg. from a
-          known gamma flux.
+        TODO maybe put srcs in here for caching or let it in analysis for
+        clarity.
 
     spatial_pdf_args : dict
         Arguments for the spatial signal and background PDF. Must contain keys:
@@ -228,14 +220,15 @@ class GRBLLH(object):
             Fixed data set the LLH depends on. dtypes are ["name", type].
             Here `X` must have keys:
 
-            - "timeMJD": Per event times in MJD days.
-            - "ra", "sinDec": Per event right-ascension positions in equatorial
-              coordinates, given in radians and sinus declination in [-1, 1].
-            - "logE": Per event energy proxy, given in log10(1/GeV).
-            - "sigma": Per event positional uncertainty, given in radians. It is
-              assumed, that a circle with radius `sigma` contains approximatly
-              :math:`1\sigma` (~0.39) of probability of the reconstrucion
-              likelihood space.
+            - "timeMJD", floats: Per event times in MJD days.
+            - "ra", "sinDec", floats: Per event right-ascension positions in
+              equatorial coordinates, given in radians and sinus declination in
+              intervall [-1, 1].
+            - "logE", floats: Per event energy proxy, given in log10(1/GeV).
+            - "sigma", floats: Per event positional uncertainty, given in
+              radians. It is assumed, that a circle with radius `sigma` contains
+              approximatly :math:`1\sigma` (~0.39) of probability of the
+              reconstrucion likelihood space.
 
         theta : dict
             Parameter set {"par_name": value} to evaluate the ln-LLH at.
@@ -247,8 +240,20 @@ class GRBLLH(object):
             Other fixed parameters {"par_name": value}, the LLH depents on.
             Here `args` must have keys:
 
-            - "nb": Number of expected background events in each time window.
-              Must have shape (nsrcs).
+            - "nb", floats: Number of expected background events in each time
+               window, shape (nsrcs).
+            - "srcs", record-array, shape (nsrcs): Must have names:
+
+              + "ra", floats: Right-ascension coordinate of each source in
+                radian in intervall [0, 2pi], shape (nsrcs).
+              + "dec", floats: Declinatiom coordinate of each source in radian
+                in intervall [-pi/2, pi/2], shape (nsrcs).
+              + "t", float: Time of the occurence of the source event in MJD
+                days.
+              + "dt0", "dt1": float: Lower/upper border of the time search
+                window in seconds, centered around each source time `t`.
+              + "w_theo", float: Theoretical source weight per source, eg. from
+                a known gamma flux.
 
 
         Returns
@@ -271,11 +276,14 @@ class GRBLLH(object):
 
         # Get other fixed paramters
         nb = args["nb"]
-        src_t = args["src_t"]
-        dt = args["dt"]
-        src_ra = args["src_ra"]
-        src_dec = args["src_dec"]
-        src_w_theo = args["src_w_theo"]
+        srcs = args["srcs"]
+
+        # Setup sources
+        src_t = srcs["t"]
+        dt = np.vstack((srcs["dt0"], srcs["dt1"])).T
+        src_ra = srcs["ra"]
+        src_dec = srcs["dec"]
+        src_w_theo = srcs["w_theo"]
 
         # Per event probabilities
         sob = (self._soverb_time(t, src_t, dt) *
@@ -303,7 +311,7 @@ class GRBLLH(object):
         Parameters
         ----------
         src_dec : array-like, shape (nsrcs)
-            Declinatiom coordinate of each source in radian in intervall
+            Declination coordinate of each source in radian in interval
             [-pi/2, pi/2].
         src_w_theo : array-like, shape (nsrcs)
             Theoretical source weight per source, eg. from a known gamma flux.
@@ -313,10 +321,10 @@ class GRBLLH(object):
         src_w : array-like, shape (nsrcs)
             Combined normalized weight per source.
         """
-        # Get src detector weights form signal sin_dec spline
+        # Get src detector weights form signal sin_dec spline from MC
         src_dec_w = np.exp(self._spatial_signal_spl(np.sin(src_dec)))
 
-        # Make combined src weight set adding the theoretical weights
+        # Make combined src weight by multiplying with the theoretical weights
         src_w = src_dec_w * src_w_theo
         nsrcs = len(src_dec)
         src_w = src_w.reshape(nsrcs, 1) / np.sum(src_w)
@@ -329,7 +337,7 @@ class GRBLLH(object):
         Parameters
         ----------
         src_t : array-like, shape (nsrcs)
-            Times of each source event in MJD.
+            Times of each source event in MJD days.
         dt : array-like, shape (nsrcs, 2)
             Time windows [start, end] in seconds centered at each src_t in
             which the signal PDF is assumed to be uniform.
@@ -366,7 +374,7 @@ class GRBLLH(object):
         t : array-like
             Times given in MJD for which we want to evaluate the ratio.
         src_t : array-like, shape (nsrcs)
-            Times of each source event in MJD.
+            Times of each source event in MJD days.
         dt : array-like, shape (nsrcs, 2)
             Time windows [start, end] in seconds centered at each src_t in
             which the signal PDF is assumed to be uniform.
@@ -480,8 +488,8 @@ class GRBLLH(object):
         ----------
         ev_sin_dec
             See `GRBLLH._soverb_spatial`, Parameters
-        ev_logE : array-like, shape (nevts)
-            Per event energy proxy, given in log10(1/GeV).
+        ev_logE
+            See `lnllh_ratio`, Parameters: `X`
 
         Returns
         -------
@@ -509,7 +517,7 @@ class GRBLLH(object):
         Parameters
         ----------
         src_t, dt
-            See GRBLLH._soverb_time, Parameters
+            See `GRBLLH._soverb_time`, Parameters
 
         Returns
         -------
@@ -640,10 +648,12 @@ class GRBLLH(object):
 
         Parameters
         ----------
-        ev_sin_dec, ev_logE
+        ev_sin_dec
             See `GRBLLH._soverb_spatial`, Parameters
+        ev_logE
+            See `lnllh_ratio`, Parameters: `X`
         mc_sin_dec, mc_logE, trueE, ow
-            See GRBLLH, Parameters, MC
+            See `GRBLLH`, Parameters: `MC`
 
         Returns
         -------
