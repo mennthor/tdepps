@@ -29,12 +29,12 @@ class BGRateInjector(object):
     @docs.dedent
     def fit(self, T):
         """
-        Build the injection model with the provided data.
+        Build the injection model with times from experimental data.
 
         Parameters
         ----------
         T : array_like, shape (n_samples)
-            MJD times of experimental data.
+            Per event times in MJD days of experimental data.
         """
         raise NotImplementedError("BGInjector is an interface.")
 

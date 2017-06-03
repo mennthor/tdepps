@@ -75,7 +75,8 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}):
 def get_binmids(bins):
     """
     Given a list of bins, return the bin mids.
-    Doesn't catch any false formatted data so be sure what you do.
+
+    Doesn't catch any falsely formatted data so be sure what you do.
 
     Parameter
     ---------
@@ -86,7 +87,7 @@ def get_binmids(bins):
     -------
     mids : list
         List with the bin mids for each binning in bins.
-        Mids have on point lesse than the input bins.
+        Mids have one point lesse than the input bins.
     """
     m = []
     for b in bins:
@@ -94,7 +95,7 @@ def get_binmids(bins):
     return m
 
 
-def rejection_sampling(pdf, bounds, n, random_state=None):
+def rejection_sampling(pdf, bounds, n_samples, random_state=None):
     """
     Generic rejection sampling method for ND pdfs with f: RN -> R.
     The ND function `pdf` is sampled in intervals xlow_i <= func(x_i) <= xhig_i
@@ -102,7 +103,7 @@ def rejection_sampling(pdf, bounds, n, random_state=None):
 
     1. Find maximum of function. This is our upper boundary fmax of f(x)
     2. Loop until we have n valid events, start with m = n
-        1. Create m uniformly distributed Ndim points in the Ndim bounds.
+        1. Create m uniformly distributed Nnsrcs points in the Nnsrcs bounds.
            Coordinates of these points are
            r1 = [[x11, ..., x1N ], ..., [xm1, ..., xmN]]
         2. Create m uniformly distributed numbers r2 between 0 and fmax
@@ -119,59 +120,54 @@ def rejection_sampling(pdf, bounds, n, random_state=None):
 
     Parameters
     ----------
-    func : function
-        Function from which to sample. func is taking exactly one argument 'x'
-        which is a n-dimensional array containing a N dimensional point in each
-        entry (as in scipy.stats.multivariat_normal):
-            x = [ [x11, ..., x1N], [x21, ..., x2N], ..., [xn1, ..., xnN]
-        func must be a pdf, so func >= 0 and area under curve=1.
-    xlow, xhig : array-like, shape (ndims, 2)
-        Arrays with the rectangular borders of the pdf. The length of xlow and
-        xhig must be equal and determine the dimension of the pdf.
-    n : int
-        Number of events to be sampled from the given pdf.
+    func : RateFunction.fun
+        func must depend on one array-like argument x and return a list of
+        function values with the same shape. Gets called via `func(x)`.
+        func must also be interpretable as a pdf, so func >= 0 everywhere.
+    bounds : array-like, shape (nsrcs, 2)
+        Borders [[xlow, xhig], ...] in which func is sampled per source.
+    n_samples : array-like, shape (nsrcs)
+        Number of events to sample per source.
     random_state : seed, optional
-        Turn seed into a np.random.RandomState instance. See
+        Turn seed into a `np.random.RandomState` instance. See
         `sklearn.utils.check_random_state`. (default: None)
 
     Returns
     -------
-    sample : array-like
-        A list of the n sampled points
+    sample : list of lists, len (nsrcs)
+        Sampled events per source. If n_samples is 0 for a source, an empty
+        list is included at that position.
     """
-    if n == 0:
-        return np.array([], dtype=np.float), 1.
+    n_samples = np.atleast_1d(n_samples)
+
     bounds = np.atleast_2d(bounds)
-    dim = bounds.shape[0]
+    nsrcs = bounds.shape[0]
+    if bounds.shape[1] != 2:
+        raise ValueError("`bounds` shape must be (nsrcs, 2).")
 
     rndgen = check_random_state(random_state)
 
     def negpdf(x):
-        """To find the maximum we need to invert to use scipy.minimize."""
+        """Wrapper to use scipy.minimize minimization."""
         return -1. * pdf(x)
 
-    def _pdf(x):
-        """PDF must be positive everywhere, so raise error if not."""
-        res = pdf(x)
-        if np.any(res < 0.):
-            raise ValueError("Evaluation of PDF resultet in negative value.")
-        return res
-
-    # Get maximum to maximize efficiency
+    # Maximum func values as upper bounds in all tranges to maximize efficiency
     xlow, xhig = bounds[:, 0], bounds[:, 1]
-    x0 = 0.5 * (xlow + xhig)
-    optres = sco.minimize(negpdf, x0, bounds=bounds)
-    fmax = _pdf(optres.x)
+    x0 = 0.5 * (xlow + xhig)  # Start seed for minimizer
+    xmin = np.zeros(nsrcs, dtype=np.float)
+    for i in range(nsrcs):
+        xmin[i] = sco.minimize(negpdf, x0[i], bounds=bounds[[i]]).x
+    fmax = pdf(xmin)
 
     # Draw remaining events until all n samples are created
     sample = []
     while n > 0:
         # Sample positions and comparator, then accepts or not
         r1 = (xhig - xlow) * rndgen.uniform(
-            0, 1, size=n * dim).reshape(dim, n) + xlow
+            0, 1, size=n * nsrcs).reshape(nsrcs, n) + xlow
         r2 = fmax * rndgen.uniform(0, 1, n)
 
-        accepted = (r2 <= _pdf(r1))
+        accepted = (r2 <= pdf(r1))
         sample += r1[accepted].tolist()
 
         n = np.sum(~accepted)

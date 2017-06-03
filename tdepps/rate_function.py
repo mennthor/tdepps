@@ -60,7 +60,7 @@ class RateFunction(object):
         Parameters
         ----------
         t : array-like, shape (nsrcs)
-            MJD times of sources around which the time ranges get centerd.
+            MJD times of sources.
         trange : array-like, shape(nsrcs, 2)
             Time windows [[t0, t1], ...] in seconds around each given time t.
         pars : tuple
@@ -79,27 +79,28 @@ class RateFunction(object):
     @docs.dedent
     def sample(self, t, trange, pars, n_samples=1, random_state=None):
         """
-        Generate random samples from the rate function for one time and a single
-        time window.
+        Generate random samples from the rate function for multiple source times
+        and time windows.
 
         Parameters
         ----------
-        t : float
-            Time of the occurance of the source event in MJD.
-        trange : array-like, shape(2)
-            Time window [t0, t1] in seconds around the source time t.
+        t : array-like, shape (nsrcs)
+            MJD times of sources.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows [[t0, t1], ...] in seconds around each given time t.
         pars : tuple
             Further parameters `self.fun` depends on.
-        n_samples : int
-            Number of events to sample. (default: 1)
-        random_state : RandomState, optional
-            A random number generator instance. (default: None)
+        n_samples : array-like, shape (nsrcs)
+            Number of events to sample per source. (default: nsrcs * [1])
+        random_state : seed, optional
+            Turn seed into a `np.random.RandomState` instance. See
+            `sklearn.utils.check_random_state`. (default: None)
 
         Returns
         -------
-        times : array-like, shape (n_samples)
+        times : list of lists, len (nsrcs)
             Sampled times in MJD of background events per source. If n_samples
-            is 0, an empty array is returned.
+            is 0 for a source, an empty list is included at that position.
         """
         raise NotImplementedError("RateFunction is an interface.")
 
@@ -196,7 +197,7 @@ class RateFunction(object):
         Parameters
         ----------
         t : array-like, shape (nsrcs)
-            MJD times of sources around which the time ranges get centerd.
+            MJD times of sources.
         trange : array-like, shape(nsrcs, 2)
             Time windows [[t0, t1], ...] in seconds around each given time t.
 
@@ -285,6 +286,30 @@ class SinusRateFunction(RateFunction):
         #     [a / b] = Hz * MJD; [d * (t1 - t0)] = HZ * MJD
         return (per + lin) * RateFunction._SECINDAY
 
+        """
+        Generate random samples from the rate function for multiple source times
+        and time windows.
+
+        Parameters
+        ----------
+        t : array-like, shape (nsrcs)
+            MJD times of sources.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows [[t0, t1], ...] in seconds around each given time t.
+        pars : tuple
+            Further parameters `self.fun` depends on.
+        n_samples : list of ints, len (nsrcs)
+            Number of events to sample per source. (default: nsrcs * [1])
+        random_state : RandomState, optional
+            A random number generator instance. (default: None)
+
+        Returns
+        -------
+        times : array-like, shape (n_samples)
+            Sampled times in MJD of background events per source. If n_samples
+            is 0, an empty array is returned.
+        """
+
     @docs.dedent
     def sample(self, t, trange, pars, n_samples=1, random_state=None):
         """
@@ -301,13 +326,15 @@ class SinusRateFunction(RateFunction):
         """
         rndgen = check_random_state(random_state)
 
-        # rejection_sampling needs bounds in shape (1, 2)
-        trange = np.atleast_2d(self._transform_trange_mjd(t, trange))
-
         def sample_fun(t):
+            """Wrapper to have only one argument."""
             return self.fun(t, pars)
 
-        times = rejection_sampling(sample_fun, bounds=trange, n=n_samples,
+        # Transfrom  to MJD ranges
+        dts = self._transform_trange_mjd(t, trange)
+
+        # Samples times for all sources at once
+        times = rejection_sampling(sample_fun, bounds=dts, n=n_samples,
                                    random_state=rndgen)
 
         return times
