@@ -207,9 +207,10 @@ class RateFunction(object):
         """
         t = np.atleast_1d(t)
         nsrcs = len(t)
+        # Proper braodcasting to process multiple srcs at once
         t = t.reshape(nsrcs, 1)
         trange = np.atleast_2d(trange).reshape(nsrcs, 2)
-        return t + np.array(trange) / RateFunction._SECINDAY
+        return t + trange / RateFunction._SECINDAY
 
 
 class SinusRateFunction(RateFunction):
@@ -228,7 +229,7 @@ class SinusRateFunction(RateFunction):
     a : float
         Amplitude in Hz.
     b : float
-        Angular frequency, omega = 2*pi/T` with period T given in 1/MJD.
+        Angular frequency, omega = 2*pi/T with period T given in 1/MJD.
     c : float
         x-axis offset in MJD.
     d : float
@@ -271,8 +272,9 @@ class SinusRateFunction(RateFunction):
         """
         a, b, c, d = pars
 
-        # Transform time window to MJD
-        t0, t1 = self._transform_trange_mjd(t, trange)
+        # Transform time windows to MJD
+        dts = self._transform_trange_mjd(t, trange)
+        t0, t1 = dts[:, 0], dts[:, 1]
 
         # Split analytic expression for readability only
         per = a / b * (np.cos(b * (t0 - c)) - np.cos(b * (t1 - c)))
@@ -474,8 +476,9 @@ class ConstantRateFunction(RateFunction):
         -------
         %(RateFunction.integral.returns)s
         """
-        trange = self._transform_trange_mjd(t, trange)
-        return (np.diff(trange, axis=1) * RateFunction._SECINDAY *
+        dts = self._transform_trange_mjd(t, trange)
+        # Multiply first then diff to avoid roundoff errors
+        return (np.diff(dts * RateFunction._SECINDAY, axis=1) *
                 self.fun(t, pars))
 
     @docs.dedent
