@@ -40,7 +40,7 @@ class RateFunction(object):
         ----------
         t : array-like, shape (n_samples)
             MJD times of experimental data.
-        pars : tuple, optional
+        pars : tuple
             Further parameters `fun` depends on.
 
         Returns
@@ -63,7 +63,7 @@ class RateFunction(object):
             Reference time in MJD where the integration interval is aligned to.
         trange : array-like, shape(2)
             Time window `[t0, t1]` in seconds around the source time t.
-        pars : tuple, optional
+        pars : tuple
             Further parameters `fun` depends on.
 
         Returns
@@ -88,7 +88,7 @@ class RateFunction(object):
             Time of the occurance of the source event in MJD.
         trange : array-like, shape(2)
             Time window `[t0, t1]` in seconds around the source time t.
-        pars : tuple, optional
+        pars : tuple
             Further parameters `fun` depends on.
         n_samples : int
             Number of events to sample. (default: 1)
@@ -114,7 +114,7 @@ class RateFunction(object):
             MJD times of experimental data.
         rate : array-like, shape (len(t))
             Rates at given times t in Hz.
-        p0 : tuple
+        p0 : tuple, optional
             Seed values for the fit parameters. If None, default ones are used,
             that may or may not work. (default: None)
         rate_std : array-like, shape(len(t)), optional
@@ -189,18 +189,20 @@ class RateFunction(object):
 
         Parameters
         ----------
-        t : float
-            Single MJD time of experimental data around which the time range
-            gets centerd.
+        t : array-like, shape (nsrcs)
+            MJD times of sources around which the time ranges get centerd.
         trange : array-like, shape(2)
             Time window `[t0, t1]` in seconds around the source times t.
 
         Returns
         -------
-        trange : array-like, shape(2)
-            Reshaped time window `array([t0, t1])` in MJD around given time `t`.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows [[t0, t1], ...] in MJD around each given time t.
         """
         t = np.atleast_1d(t)
+        nsrcs = len(t)
+        t = t.reshape(nsrcs, 1)
+        trange = np.atleast_2d(trange).reshape(nsrcs, 2)
         return t + np.array(trange) / RateFunction._SECINDAY
 
 
@@ -239,7 +241,7 @@ class SinusRateFunction(RateFunction):
         Parameters
         ----------
         %(RateFunction.fun.parameters)s
-            Here `pars` are (a, b, c, d) as stated above.
+            pars : See `SinusRateFunction`, Parameters
 
         Returns
         -------
@@ -256,7 +258,7 @@ class SinusRateFunction(RateFunction):
         Parameters
         ----------
         %(RateFunction.integral.parameters)s
-            Here `pars` are (a, b, c, d) as stated above.
+            pars : See `SinusRateFunction`, Parameters
 
         Returns
         -------
@@ -284,7 +286,7 @@ class SinusRateFunction(RateFunction):
         Parameters
         ----------
         %(RateFunction.sample.parameters)s
-            Here `pars` are (a, b, c, d) as stated above.
+            pars : See `SinusRateFunction`, Parameters
 
         Returns
         -------
@@ -370,7 +372,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
         Parameters
         ----------
         %(RateFunction.fun.parameters)s
-            Here `pars` are (a, c, d) as stated above.
+            pars : See `Sinus1yrRateFunction`, Parameters
 
         Returns
         -------
@@ -388,7 +390,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
         Parameters
         ----------
         %(RateFunction.integral.parameters)s
-            Here `pars` are (a, c, d) as stated above.
+            pars : See `Sinus1yrRateFunction`, Parameters
 
         Returns
         -------
@@ -413,6 +415,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
         ----------
         t, rate, rate_std
             See `SinusRateFunction._get_default_seed`, Parameters
+
         Returns
         -------
         p0 : tuple, shape (3)
@@ -446,7 +449,7 @@ class ConstantRateFunction(RateFunction):
         Parameters
         ----------
         %(RateFunction.fun.parameters)s
-            Here `pars` is (rate), rate in Hz.
+            pars : See `ConstantRateFunction`, Parameters
 
         Returns
         -------
@@ -465,7 +468,7 @@ class ConstantRateFunction(RateFunction):
         Parameters
         ----------
         %(RateFunction.integral.parameters)s
-            Here `pars` is (rate), rate in Hz.
+            pars : See `ConstantRateFunction`, Parameters
 
         Returns
         -------
