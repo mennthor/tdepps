@@ -38,10 +38,10 @@ class RateFunction(object):
 
         Parameters
         ----------
-        t : array-like, shape (n_samples)
+        t : array-like, shape (nevts)
             MJD times of experimental data.
         pars : tuple
-            Further parameters `fun` depends on.
+            Further parameters the function depends on.
 
         Returns
         -------
@@ -59,17 +59,17 @@ class RateFunction(object):
 
         Parameters
         ----------
-        t : float
-            Reference time in MJD where the integration interval is aligned to.
-        trange : array-like, shape(2)
-            Time window `[t0, t1]` in seconds around the source time t.
+        t : array-like, shape (nsrcs)
+            MJD times of sources around which the time ranges get centerd.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows [[t0, t1], ...] in seconds around each given time t.
         pars : tuple
-            Further parameters `fun` depends on.
+            Further parameters `self.fun` depends on.
 
         Returns
         -------
-        integral : float
-            Integral of `self.fun` within time window `trange`.
+        integral : array-like, shape (nsrcs)
+            Integral of `self.fun` within given time windows `trange`.
         """
         raise NotImplementedError("RateFunction is an interface.")
 
@@ -87,9 +87,9 @@ class RateFunction(object):
         t : float
             Time of the occurance of the source event in MJD.
         trange : array-like, shape(2)
-            Time window `[t0, t1]` in seconds around the source time t.
+            Time window [t0, t1] in seconds around the source time t.
         pars : tuple
-            Further parameters `fun` depends on.
+            Further parameters `self.fun` depends on.
         n_samples : int
             Number of events to sample. (default: 1)
         random_state : RandomState, optional
@@ -138,7 +138,7 @@ class RateFunction(object):
             p0 = self._get_default_seed(t, rate, rate_std)
 
         # t, rate and rate_std are fixed
-        args = (t, rate, 1. / rate_std)
+        args = (t, rate, rate_std)
         res = sco.minimize(fun=self._lstsq, x0=p0, args=args, **kwargs)
 
         return res.x
@@ -172,14 +172,20 @@ class RateFunction(object):
         pars : tuple
             Fitparameter for `self.fun` that gets fitted.
         args : tuple
-            Fixed values for the loss function: (t, rate, weights)
+            Fixed values for the loss function: (t, rate, rate_std)
+
+            - t, rate, rate_std : See `RateFunction.fit`, Parameters
+
+            The weights are wi = (1 / rate_std_i) which is equivalent to the
+            weighted mean, when a constant is fitted.
 
         Returns
         -------
         loss : float
-            The weighted least squares loss for the given `pars` and `args`.
+            The weighted least squares loss for the given pars and args.
         """
-        t, rate, w = args
+        t, rate, rate_std = args
+        w = 1 / rate_std
         fun = self.fun(t, pars)
         return np.sum((w * (rate - fun))**2)
 
@@ -191,8 +197,8 @@ class RateFunction(object):
         ----------
         t : array-like, shape (nsrcs)
             MJD times of sources around which the time ranges get centerd.
-        trange : array-like, shape(2)
-            Time window `[t0, t1]` in seconds around the source times t.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows [[t0, t1], ...] in seconds around each given time t.
 
         Returns
         -------
@@ -215,15 +221,14 @@ class SinusRateFunction(RateFunction):
     .. math:: f(t|a,b,c,d) = a \sin(b (t - c)) + d
 
     Parameters are commonly used in methods and not given at object creation.
-    Times :math:`t` are used in MJD days.
+    Times t are used in MJD days.
 
     Parameters
     ----------
     a : float
-        Amplitude in Hz. (default)
+        Amplitude in Hz.
     b : float
-        Angular frequency, :math:`\omega = 2\pi/T` with period :math:`T` given
-        in 1/MJD.
+        Angular frequency, omega = 2*pi/T` with period T given in 1/MJD.
     c : float
         x-axis offset in MJD.
     d : float
@@ -312,10 +317,10 @@ class SinusRateFunction(RateFunction):
 
         Motivation for default seed:
 
-        - `a0`: Using the maximum amplitude in variation of rate bins.
-        - `b0`: The expected seasonal variation is 1 year.
-        - `c0`: Earliest time in t.
-        - `d0`: Weighted averaged rate, which is the best fit value for a
+        - a0 : Using the maximum amplitude in variation of rate bins.
+        - b0 : The expected seasonal variation is 1 year.
+        - c0 : Earliest time in t.
+        - d0 : Weighted averaged rate, which is the best fit value for a
            constant target function.
 
         Parameters
@@ -327,20 +332,15 @@ class SinusRateFunction(RateFunction):
         p0 : tuple, shape (4)
             Seed values (a0, b0, c0, d0):
 
-            - a0: (max(rate) + min(rate)) / 2
-            - b0: 2pi / 365
-            - c0: min(t)
-            - d0: np.average(rate, weights=rate_std**2)
+            - a0 : (max(rate) + min(rate)) / 2
+            - b0 : 2pi / 365
+            - c0 : min(t)
+            - d0 : np.average(rate, weights=rate_std**2)
         """
-        # Assume weights are standard deviation
-        rate_std = 1. / rate_std
-        if rate_std is None:
-            rate_std = np.ones_like(t)
-
         a0 = 0.5 * (np.amax(rate) - np.amin(rate))
         b0 = 2. * np.pi / 365.
         c0 = np.amin(t)
-        d0 = np.average(rate, weights=rate_std**2)
+        d0 = np.average(rate, rate_std=rate_std**2)
         return (a0, b0, c0, d0)
 
 
@@ -354,9 +354,9 @@ class Sinus1yrRateFunction(SinusRateFunction):
 
     where:
 
-    - a is the Amplitude in Hz
-    - c is the x-offset in MJD
-    - d the y-offset in Hz
+    - a : Amplitude in Hz
+    - c : x-offset in MJD
+    - d : y-offset in Hz
 
     Time is measured in MJD days.
     """
@@ -406,9 +406,9 @@ class Sinus1yrRateFunction(SinusRateFunction):
 
         Motivation for default seed:
 
-        - `a0`: Using the maximum amplitude in variation of rate bins.
-        - `c0`: Earliest time in t.
-        - `d0`: Weighted averaged rate, which is the best fit value for a
+        - a0 : Using the maximum amplitude in variation of rate bins.
+        - c0 : Earliest time in t.
+        - d0 : Weighted averaged rate, which is the best fit value for a
            constant target function.
 
         Parameters
@@ -420,7 +420,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
         -------
         p0 : tuple, shape (3)
             See `SinusRateFunction._get_default_seed`, Parameters.
-            But `b` is fixed here, so only a0, c0 and d0 are seed values.
+            But b is fixed here, so only a0, c0 and d0 are seed values.
         """
         seed = super(Sinus1yrRateFunction, self)._get_default_seed(t, rate,
                                                                    rate_std)
@@ -461,9 +461,9 @@ class ConstantRateFunction(RateFunction):
     @docs.dedent
     def integral(self, t, trange, pars):
         """
-        Analytic integral of the rate function in interval `trange`.
+        Analytic integral of the rate function in interval trange.
 
-        As rate function is constant, integral is simply `trange * rate`.
+        As rate function is constant, integral is simply trange * rate.
 
         Parameters
         ----------
@@ -475,7 +475,8 @@ class ConstantRateFunction(RateFunction):
         %(RateFunction.integral.returns)s
         """
         trange = self._transform_trange_mjd(t, trange)
-        return np.diff(trange) * RateFunction._SECINDAY * self.fun(t, pars)
+        return (np.diff(trange, axis=1) * RateFunction._SECINDAY *
+                self.fun(t, pars))
 
     @docs.dedent
     def sample(self, t, trange, pars=None, n_samples=1, random_state=None):
@@ -502,7 +503,7 @@ class ConstantRateFunction(RateFunction):
 
         Motivation for default seed:
 
-        - `rate0`: Mean of the given rates, this is the anlytic solution to the
+        - rate0 : Mean of the given rates, this is the anlytic solution to the
           fit, so we seed with the best fit.
 
         Parameters
@@ -514,6 +515,6 @@ class ConstantRateFunction(RateFunction):
         p0 : tuple, shape(1)
             Seed values (rate0):
 
-            - rate0: mean(rate)
+            - rate0 : mean(rate)
         """
         return np.mean(rate)
