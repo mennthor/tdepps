@@ -69,7 +69,7 @@ class RateFunction(object):
         Returns
         -------
         integral : array-like, shape (nsrcs)
-            Integral of `self.fun` within given time windows `trange`.
+            Integral of `self.fun` within given time windows trange.
         """
         raise NotImplementedError("RateFunction is an interface.")
 
@@ -98,7 +98,7 @@ class RateFunction(object):
         Returns
         -------
         times : array-like, shape (n_samples)
-            Sampled times in MJD of background events per source. If `n_samples`
+            Sampled times in MJD of background events per source. If n_samples
             is 0, an empty array is returned.
         """
         raise NotImplementedError("RateFunction is an interface.")
@@ -119,7 +119,7 @@ class RateFunction(object):
             that may or may not work. (default: None)
         rate_std : array-like, shape(len(t)), optional
             Standard deviations for each datapoint. If None, all are set to 1.
-            If `rate_std` is a good description of the standard deviation, then
+            If rate_std is a good description of the standard deviation, then
             the fit statistics follows a chi2 distribution. But for a binned
             fit this makes less sense, becuase low stddec means low statistics,
             so better use unweighted. (default: None)
@@ -259,7 +259,7 @@ class SinusRateFunction(RateFunction):
     @docs.dedent
     def integral(self, t, trange, pars):
         """
-        Analytic integral of the sinusodial rate function in interval `trange`.
+        Analytic integral of the sinusodial rate function in interval trange.
 
         Parameters
         ----------
@@ -387,7 +387,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
     @docs.dedent
     def integral(self, t, trange, pars):
         """
-        Analytic integral of the sinusodial rate function in interval `trange`.
+        Analytic integral of the sinusodial rate function in interval trange.
 
         Parameters
         ----------
