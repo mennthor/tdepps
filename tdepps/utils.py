@@ -97,24 +97,9 @@ def get_binmids(bins):
 
 def rejection_sampling(pdf, bounds, n_samples, random_state=None):
     """
-    Generic rejection sampling method for ND pdfs with f: RN -> R.
-    The ND function `pdf` is sampled in intervals xlow_i <= func(x_i) <= xhig_i
-    where i=1, ..., N and n is the desired number of events.
+    Rejection sampler function to sample from multiple 1D regions at once.
 
-    1. Find maximum of function. This is our upper boundary fmax of f(x)
-    2. Loop until we have n valid events, start with m = n
-        1. Create m uniformly distributed Nnsrcs points in the Nnsrcs bounds.
-           Coordinates of these points are
-           r1 = [[x11, ..., x1N ], ..., [xm1, ..., xmN]]
-        2. Create m uniformly distributed numbers r2 between 0 and fmax
-        3. Calculate the pdf value pdf(r1) and compare to r2
-           If r2 <= pdf(r1) accept the event, else reject it
-        4. Append only accepted random numbers to the final list
-
-    This generates points that occur more often (or gets less rejection) near
-    high values of the pdf and occur less often (get more rejection) where the
-    pdf is small.
-
+    Algorithm description can be found at [1].
     To maximize efficiency the upper boundary for the random numbers is the
     maximum of the function over the defined region.
 
@@ -134,14 +119,22 @@ def rejection_sampling(pdf, bounds, n_samples, random_state=None):
 
     Returns
     -------
-    sample : list of lists, len (nsrcs)
+    sample : list of arrays, len (nsrcs)
         Sampled events per source. If n_samples is 0 for a source, an empty
-        list is included at that position.
+        array is included at that position.
+
+    Notes
+    -----
+    This currently just loops over each given interval. The problem is, that
+    each interval can have different amount of events that need to get sampled,
+    so we can't use array broadcasting etc. If there's a better/faster method
+    go ahead and implement it ;).
+
+    .. [1] https://en.wikipedia.org/wiki/Rejection_sampling#Algorithm
     """
     n_samples = np.atleast_1d(n_samples)
 
     bounds = np.atleast_2d(bounds)
-    nsrcs = bounds.shape[0]
     if bounds.shape[1] != 2:
         raise ValueError("`bounds` shape must be (nsrcs, 2).")
 
@@ -151,25 +144,33 @@ def rejection_sampling(pdf, bounds, n_samples, random_state=None):
         """Wrapper to use scipy.minimize minimization."""
         return -1. * pdf(x)
 
-    # Maximum func values as upper bounds in all tranges to maximize efficiency
-    xlow, xhig = bounds[:, 0], bounds[:, 1]
-    x0 = 0.5 * (xlow + xhig)  # Start seed for minimizer
-    xmin = np.zeros(nsrcs, dtype=np.float)
-    for i in range(nsrcs):
-        xmin[i] = sco.minimize(negpdf, x0[i], bounds=bounds[[i]]).x
-    fmax = pdf(xmin)
-
-    # Draw remaining events until all n samples are created
     sample = []
-    while n > 0:
-        # Sample positions and comparator, then accepts or not
-        r1 = (xhig - xlow) * rndgen.uniform(
-            0, 1, size=n * nsrcs).reshape(nsrcs, n) + xlow
-        r2 = fmax * rndgen.uniform(0, 1, n)
 
-        accepted = (r2 <= pdf(r1))
-        sample += r1[accepted].tolist()
+    # Just loop over all intervals and append sample arrays to output list
+    for bound, nsam in zip(bounds, n_samples):
+        # Get maximum func value in bound to maximize efficiency
+        xlow, xhig = bound[0], bound[1]
+        # Start seed for minimizer: min of low or high border or center
+        x0 = np.amin([xlow, 0.5 * (xlow + xhig), xhig])
+        # gtol, and ftol are explicitely low, when dealing with low rates.
+        xmin = sco.minimize(negpdf, x0, bounds=[bound], method="L-BFGS-B",
+                            options={"gtol": 1e-12, "ftol": 1e-12}).x
 
-        n = np.sum(~accepted)
+        fmax = pdf(xmin)
 
-    return np.array(sample)
+        # Draw remaining events until all samples per sourcee are created
+        _sample = []
+        while nsam > 0:
+            # Sample x positions r1 and comparators r2, then accept or not
+            r1 = (xhig - xlow) * rndgen.uniform(
+                0, 1, size=nsam) + xlow
+            r2 = fmax * rndgen.uniform(0, 1, nsam)
+
+            accepted = (r2 <= pdf(r1))
+            _sample += r1[accepted].tolist()  # Concatenate
+
+            nsam = np.sum(~accepted)  # Number of remaining samples to draw
+
+        sample.append(np.array(_sample))
+
+    return sample
