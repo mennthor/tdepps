@@ -122,7 +122,7 @@ class GRBLLH(object):
         MC_names = X_names + ["trueE", "ow"]
         if not all([n in MC.dtype.names for n in MC_names]):
             raise ValueError("`MC` has not all required names")
-        # srcs_names = ["ra", "dec", "t", "dt0", "dt1"]
+        # srcs_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
         # if not all([n in srcs.dtype.names for n in srcs_names]):
         #     raise ValueError("`srcs` has not all required names")
 
