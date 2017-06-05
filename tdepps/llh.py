@@ -274,7 +274,7 @@ class GRBLLH(object):
         ns = theta["ns"]
 
         # Get other fixed paramters
-        nb = args["nb"]
+        nb = np.atleast_1d(args["nb"])
         srcs = args["srcs"]
 
         # Setup sources
@@ -290,7 +290,8 @@ class GRBLLH(object):
                                     ev_sin_dec, ev_sig) *
                self._soverb_energy(ev_sin_dec, ev_logE))
 
-        # If mutliple srcs: sum over signal. Single src case already included
+        # If mutliple srcs: sum over signal contribution from each src.
+        # The single src case is automatically included due to broadcasting
         src_w = self.get_src_weights(src_dec, src_w_theo)
         nb = nb.reshape(len(nb), 1)
         sob = np.sum(sob * src_w / nb, axis=0)
@@ -317,7 +318,7 @@ class GRBLLH(object):
 
         Returns
         -------
-        src_w : array-like, shape (nsrcs)
+        src_w : array-like, shape (nsrcs, 1)
             Combined normalized weight per source.
         """
         # Get src detector weights form signal sin_dec spline from MC
@@ -528,8 +529,8 @@ class GRBLLH(object):
         sigma_t_min = self.time_pdf_args["sigma_t_min"]
         sigma_t_max = self.time_pdf_args["sigma_t_max"]
 
-        nsrc = len(src_t)
         src_t = np.atleast_1d(src_t)
+        nsrc = len(src_t)
         dt = np.atleast_2d(dt)
         if dt.shape[1] != 2:
             raise ValueError("Timeframe 'dt' must be [start, end] in seconds" +
