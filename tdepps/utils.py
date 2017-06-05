@@ -151,7 +151,7 @@ def rejection_sampling(pdf, bounds, n_samples, random_state=None):
         # Get maximum func value in bound to maximize efficiency
         xlow, xhig = bound[0], bound[1]
         # Start seed for minimizer by quick scan in the interval
-        x_scan = np.linspace(bound[0], bound[1], 5)
+        x_scan = np.linspace(bound[0], bound[1], 7)[1:-1]
         max_idx = np.argmax(pdf(x_scan))
         x0 = x_scan[max_idx]
         # x0 = 0.5 * (xlow + xhig)
