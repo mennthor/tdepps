@@ -1,7 +1,6 @@
 import os
 import json
 import numpy as np
-from sklearn.utils import check_random_state
 from astropy.time import Time as astrotime
 
 import docrep  # Reuse docstrings
@@ -42,35 +41,35 @@ class BGRateInjector(object):
     @docs.get_sectionsf("BGRateInjector.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def sample(self, t, trange, ntrials=1, poisson=True, random_state=None):
+    def sample(self, t, trange, poisson=True, random_state=None):
         """
-        Generate random samples from the fitted model for one source event time
-        and corrseponding time frame.
+        Generate random samples from the fitted model for multiple source event
+        times and corrseponding time frames at once.
 
-        Sample size is drawn from a poisson distribtuion each time, with
+        Sample size can be drawn from a poisson distribution each time, with
         expectation value determined by the time window, so each call might
         produce a different number of events.
 
         Parameters
         ----------
-        t : float
-            Time of the occurance of the source event in MJD.
-        trange : [float, float]
-            Time window in seconds relativ to the given time t.
-        ntrials : int, optional
-            Number of trials to sample at once. (default: 1)
+        t : array-like, shape (nsrcs)
+            MJD times of sources.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows [[t0, t1], ...] in seconds around each given time t.
         poisson : bool, optional
-            If True sample the number of events per trial using a poisson
-            distribution, otherwise they are the next integer to the expectation
-            value. (default: True)
+            If True, sample the number of events per src using a poisson
+            distribution, with expectation from the background expectation in
+            each time window. Otherwise they are rounded to the next integer to
+            the expectation value and alway the same. (default: True)
         random_state : seed, optional
-            Turn seed into a np.random.RandomState instance. See
+            Turn seed into a `np.random.RandomState` instance. See
             `sklearn.utils.check_random_state`. (default: None)
 
         Returns
         -------
-        event_times : list of arrays, length (ntrials)
-            The times in MJD for each sampled trial. Slices might be empty.
+        event_times : list of arrays, length (nsrcs)
+            The times in MJD for each sampled srcs. Arrays might be empty, when
+            the background expectation is low for small time windows.
         """
         raise NotImplementedError("BGInjector is an interface.")
 
@@ -90,14 +89,13 @@ class RunlistBGRateInjector(BGRateInjector):
     filter_runs : function
         Filter function to remove unwanted runs from the goodrun list.
         Called as `filter_runs(run)`. Function must operate on a single
-        dictionary `run`, with keys:
+        dictionary argument, with keys:
         ['good_i3', 'good_it', 'good_tstart', 'good_tstop', 'run', 'reason_i3',
-        'reason_it', 'source_tstart', 'source_tstop', 'snapshot', 'sha']
-
+        'reason_it', 'source_tstart', 'source_tstop', 'snapshot', 'sha'].
     rate_func : `rate_function.RateFunction` instance
         Class defining the function to describe the time dependent
-        background rate. Must provide functions ['fun', 'integral', 'fit',
-        'sample'].
+        background rate. Must provide functions
+        ['fun', 'integral', 'fit', 'sample'].
 
     Notes
     -----
@@ -128,7 +126,7 @@ class RunlistBGRateInjector(BGRateInjector):
         %(BGRateInjector.fit.parameters)s
         x0 : array-like, optional
             Seed values for the fit function as described above. If None,
-            defaults are used. (default: None)
+            defaults from `RateFunction` are used. (default: None)
         remove_zero_runs : bool, optional
             If True, remove all runs with zero events and adapt the livetime.
             (default: False)
@@ -137,7 +135,7 @@ class RunlistBGRateInjector(BGRateInjector):
 
         Returns
         -------
-        rate_fun : function
+        best_estimator : function
             Rate function with the best fit parameters plugged in.
         """
         # Put data into run bins to fit them
@@ -148,6 +146,7 @@ class RunlistBGRateInjector(BGRateInjector):
 
         resx = self.rate_func.fit(binmids, rate, p0=None, rate_std=rate_std)
 
+        # Wrappers for functions with best fit pars plugged in
         self.best_pars = resx
         self.best_estimator = (lambda t: self.rate_func.fun(t, resx))
         self.best_estimator_integral = (
@@ -156,7 +155,7 @@ class RunlistBGRateInjector(BGRateInjector):
         return self.best_estimator
 
     @docs.dedent
-    def sample(self, t, trange, ntrials=1, poisson=True, random_state=None):
+    def sample(self, t, trange, poisson=True, random_state=None):
         """
         %(BGRateInjector.sample.summary)s
 
@@ -171,28 +170,25 @@ class RunlistBGRateInjector(BGRateInjector):
         if self.best_pars is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
-        rndgen = check_random_state(random_state)
+        t = np.atleast_1d(t)
+        trange = np.atleast_2d(trange)
+        nsrcs = len(t)
+        if trange.shape != (nsrcs, 2):
+            raise ValueError("`trange` shape must be (nsrcs, 2).")
 
-        # Expectations are the integrals over each time frames
+        # Expectations are the integrals over each time frames, shape (nsrcs)
         expect = self.best_estimator_integral(t, trange)
 
-        # Sample single number of events from poisson distribution
+        # Get number of actual events to sample times for
         if poisson:
-            nevents = np.random.poisson(lam=expect, size=ntrials)
-        else:
+            nevents = np.random.poisson(lam=expect, size=nsrcs)
+        else:  # If one expectation is < 0.5 no event is sampled for that src
             nevents = np.round(expect).astype(int)
 
-        # Sample all nevents samples from the rate function at once
-        tot_nevts = np.sum(nevents)
-        times = self.rate_func.sample(t, trange, self.best_pars,
-                                      n_samples=tot_nevts, random_state=rndgen)
-
-        # Split up correctly in trials with fast list comprehension
-        start = np.cumsum(np.append(0, nevents[:-1]))
-        end = np.cumsum(nevents)
-        trials = [times[i:k] for i, k in zip(start, end)]
-
-        return trials
+        # Sample all nevents for this trial from the rate function at once
+        return self.rate_func.sample(t, trange, self.best_pars,
+                                     n_samples=nevents,
+                                     random_state=random_state)
 
     def create_goodrun_dict(self, runlist, filter_runs):
         """
@@ -202,7 +198,7 @@ class RunlistBGRateInjector(BGRateInjector):
         Parameters
         ----------
         runlist, filter_runs
-            See RunlistBGRateInjector, Parameters
+            See `RunlistBGRateInjector`, Parameters
 
         Returns
         -------
@@ -243,20 +239,21 @@ class RunlistBGRateInjector(BGRateInjector):
     # Private Methods
     def _create_runtime_hist(self, T, goodrun_dict, remove_zero_runs=False):
         """
-        Creates time bins [start_MJD_i, stop_MJD_i] for each run i and bin the
+        Creates time bins [start_MJD_i, stop_MJD_i] for each run i and bins the
         experimental data to calculate the rate for each run.
 
         Parameters
         ----------
         T, remove_zero_runs
-            See RunlistBGRateInjector.fit, Parameters
+            See `RunlistBGRateInjector.fit`, Parameters
         goodrun_dict
-            See RunlistBGRateInjector.create_goodrun_dict, Returns
+            See `RunlistBGRateInjector.create_goodrun_dict`, Returns
 
         Returns
         -------
         rate_rec : recarray, shape(nruns)
             Record array with keys:
+
             - "run" : int, ID of the run.
             - "rate" : float, rate in Hz in this run.
             - "runtime" : float, livetime of this run in MJD days.
