@@ -150,8 +150,11 @@ def rejection_sampling(pdf, bounds, n_samples, random_state=None):
     for bound, nsam in zip(bounds, n_samples):
         # Get maximum func value in bound to maximize efficiency
         xlow, xhig = bound[0], bound[1]
-        # Start seed for minimizer: min of low or high border or center
-        x0 = np.amin([xlow, 0.5 * (xlow + xhig), xhig])
+        # Start seed for minimizer by quick scan in the interval
+        x_scan = np.linspace(bound[0], bound[1], 5)
+        max_idx = np.argmax(pdf(x_scan))
+        x0 = x_scan[max_idx]
+        # x0 = 0.5 * (xlow + xhig)
         # gtol, and ftol are explicitely low, when dealing with low rates.
         xmin = sco.minimize(negpdf, x0, bounds=[bound], method="L-BFGS-B",
                             options={"gtol": 1e-12, "ftol": 1e-12}).x
