@@ -1,5 +1,5 @@
 import numpy as np
-from numpy.lib.recfunctions import drop_fields
+from numpy.lib.recfunctions import drop_fields, append_fields
 from sklearn.utils import check_random_state
 
 import anapymods3.stats.KDE as KDE
@@ -48,14 +48,14 @@ class BGInjector(object):
         ----------
         X : record-array
             Experimental data from which background-like event are generated.
-            dtypes are ["name", type]. Here `X` must have names:
+            dtypes are ["name", type]. Here X must have names:
 
             - "sinDec": Per event declination, [-pi/2, pi/2], coordinates in
               equatorial coordinates, given in radians.
             - "logE": Per event energy proxy, given in log10(1/GeV).
             - "sigma": Per event positional uncertainty, given in radians. It is
-              assumed, that a circle with radius `sigma` contains approximatly
-              :math:`1\sigma` (~0.39) of probability of the reconstrucion
+              assumed, that a circle with radius sigma contains approximatly
+              :math:`1\sigma\approx 0.39` of probability of the reconstrucion
               likelihood space.
 
             Other names are dropped.
@@ -80,11 +80,34 @@ class BGInjector(object):
         -------
         X : record-array
             Generated samples from the fitted model. Has the same keys as the
-            given record-array `X` in `fit`.
+            given record-array X in `fit` plus an extra field with right-
+            ascension coordinates. These are just sampled uniformly in [0, 2pi].
         """
         raise NotImplementedError("BGInjector is an interface.")
 
     # Private methods
+    def _add_right_ascension(self, X, rndgen):
+        """
+        Adds uniformly sampled right ascension to the record array.
+
+        Parameters
+        ----------
+        X
+            See `BGInjector.fit`, Parameters
+        rndgen : `numpy.random.RandomState` instance
+            Instance of a numpy random generator.
+
+        Returns
+        -------
+        X
+            See `BGInjector.sample`, Returns
+        """
+        nevts = len(X)
+        ra = rndgen.uniform(0, 2 * np.pi, size=nevts)
+
+        # Append ra field to X output array
+        return append_fields(X, "ra", ra, dtypes=np.float, usemask=False)
+
     def _check_bounds(self, bounds):
         """
         Check if bounds are OK. Create numerical values when None is given.
@@ -136,7 +159,7 @@ class BGInjector(object):
             if n not in X.dtype.names:
                 raise ValueError("`X` is missing name '{}'.".format(n))
 
-        # Drop unneded fields
+        # Drop unneeded fields
         drop = [n for n in X.dtype.names if n not in self._X_names]
         return drop_fields(X, drop, usemask=False)
 
@@ -222,13 +245,13 @@ class KDEBGInjector(BGInjector):
         if n_samples < 1:
             raise ValueError("`n_samples` must be at least 1.")
 
-        random_state = check_random_state(random_state)
+        rndgen = check_random_state(random_state)
 
         # Check which samples are in bounds, redraw those that are not
         X = []
         bounds = self._bounds
         while n_samples > 0:
-            gen = self.kde_model.sample(n_samples, random_state)
+            gen = self.kde_model.sample(n_samples, rndgen)
             accepted = np.all(np.logical_and(gen >= bounds[:, 0],
                                              gen <= bounds[:, 1]), axis=1)
             n_samples = np.sum(~accepted)
@@ -239,7 +262,9 @@ class KDEBGInjector(BGInjector):
         X = np.concatenate(X)
         X = np.core.records.fromarrays(X.T, names=self._X_names,
                                        formats=self._n_features * ["float64"])
-        return X
+
+        # Add RA information
+        return self._add_right_ascension(X, rndgen)
 
 
 class DataBGInjector(BGInjector):
@@ -254,7 +279,7 @@ class DataBGInjector(BGInjector):
 
     def fit(self, X):
         """
-        Build the injection model with the provided data. Here the 'model' is
+        Build the injection model with the provided data. Here the model is
         simply the data itself.
 
         Parameters
@@ -286,7 +311,10 @@ class DataBGInjector(BGInjector):
         rndgen = check_random_state(random_state)
 
         # Choose uniformly from given data
-        return rndgen.choice(self.X, size=n_samples)
+        X = rndgen.choice(self.X, size=n_samples)
+
+        # Add RA information
+        return self._add_right_ascension(X, rndgen)
 
 
 class UniformBGInjector(BGInjector):
@@ -294,12 +322,11 @@ class UniformBGInjector(BGInjector):
     Uniform Background Injector
 
     Background Injector creating uniform events on the whole sky.
-    Created features are:
+    Created features (in addition to right-ascension) are:
 
     - logE from a gaussian with mean 3 and stddev 0.5
     - Declination in radian uniformly distributed in sinDec
-    - Sigma in radian from `f(x) = 3^2 * x * exp(-3 * x)`
-
+    - Sigma in radian modeled as :math:`f(x) = 3^2 x exp(-3x)`
     """
     def __init__(self):
         # "Close" to real data
@@ -349,7 +376,8 @@ class UniformBGInjector(BGInjector):
         u1, u2 = rndgen.uniform(size=(2, n_samples))
         X["sigma"] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
 
-        return X
+        # Add RA information
+        return self._add_right_ascension(X, rndgen)
 
 
 class MRichmanBGInjector(BGInjector):
@@ -528,4 +556,6 @@ class MRichmanBGInjector(BGInjector):
         X = np.vstack((ax0_pts, ax1_pts, ax2_pts))
         X = np.core.records.fromarrays(X, names=self._X_names,
                                        formats=self._n_features * ["float64"])
-        return X
+
+        # Add RA information
+        return self._add_right_ascension(X, rndgen)
