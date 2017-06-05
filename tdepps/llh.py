@@ -56,11 +56,6 @@ class GRBLLH(object):
           Units are "GeV sr cm^2". Final event weights are obtained by
           multiplying with desired flux.
 
-    srcs : recarray, shape (nsrcs)
-        Fixed source properties, must have names:
-        TODO maybe put srcs in here for caching or let it in analysis for
-        clarity.
-
     spatial_pdf_args : dict
         Arguments for the spatial signal and background PDF. Must contain keys:
 
@@ -117,14 +112,13 @@ class GRBLLH(object):
                  time_pdf_args=None):
         # Check if data, MC and srcs have all needed names
         X_names = ["dec", "logE"]
-        if not all([n in X.dtype.names for n in X_names]):
-            raise ValueError("`X` has not all required names")
+        for n in X_names:
+            if n not in X.dtype.names:
+                raise ValueError("`X` is missing name '{}'.".format(n))
         MC_names = X_names + ["trueE", "ow"]
-        if not all([n in MC.dtype.names for n in MC_names]):
-            raise ValueError("`MC` has not all required names")
-        # srcs_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
-        # if not all([n in srcs.dtype.names for n in srcs_names]):
-        #     raise ValueError("`srcs` has not all required names")
+        for n in MC_names:
+            if n not in MC.dtype.names:
+                raise ValueError("`MC` is missing name '{}'.".format(n))
 
         # Setup spatial PDF args
         required_keys = ["bins"]
@@ -162,6 +156,13 @@ class GRBLLH(object):
         nsig = self.time_pdf_args["nsig"]
         if nsig < 3:
             raise ValueError("'nsig' must be >= 3.")
+
+        tmin = self.time_pdf_args["sigma_t_min"]
+        tmax = self.time_pdf_args["sigma_t_max"]
+        if tmin > tmax or tmin == tmax:
+            raise ValueError("'sigma_t_min' must be < 'sigma_t_max'.")
+        if tmin <= 0:
+            raise ValueError("'sigma_t_min' must be > 0.")
 
         # Setup common variables
         self.energy_pdf_args["bins"] = [sin_dec_bins, logE_bins]
