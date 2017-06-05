@@ -26,17 +26,18 @@ class TransientsAnalysis(object):
           known gamma flux.
 
     llh : `tdepps.LLH.GRBLLH` instance
-        LLH function used to test the hypothesis, that additional neutrinos
-        have been measured accompaning a source event occuring only for a
-        limited amount of time, eg. a gamma ray burst (GRB).
+        LLH function used to test the hypothesis, that signal neutrinos have
+        been measured accompaning a source event occuring only for a limited
+        amount of time, eg. a gamma ray burst (GRB).
     """
     def __init__(self, srcs, llh):
-        required_names = ["ra", "dec", "t", "dt0", "dt1"]
-        if not all([name in required_names for name in srcs.dtype.names]):
-            raise ValueError("'srcs' is missing required names.")
+        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
+        for n in required_names:
+            if n not in srcs.dtype.names:
+                raise ValueError("`srcs` is missing name '{}'.".format(n))
 
         if not isinstance(llh, GRBLLH):
-            raise ValueError("'llh' must be an instance of tdepps.llh.GRBLLH.")
+            raise ValueError("`llh` must be an instance of tdepps.llh.GRBLLH.")
 
         self.srcs = srcs
         self.n_srcs = len(srcs)
@@ -138,8 +139,7 @@ class TransientsAnalysis(object):
 
         theta0 : dict
             Seeds for the parameter set {"par_name": value} to evaluate the
-            ln-LLH at.
-            Here GRBLLH depends on:
+            ln-LLH at. Here GRBLLH depends on:
 
             - "ns": Number of signal events that we want to fit.
 
@@ -147,24 +147,31 @@ class TransientsAnalysis(object):
             Other fixed parameters {"par_name": value}, the LLH depents on.
             Here `args` must have keys:
 
-            - "ns": Number of expected background events in the time window.
+            - "ns", array-like: Number of expected background events for each
+              sources time window.
 
         kwargs : optional
-            Keyword arguments are passed to `scipy.optimize.minimize`.
-            `bounds=None` and `method="L-BFGS-B"` are explicitly set as
-            defaults.
+            Keyword arguments are passed to `scipy.optimize.minimize` [1] using
+            the "L-BFGS-B" algorithm. Explicitly set default values are:
+
+            - bounds: None (given bound must be of shape (nparams, 2))
+            - ftol: 1e-12 (absolute tolerance of the function value)
+            - gtol: 1e-12 (absolute tolerance of one gradient component)
+            - maxiter: int(1e5) (Maximum fit iterations)
 
         Returns
         -------
         res : `scipy.optimise.OptimizationResult`
-            Holding the information of the fit. Get result with `res.x`.
+            Holding the information of the fit. Get best fit point with `res.x`.
+
+        Notes
+        -----
+        .. [1] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466 # noqa
         """
         def _llh(theta):
             """
-            Wrapper for the LLH function.
-
-            We need to minimize and wrap up params in a dict.
-            Also we can test multiple srcs at once by summing the LLHs.
+            Wrapper for the LLH function to put params in a dict and returning
+            the negative ln-LLH ratio for the minimizer.
 
             Parameters
             ----------
@@ -182,28 +189,32 @@ class TransientsAnalysis(object):
             lnllh, lnllh_grad = self.llh.lnllh_ratio(X, theta, args)
             return -1. * lnllh, -1. * lnllh_grad
 
-        # Check if args list is OK. Need arg dict for each src
-        if len(args) != self.n_srcs:
-            raise ValueError("Must provide an 'arg' dict for each source.")
-        for i in range(self.n_srcs):
-            required_keys = ["nb"]
-            opt_keys = {}
-            args[i] = fill_dict_defaults(args[i], required_keys, opt_keys)
+        # Check if args list is OK.
+        required_keys = ["nb"]
+        opt_keys = {}
+        args = fill_dict_defaults(args, required_keys, opt_keys)
 
-        # Setup src info in args list to be used by LLH
-        for i in range(self.n_srcs):
-            args[i]["dt"] = [self.srcs[i]["dt0"], self.srcs[i]["dt1"]]
-            args[i]["src_t"] = self.srcs[i]["t"]
-            args[i]["src_ra"] = self.srcs[i]["ra"]
-            args[i]["src_dec"] = self.srcs[i]["dec"]
-            args[i]["src_w_theo"] = self.srcs[i]["w_theo"]
+        nb = np.atleast_1d(args["nb"])
+        if len(nb) != self.n_srcs:
+            raise ValueError("We need a background epectation for each source.")
+        args["nb"] = nb
 
-        # Setup minimizer
+        # Put sources to args
+        args["srcs"] = self.srcs
+
+        # Setup minimizer defaults and put rest of kwargs in options dict
         bounds = kwargs.pop("bounds", None)
-        method = kwargs.pop("method", "L-BFGS-B")
-        theta0 = [val for val in theta0.values()]
+        ftol = kwargs.pop("ftol", 1e-12)
+        gtol = kwargs.pop("gtol", 1e-12)
+        maxiter = kwargs.pop("maxiter", int(1e5))
+        fit_options = {"ftol": ftol, "gtol": gtol, "maxiter": maxiter}
+        for key, val in kwargs.items():
+            fit_options[key] = val
 
+        # Wrap up seed and Write it, cut it, paste it, save it,
+        #                  Load it, check it, quick, let's fit it
+        theta0 = [val for val in theta0.values()]
         res = sco.minimize(fun=_llh, x0=theta0, jac=True, bounds=bounds,
-                           method=method, **kwargs)
+                           method="L-BFGS-B", options=fit_options)
 
         return res
