@@ -73,6 +73,54 @@ class BGRateInjector(object):
         """
         raise NotImplementedError("BGInjector is an interface.")
 
+    def get_nb(self, t, trange):
+        """
+        Return the expected number of events from integrating the rate function
+        in the given time ranges.
+
+        Parameters
+        ----------
+        t : array-like, shape (nsrcs)
+            MJD times of sources.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows [[t0, t1], ...] in seconds around each given time t.
+
+        Returns
+        -------
+        nb : array-like, shape (nsrcs, 1)
+            Expected number of background events for each sources time window.
+        """
+        if self.best_pars is None:
+            raise RuntimeError("Injector was not fit to data yet.")
+
+        t, trange = self._prep_t_trange(t, trange)
+
+        # BG expectations are the integrals over each time frames, shape (nsrcs)
+        nb = self.best_estimator_integral(t, trange)
+        return nb
+
+    def _prep_t_trange(self, t, trange):
+        """
+        Put t, trange in needed shapes and check dimensions
+
+        Parameters
+        ----------
+        t, trange
+            See `BGRateInjector.sample`, Parameters
+
+        Returns
+        -------
+        t, trange
+            See `BGRateInjector.sample`, Parameters
+        """
+        t = np.atleast_1d(t)
+        trange = np.atleast_2d(trange)
+        nsrcs = len(t)
+        if trange.shape != (nsrcs, 2):
+            raise ValueError("`trange` shape must be (nsrcs, 2).")
+
+        return t, trange
+
 
 class RunlistBGRateInjector(BGRateInjector):
     """
@@ -170,14 +218,10 @@ class RunlistBGRateInjector(BGRateInjector):
         if self.best_pars is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
-        t = np.atleast_1d(t)
-        trange = np.atleast_2d(trange)
+        # BG expectations are the integrals over each time frames, shape (nsrcs)
+        t, trange = self._prep_t_trange(t, trange)
+        expect = self.get_nb(t, trange)
         nsrcs = len(t)
-        if trange.shape != (nsrcs, 2):
-            raise ValueError("`trange` shape must be (nsrcs, 2).")
-
-        # Expectations are the integrals over each time frames, shape (nsrcs)
-        expect = self.best_estimator_integral(t, trange)
 
         # Get number of actual events to sample times for
         if poisson:
