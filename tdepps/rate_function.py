@@ -77,7 +77,7 @@ class RateFunction(object):
     @docs.get_sectionsf("RateFunction.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def sample(self, t, trange, pars, n_samples=1, random_state=None):
+    def sample(self, t, trange, pars, n_samples, random_state=None):
         """
         Generate random samples from the rate function for multiple source times
         and time windows.
@@ -91,7 +91,7 @@ class RateFunction(object):
         pars : tuple
             Further parameters `self.fun` depends on.
         n_samples : array-like, shape (nsrcs)
-            Number of events to sample per source. (default: nsrcs * [1])
+            Number of events to sample per source.
         random_state : seed, optional
             Turn seed into a `np.random.RandomState` instance. See
             `sklearn.utils.check_random_state`. (default: None)
@@ -197,12 +197,14 @@ class RateFunction(object):
         Parameters
         ----------
         t : array-like, shape (nsrcs)
-            MJD times of sources.
+            MJD times of the sources.
         trange : array-like, shape(nsrcs, 2)
             Time windows [[t0, t1], ...] in seconds around each given time t.
 
         Returns
         -------
+        t : array-like, shape (nsrcs)
+            MJD times of the sources.
         trange : array-like, shape(nsrcs, 2)
             Time windows [[t0, t1], ...] in MJD around each given time t.
         """
@@ -211,7 +213,7 @@ class RateFunction(object):
         # Proper braodcasting to process multiple srcs at once
         t = t.reshape(nsrcs, 1)
         trange = np.atleast_2d(trange).reshape(nsrcs, 2)
-        return t + trange / RateFunction._SECINDAY
+        return t, t + trange / RateFunction._SECINDAY
 
 
 class SinusRateFunction(RateFunction):
@@ -274,7 +276,7 @@ class SinusRateFunction(RateFunction):
         a, b, c, d = pars
 
         # Transform time windows to MJD
-        dts = self._transform_trange_mjd(t, trange)
+        t, dts = self._transform_trange_mjd(t, trange)
         t0, t1 = dts[:, 0], dts[:, 1]
 
         # Split analytic expression for readability only
@@ -311,7 +313,7 @@ class SinusRateFunction(RateFunction):
         """
 
     @docs.dedent
-    def sample(self, t, trange, pars, n_samples=1, random_state=None):
+    def sample(self, t, trange, pars, n_samples, random_state=None):
         """
         %(RateFunction.sample.summary)s
 
@@ -324,18 +326,17 @@ class SinusRateFunction(RateFunction):
         -------
         %(RateFunction.sample.returns)s
         """
-        rndgen = check_random_state(random_state)
+        n_samples = np.atleast_1d(n_samples)
 
         def sample_fun(t):
             """Wrapper to have only one argument."""
             return self.fun(t, pars)
 
-        # Transfrom  to MJD ranges
-        dts = self._transform_trange_mjd(t, trange)
+        t, dts = self._transform_trange_mjd(t, trange)
 
         # Samples times for all sources at once
-        times = rejection_sampling(sample_fun, bounds=dts, n=n_samples,
-                                   random_state=rndgen)
+        times = rejection_sampling(sample_fun, bounds=dts, n_samples=n_samples,
+                                   random_state=random_state)
 
         return times
 
@@ -369,7 +370,7 @@ class SinusRateFunction(RateFunction):
         a0 = 0.5 * (np.amax(rate) - np.amin(rate))
         b0 = 2. * np.pi / 365.
         c0 = np.amin(t)
-        d0 = np.average(rate, rate_std=rate_std**2)
+        d0 = np.average(rate, weights=rate_std**2)
         return (a0, b0, c0, d0)
 
 
@@ -503,13 +504,13 @@ class ConstantRateFunction(RateFunction):
         -------
         %(RateFunction.integral.returns)s
         """
-        dts = self._transform_trange_mjd(t, trange)
+        t, dts = self._transform_trange_mjd(t, trange)
         # Multiply first then diff to avoid roundoff errors
         return (np.diff(dts * RateFunction._SECINDAY, axis=1) *
                 self.fun(t, pars))
 
     @docs.dedent
-    def sample(self, t, trange, pars=None, n_samples=1, random_state=None):
+    def sample(self, t, trange, pars, n_samples, random_state=None):
         """
         %(RateFunction.sample.summary)s
 
@@ -521,10 +522,16 @@ class ConstantRateFunction(RateFunction):
         -------
         %(RateFunction.sample.returns)s
         """
-        # Just sample uniformly in MJD time window
+        # Just sample uniformly in MJD time windows
         rndgen = check_random_state(random_state)
-        trange = self._transform_trange_mjd(t, trange)
-        return rndgen.uniform(trange[0], trange[1], size=n_samples)
+        t, dts = self._transform_trange_mjd(t, trange)
+
+        # Samples times for all sources at once
+        sample = []
+        for dt, nsam in zip(dts, n_samples):
+            sample.append(rndgen.uniform(dt[0], dt[1], size=nsam))
+
+        return sample
 
     @docs.dedent
     def _get_default_seed(self, t, rate, rate_std):
