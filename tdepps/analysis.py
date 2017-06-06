@@ -83,10 +83,15 @@ class TransientsAnalysis(object):
         Returns
         -------
         res : record-array, shape (n_trials)
-            Best fit parameters and test statistic for each trial. Has keys:
+            Best fit parameters and test statistic for each nonzero trial.
+            Has keys:
 
-            - "param": For each parameter name in seed theta0.
+            - "ns": Best fit values for number of signal events.
             - "TS": Test statisitc for each trial.
+
+        nzeros : int
+            How many trials with ns = 0 and TS = 0 occured. This is done to save
+            memory, because really a lot of trials are zero.
         """
         if signal_inj is not None:
             raise NotImplementedError("Signal injection not yet implemented.")
@@ -106,7 +111,8 @@ class TransientsAnalysis(object):
         nb = bg_rate_inj.get_nb(src_t, trange)
         args = {"nb": nb}
 
-        res = np.zeros((n_trials,), dtype=[("ns", np.float), ("TS", np.float)])
+        ns, TS = [], []
+        nzeros = 0
         for i in range(n_trials):
             # Inject events from given injectors
             times = bg_rate_inj.sample(src_t, trange, poisson=True,
@@ -118,12 +124,22 @@ class TransientsAnalysis(object):
             X = append_fields(X, "timeMJD", times, dtypes=np.float,
                               usemask=False)
 
-            # Only store the best fit and the TS value
+            # Only store the best fit params and the TS value if nonzero
             _res = self.fit_lnllh_ratio_params(X, theta0, args, minimizer_opts)
-            res["ns"][i] = _res.x[0]
-            res["TS"][i] = -1. * _res.fun  # Fitted the negative function
+            xmin, fmin = _res.x[0], -1. * _res.fun
+            if (xmin == 0) and (fmin == 0):
+                nzeros += 1
+            else:
+                ns.append(_res.x[0])
+                TS.append(-1. * _res.fun)
 
-        return res
+        # Make output record array for non zero trials
+        res = np.empty((n_trials - nzeros,),
+                       dtype=[("ns", np.float), ("TS", np.float)])
+        res["ns"] = np.array(ns)
+        res["TS"] = np.array(TS)
+
+        return res, nzeros
 
     def fit_lnllh_ratio_params(self, X, theta0, args, minimizer_opts=None):
         """
