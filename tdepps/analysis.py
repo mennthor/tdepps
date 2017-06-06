@@ -127,7 +127,7 @@ class TransientsAnalysis(object):
             def get_bounds(nevts):
                 return [[0, 2. * nevts]] + n_left_pars * [[None, None]]
 
-        res = []
+        res = np.zeros((n_trials,), dtype=[("ns", np.float), ("TS", np.float)])
         for i in range(n_trials):
             # Inject events from given injectors
             times = bg_rate_inj.sample(src_t, trange, poisson=True,
@@ -141,10 +141,11 @@ class TransientsAnalysis(object):
 
             # Only store the best fit and the TS value
             minimizer_opts["bounds"] = get_bounds(nevts)
-            res.append(self.fit_lnllh_ratio_params(X, theta0, args,
-                                                   minimizer_opts).x)
+            _res = self.fit_lnllh_ratio_params(X, theta0, args, minimizer_opts)
+            res["ns"][i] = _res.x[0]
+            res["TS"][i] = -1. * _res.fun  # Fitted the negative function
 
-        return flatten_list_of_1darrays(res)
+        return res
 
     def fit_lnllh_ratio_params(self, X, theta0, args, minimizer_opts=None):
         """
