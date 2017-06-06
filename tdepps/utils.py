@@ -54,21 +54,23 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}):
         if not required_keys:
             return opt_keys
         else:
-            raise ValueError("'d' is None, but 'required_keys' is not empty.")
+            raise ValueError("Dict is None, but 'required_keys' is not empty.")
 
+    d = d.copy()  # Copy to not destroy the original dict
     out = {}
     # Set required keys
     for key in required_keys:
         if key in d:
             out[key] = d.pop(key)
         else:
-            raise KeyError("'d' is missing key '{}'".format(key))
+            raise KeyError("Dict is missing key '{}'.".format(key))
     # Set optional values, if key not given
     for key, val in opt_keys.items():
         out[key] = d.pop(key, val)
     # Should have no extra keys left
     if d:
-        raise KeyError("{} not used in 'd'.".format(d.keys()))
+        for key in d.keys():
+            raise KeyError("Key '{}' not used in dict.".format(key))
     return out
 
 
