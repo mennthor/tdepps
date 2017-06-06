@@ -106,27 +106,6 @@ class TransientsAnalysis(object):
         nb = bg_rate_inj.get_nb(src_t, trange)
         args = {"nb": nb}
 
-        # This is a bit clumsy, but reduces if trees in the trial loop. We
-        # preselect the function returning the ns bound per trial, if bounds
-        # were not explicitely set.
-        if minimizer_opts is None:
-            minimizer_opts = {}
-
-        if "bounds" in minimizer_opts.keys():
-            if minimizer_opts["bounds"] is None:
-                n_left_pars = len(theta0) - 1
-
-                def get_bounds(nevts):
-                    return [[0, 2. * nevts]] + n_left_pars * [[None, None]]
-            else:
-                def get_bounds(nevts):
-                    return minimizer_opts["bounds"]
-        else:
-            n_left_pars = len(theta0) - 1
-
-            def get_bounds(nevts):
-                return [[0, 2. * nevts]] + n_left_pars * [[None, None]]
-
         res = np.zeros((n_trials,), dtype=[("ns", np.float), ("TS", np.float)])
         for i in range(n_trials):
             # Inject events from given injectors
@@ -140,7 +119,6 @@ class TransientsAnalysis(object):
                               usemask=False)
 
             # Only store the best fit and the TS value
-            minimizer_opts["bounds"] = get_bounds(nevts)
             _res = self.fit_lnllh_ratio_params(X, theta0, args, minimizer_opts)
             res["ns"][i] = _res.x[0]
             res["TS"][i] = -1. * _res.fun  # Fitted the negative function
@@ -236,13 +214,15 @@ class TransientsAnalysis(object):
         # Setup minimizer defaults
         if minimizer_opts is None:
             minimizer_opts = {}
-        bounds = minimizer_opts.pop("bounds", None)
-        ftol = minimizer_opts.pop("ftol", 1e-12)
-        gtol = minimizer_opts.pop("gtol", 1e-12)
-        maxiter = minimizer_opts.pop("maxiter", int(1e5))
+        else:
+            minopts = minimizer_opts.copy()
+        bounds = minopts.pop("bounds", None)
+        ftol = minopts.pop("ftol", 1e-12)
+        gtol = minopts.pop("gtol", 1e-12)
+        maxiter = minopts.pop("maxiter", int(1e5))
         fit_options = {"ftol": ftol, "gtol": gtol, "maxiter": maxiter}
-        for key, val in minimizer_opts.items():
-            fit_options[key] = val  # Dump leftover options
+        for key, val in minopts.items():
+            fit_options[key] = val  # Let scipy handle leftover options
 
         # Wrap up seed and Write it, cut it, paste it, save it,
         #                  Load it, check it, quick, let's fit it
