@@ -1,5 +1,8 @@
 import numpy as np
+from numpy.lib.recfunctions import append_fields
 import scipy.optimize as sco
+from sklearn.utils import check_random_state
+
 
 from tdepps.llh import GRBLLH
 
@@ -46,7 +49,7 @@ class TransientsAnalysis(object):
 
     def do_trials(self, n_trials, theta0,
                   bg_inj, bg_rate_inj, signal_inj=None,
-                  **kwargs):
+                  random_state=None, minimizer_opts=None):
         """
         Do pseudo experiment trials using the given event injectors.
 
@@ -68,57 +71,82 @@ class TransientsAnalysis(object):
         signal_inj : `tdepps.signal_injector` instance, optional
             Injector to generate signal events. If None, pure background trials
             are done. (default: None)
+        random_state : RandomState, optional
+            Turn seed into a `np.random.RandomState` instance. Method from
+            `sklearn.utils`. Can be None, int or RndState. (default: None)
+        minimizer_opts : dict
+            See `fit_lnllh_ratio_params`, Parameters: Options passed to
+            `scipy.optimize.minimize` [1] using the "L-BFGS-B" algorithm.
+            If key 'bounds' is not explicitely given or None, it is set to
+            [0, 2 * nevts_injected] for parameter ns in each trial.
 
         Returns
         -------
-        res : list
-            Fit results from each trial.
+        res : record-array, shape (n_trials)
+            Best fit parameters and test statistic for each trial. Has keys:
+
+            - "param": For each parameter name in seed theta0.
+            - "TS": Test statisitc for each trial.
         """
         if signal_inj is not None:
             raise NotImplementedError("Signal injection not yet implemented.")
 
-        def get_pseudo_events(src_idx):
-            _X = []
-            times = []
-            rnd_ra = []
-            args = []
+        rndgen = check_random_state(random_state)
 
-            for src_idx in range(self.n_srcs):
-                # Samples times and thus number of bg expectated events
-                _t = self.srcs["t"][src_idx]
-                dt = [self.srcs["dt0"][src_idx], self.srcs["dt1"][src_idx]]
-                _times = bg_rate_inj.sample(t=_t, trange=dt, ntrials=1)[0]
-                nb = len(_times)
-                times.append(_times)
-                args.append({"nb": nb})
-                # Sample rest of features
-                if nb > 0:
-                    _X.append(bg_inj.sample(n_samples=nb))
-                    rnd_ra.append(np.random.uniform(0, 2. * np.pi, size=nb))
+        # Prepare fixed source parameters for injectors
+        srcs = self.srcs
+        src_t = srcs["t"]
+        src_dt = np.vstack((srcs["dt0"], srcs["dt1"])).T
 
-            names = ["ra", "sinDec", "timeMJD", "logE", "sigma"]
-            dtype = [(n, t) for (n, t) in zip(names, len(names) * [np.float])]
-            nb_tot = np.sum([d["nb"] for d in args])
-            X = np.empty((nb_tot, ), dtype=dtype)
-            # Make output array in compatible format
-            _X = flatten_list_of_1darrays(_X)
-            X["ra"] = flatten_list_of_1darrays(rnd_ra)
-            X["sinDec"] = np.sin(_X[:, 1])
-            X["logE"] = _X[:, 0]
-            X["sigma"] = _X[:, 2]
-            X["timeMJD"] = flatten_list_of_1darrays(times)
+        # Total injection time window in which the time PDF is defined and
+        # nonzero.
+        trange = self.llh.get_injection_trange(src_t, src_dt)
 
-            return X, args
+        # Number of expected background events in each given time frame
+        nb = bg_rate_inj.get_nb(src_t, trange)
+        args = {"nb": nb}
+
+        # This is a bit clumsy, but reduces if trees in the trial loop. We
+        # preselect the function returning the ns bound per trial, if bounds
+        # were not explicitely set.
+        if minimizer_opts is None:
+            minimizer_opts = {}
+
+        if "bounds" in minimizer_opts.keys():
+            if minimizer_opts["bounds"] is None:
+                n_left_pars = len(theta0) - 1
+
+                def get_bounds(nevts):
+                    return [[0, 2. * nevts]] + n_left_pars * [[None, None]]
+            else:
+                def get_bounds(nevts):
+                    return minimizer_opts["bounds"]
+        else:
+            n_left_pars = len(theta0) - 1
+
+            def get_bounds(nevts):
+                return [[0, 2. * nevts]] + n_left_pars * [[None, None]]
 
         res = []
         for i in range(n_trials):
-            # Inject background-like events
-            X, args = get_pseudo_events()
-            res.append(self.fit_lnllh_ratio_params(X, theta0, args, **kwargs))
+            # Inject events from given injectors
+            times = bg_rate_inj.sample(src_t, trange, poisson=True,
+                                       random_state=rndgen)
+            times = flatten_list_of_1darrays(times)
+            nevts = len(times)
 
-        return res
+            X = bg_inj.sample(nevts, random_state=rndgen)
+            X = append_fields(X, "timeMJD", times, dtypes=np.float,
+                              usemask=False)
 
-    def fit_lnllh_ratio_params(self, X, theta0, args, **kwargs):
+            # Only store the best fit and the TS value
+            minimizer_opts["bounds"] = get_bounds(nevts)
+            res.append(self.fit_lnllh_ratio_params(X, theta0, args,
+                                                   minimizer_opts).x)
+
+        return flatten_list_of_1darrays(res)
+
+    def fit_lnllh_ratio_params(self, X, theta0, args, minimizer_opts=None):
         """
         Fit LLH parameters for a given set of data and parameters.
 
@@ -150,14 +178,16 @@ class TransientsAnalysis(object):
             - "ns", array-like: Number of expected background events for each
               sources time window.
 
-        kwargs : optional
-            Keyword arguments are passed to `scipy.optimize.minimize` [1] using
-            the "L-BFGS-B" algorithm. Explicitly set default values are:
+        minimizer_opts : dict, optional
+            Options passed to `scipy.optimize.minimize` [1] using the "L-BFGS-B"
+            algorithm. Explicitly set default values are:
 
             - bounds: None (given bound must be of shape (nparams, 2))
             - ftol: 1e-12 (absolute tolerance of the function value)
             - gtol: 1e-12 (absolute tolerance of one gradient component)
             - maxiter: int(1e5) (Maximum fit iterations)
+
+            (default: None)
 
         Returns
         -------
@@ -202,14 +232,16 @@ class TransientsAnalysis(object):
         # Put sources to args
         args["srcs"] = self.srcs
 
-        # Setup minimizer defaults and put rest of kwargs in options dict
-        bounds = kwargs.pop("bounds", None)
-        ftol = kwargs.pop("ftol", 1e-12)
-        gtol = kwargs.pop("gtol", 1e-12)
-        maxiter = kwargs.pop("maxiter", int(1e5))
+        # Setup minimizer defaults
+        if minimizer_opts is None:
+            minimizer_opts = {}
+        bounds = minimizer_opts.pop("bounds", None)
+        ftol = minimizer_opts.pop("ftol", 1e-12)
+        gtol = minimizer_opts.pop("gtol", 1e-12)
+        maxiter = minimizer_opts.pop("maxiter", int(1e5))
         fit_options = {"ftol": ftol, "gtol": gtol, "maxiter": maxiter}
-        for key, val in kwargs.items():
-            fit_options[key] = val
+        for key, val in minimizer_opts.items():
+            fit_options[key] = val  # Dump leftover options
 
         # Wrap up seed and Write it, cut it, paste it, save it,
         #                  Load it, check it, quick, let's fit it
