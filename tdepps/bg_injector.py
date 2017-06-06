@@ -50,7 +50,7 @@ class BGInjector(object):
             Experimental data from which background-like event are generated.
             dtypes are ["name", type]. Here X must have names:
 
-            - "sinDec": Per event declination, [-pi/2, pi/2], coordinates in
+            - "dec": Per event declination, [-pi/2, pi/2], coordinates in
               equatorial coordinates, given in radians.
             - "logE": Per event energy proxy, given in log10(1/GeV).
             - "sigma": Per event positional uncertainty, given in radians. It is
@@ -80,15 +80,20 @@ class BGInjector(object):
         -------
         X : record-array
             Generated samples from the fitted model. Has the same keys as the
-            given record-array X in `fit` plus an extra field with right-
-            ascension coordinates. These are just sampled uniformly in [0, 2pi].
+            given record-array X in `fit` and additional names:
+
+            - "ra", float: Equatorial right-ascension coordinates in radains.
+              These are sampled uniformly in [0, 2pi].
+            - "sinDec", float: Sinus declination in range [-1, 1] transformed
+              from sampled declination values.
         """
         raise NotImplementedError("BGInjector is an interface.")
 
     # Private methods
-    def _add_right_ascension(self, X, rndgen):
+    def _add_ra_sin_dec(self, X, rndgen):
         """
-        Adds uniformly sampled right ascension to the record array.
+        Adds uniformly sampled right ascension and sinus declination to the
+        record array.
 
         Parameters
         ----------
@@ -104,9 +109,11 @@ class BGInjector(object):
         """
         nevts = len(X)
         ra = rndgen.uniform(0, 2 * np.pi, size=nevts)
+        sin_dec = np.sin(X["dec"])
 
-        # Append ra field to X output array
-        return append_fields(X, "ra", ra, dtypes=np.float, usemask=False)
+        # Append ra, sin_dec fields to X output array
+        return append_fields(X, ["ra", "sinDec"], [ra, sin_dec],
+                             dtypes=np.float, usemask=False)
 
     def _check_bounds(self, bounds):
         """
@@ -264,7 +271,7 @@ class KDEBGInjector(BGInjector):
                                        formats=self._n_features * ["float64"])
 
         # Add RA information
-        return self._add_right_ascension(X, rndgen)
+        return self._add_ra_sin_dec(X, rndgen)
 
 
 class DataBGInjector(BGInjector):
@@ -314,7 +321,7 @@ class DataBGInjector(BGInjector):
         X = rndgen.choice(self.X, size=n_samples)
 
         # Add RA information
-        return self._add_right_ascension(X, rndgen)
+        return self._add_ra_sin_dec(X, rndgen)
 
 
 class UniformBGInjector(BGInjector):
@@ -377,7 +384,7 @@ class UniformBGInjector(BGInjector):
         X["sigma"] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
 
         # Add RA information
-        return self._add_right_ascension(X, rndgen)
+        return self._add_ra_sin_dec(X, rndgen)
 
 
 class MRichmanBGInjector(BGInjector):
@@ -558,4 +565,4 @@ class MRichmanBGInjector(BGInjector):
                                        formats=self._n_features * ["float64"])
 
         # Add RA information
-        return self._add_right_ascension(X, rndgen)
+        return self._add_ra_sin_dec(X, rndgen)
