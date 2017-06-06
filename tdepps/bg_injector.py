@@ -249,10 +249,14 @@ class KDEBGInjector(BGInjector):
         """
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
-        if n_samples < 1:
-            raise ValueError("`n_samples` must be at least 1.")
 
         rndgen = check_random_state(random_state)
+
+        # Return empty array with all keys, when n_samples < 1
+        if n_samples < 1:
+            X = np.empty((0, ),
+                         dtype=[(n, np.float) for n in self._X_names])
+            return self._add_ra_sin_dec(X, rndgen)
 
         # Check which samples are in bounds, redraw those that are not
         X = []
@@ -270,7 +274,6 @@ class KDEBGInjector(BGInjector):
         X = np.core.records.fromarrays(X.T, names=self._X_names,
                                        formats=self._n_features * ["float64"])
 
-        # Add RA information
         return self._add_ra_sin_dec(X, rndgen)
 
 
@@ -312,15 +315,18 @@ class DataBGInjector(BGInjector):
         """
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
-        if n_samples < 1:
-            raise ValueError("'n_samples' must be at least 1.")
 
         rndgen = check_random_state(random_state)
+
+        # Return empty array with all keys, when n_samples < 1
+        if n_samples < 1:
+            X = np.empty((0, ),
+                         dtype=[(n, np.float) for n in self._X_names])
+            return self._add_ra_sin_dec(X, rndgen)
 
         # Choose uniformly from given data
         X = rndgen.choice(self.X, size=n_samples)
 
-        # Add RA information
         return self._add_ra_sin_dec(X, rndgen)
 
 
@@ -363,13 +369,16 @@ class UniformBGInjector(BGInjector):
         Returns
         -------
         %(BGInjector.sample.returns)s
-        """
-        if n_samples < 1:
-            raise ValueError("'n_samples' must be at least 1.")
 
         rndgen = check_random_state(random_state)
 
-        X = np.zeros((n_samples, ),
+        # Return empty array with all keys, when n_samples < 1
+        if n_samples < 1:
+            X = np.empty((0, ),
+                         dtype=[(n, np.float) for n in self._X_names])
+            return self._add_ra_sin_dec(X, rndgen)
+
+        X = np.empty((n_samples, ),
                      dtype=[(n, np.float) for n in self._X_names])
 
         # Sample logE from gaussian, sinDec uniformly, sigma from x*exp(-x)
@@ -531,10 +540,14 @@ class MRichmanBGInjector(BGInjector):
         """
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
-        if n_samples < 1:
-            raise ValueError("'n_samples' must be at least 1.")
 
         rndgen = check_random_state(random_state)
+
+        # Return empty array with all keys, when n_samples < 1
+        if n_samples < 1:
+            X = np.empty((0, ),
+                         dtype=[(n, np.float) for n in self._X_names])
+            return self._add_ra_sin_dec(X, rndgen)
 
         # Sample indices to select from which bin is injected
         ax0_idx = rndgen.randint(0, self._nbins[0], size=n_samples)
@@ -564,5 +577,4 @@ class MRichmanBGInjector(BGInjector):
         X = np.core.records.fromarrays(X, names=self._X_names,
                                        formats=self._n_features * ["float64"])
 
-        # Add RA information
         return self._add_ra_sin_dec(X, rndgen)
