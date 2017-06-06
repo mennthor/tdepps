@@ -362,6 +362,8 @@ class UniformBGInjector(BGInjector):
         """
         Sample pseudo events that look somewhat similar to data.
 
+        The method on how to sample from x*exp(x) is taken from Pythia [1]_.
+
         Parameters
         ----------
         %(BGInjector.sample.parameters)s
@@ -370,6 +372,10 @@ class UniformBGInjector(BGInjector):
         -------
         %(BGInjector.sample.returns)s
 
+        Notes
+        -----
+        .. [1] # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html # noqa
+        """
         rndgen = check_random_state(random_state)
 
         # Return empty array with all keys, when n_samples < 1
@@ -388,11 +394,9 @@ class UniformBGInjector(BGInjector):
         X["dec"] = (np.arccos(rndgen.uniform(-1, 1, size=n_samples)) -
                     np.pi / 2.)
 
-        # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html
         u1, u2 = rndgen.uniform(size=(2, n_samples))
         X["sigma"] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
 
-        # Add RA information
         return self._add_ra_sin_dec(X, rndgen)
 
 
