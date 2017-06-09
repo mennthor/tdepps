@@ -4,7 +4,7 @@
 
 Options:
   -h --help   Show this help message.
-  -d DIR      Top directory to search for python files. [default: './']
+  -d DIR      Top directory to search for python files. [default: ./]
   -n          Dry run, not modifiyng the file system.
 
 """
@@ -16,7 +16,7 @@ from docopt import docopt
 if __name__ == "__main__":
     args = docopt(__doc__)
 
-    topdir = args.pop("-d", os.path.curdir).rstrip('\\')
+    topdir = args.pop("-d", os.path.curdir).rstrip("/")
     DRYMODE = args.pop("-n", False)
 
     if DRYMODE:
@@ -25,11 +25,9 @@ if __name__ == "__main__":
         print("#####################################")
 
     if not os.path.exists(topdir):
-        raise ValueError("Directory {} not found.".format(topdir))
+        raise ValueError("Directory '{} not found.".format(topdir))
     if not os.path.isdir(topdir):
-        raise ValueError("Given name '{}' is not a directory.".format(topdir))
-
-    exit()
+        raise ValueError("Given dir '{}' is not a directory.".format(topdir))
 
     # Walk through package and collect all python files
     pyfiles = []
