@@ -1,3 +1,15 @@
+# coding: utf-8
+
+from __future__ import print_function
+from __future__ import division
+from __future__ import unicode_literals
+from __future__ import absolute_import
+from builtins import dict
+from builtins import open
+from builtins import filter
+from builtins import zip
+from future import standard_library
+standard_library.install_aliases()
 import os
 import json
 import numpy as np
