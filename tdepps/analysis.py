@@ -239,7 +239,7 @@ class TransientsAnalysis(object):
 
         # Setup minimizer defaults
         if minimizer_opts is None:
-            minimizer_opts = {}
+            minopts = {}
         else:
             minopts = minimizer_opts.copy()
         bounds = minopts.pop("bounds", None)
