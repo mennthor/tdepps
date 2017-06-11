@@ -346,7 +346,7 @@ class RunlistBGRateInjector(BGRateInjector):
             start_mjd, stop_mjd = start_mjd[m], stop_mjd[m]
             print("Removing runs with zero events")
             print("  Number of runs with 0 events : {:d}".format(np.sum(~m)))
-            print("  Total livetime of those runs : {:.3f} d".format(_livetime))
+            print("  Total livetime of those runs : {:.3f} d".format(_livetime))
 
         # Normalize to rate in Hz
         runtime = stop_mjd - start_mjd
