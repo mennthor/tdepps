@@ -105,7 +105,8 @@ def get_binmids(bins):
     return m
 
 
-def rejection_sampling(pdf, bounds, n_samples, random_state=None):
+def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
+                       random_state=None):
     """
     Rejection sampler function to sample from multiple 1D regions at once.
 
@@ -123,6 +124,11 @@ def rejection_sampling(pdf, bounds, n_samples, random_state=None):
         Borders [[xlow, xhig], ...] in which func is sampled per source.
     n_samples : array-like, shape (nsrcs)
         Number of events to sample per source.
+    fmax_vals : array-like, shape (nsrcs)
+        If given, these values are used as the upper function bounds for each
+        sampling interval. This can boost up calculation because we do not have
+        to find the same maximum again for every call. Be sure these are right
+        values, otherwise nonsense is sampled. (default: None)
     random_state : seed, optional
         Turn seed into a `np.random.RandomState` instance. See
         `sklearn.utils.check_random_state`. (default: None)
@@ -146,7 +152,12 @@ def rejection_sampling(pdf, bounds, n_samples, random_state=None):
 
     bounds = np.atleast_2d(bounds)
     if bounds.shape[1] != 2:
-        raise ValueError("`bounds` shape must be (nsrcs, 2).")
+        raise ValueError("'bounds' shape must be (nsrcs, 2).")
+
+    if max_fvals is not None:
+        max_fvals = np.atleast_1d(max_fvals)
+        if len(max_fvals) != bounds.shape[0]:
+            raise ValueError("'max_fvals' must have same length as 'bounds'.")
 
     rndgen = check_random_state(random_state)
 
@@ -155,24 +166,26 @@ def rejection_sampling(pdf, bounds, n_samples, random_state=None):
         return -1. * pdf(x)
 
     sample = []
-
     # Just loop over all intervals and append sample arrays to output list
-    for bound, nsam in zip(bounds, n_samples):
-        # Get maximum func value in bound to maximize efficiency
-        xlow, xhig = bound[0], bound[1]
-        # Start seed for minimizer by quick scan in the interval
-        x_scan = np.linspace(bound[0], bound[1], 7)[1:-1]
-        max_idx = np.argmax(pdf(x_scan))
-        x0 = x_scan[max_idx]
-        # x0 = 0.5 * (xlow + xhig)
-        # gtol, and ftol are explicitely low, when dealing with low rates.
-        xmin = sco.minimize(negpdf, x0, bounds=[bound], method="L-BFGS-B",
-                            options={"gtol": 1e-12, "ftol": 1e-12}).x
+    for i, (bound, nsam) in enumerate(zip(bounds, n_samples)):
+        # Get maximum func value in bound to maximize sampling efficiency
+        if max_fvals is None:
+            # Start seed for minimizer by quick scan in the interval
+            x_scan = np.linspace(bound[0], bound[1], 7)[1:-1]
+            max_idx = np.argmax(pdf(x_scan))
+            x0 = x_scan[max_idx]
+            # gtol, and ftol are explicitely low, when dealing with low rates.
+            xmin = sco.minimize(negpdf, x0, bounds=[bound], method="L-BFGS-B",
+                                options={"gtol": 1e-12, "ftol": 1e-12}).x
 
-        fmax = pdf(xmin)
+            fmax = pdf(xmin)
+        else:
+            # Use cached values if given
+            fmax = max_fvals[i]
 
         # Draw remaining events until all samples per sourcee are created
         _sample = []
+        xlow, xhig = bound[0], bound[1]
         while nsam > 0:
             # Sample x positions r1 and comparators r2, then accept or not
             r1 = (xhig - xlow) * rndgen.uniform(
