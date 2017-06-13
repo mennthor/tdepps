@@ -248,8 +248,38 @@ class SinusRateFunction(RateFunction):
         y-axis offset in Hz
 
     """
-    def __init__(self):
+    def __init__(self, t=None, trange=None):
+        self.t, self.trange = None, None
+        if (t is not None) and (trange is not None):
+            self.t, self.trange = self._transform_trange_mjd(t, trange)
+        self._fmax = []
         return
+
+    def fit(self, t, rate, p0=None, rate_std=None, **kwargs):
+        # After fit try to cache the maximum of the pdf to avoid calculating
+        # that in the rejection sampling step
+        bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, rate_std,
+                                                     **kwargs)
+
+        if self.t is not None:
+            def negpdf(t):
+                return -1. * self.fun(t, bf_pars)
+
+            for bound in self.trange:
+                # Get maximum func value in bound to maximize efficiency
+                # Start seed for minimizer by quick scan in the interval
+                x_scan = np.linspace(bound[0], bound[1], 7)[1:-1]
+                max_idx = np.argmax(-1 * negpdf(x_scan))
+                x0 = x_scan[max_idx]
+                # x0 = 0.5 * (xlow + xhig)
+                # gtol, ftol are explicitely low, when dealing with low rates.
+                xmin = sco.minimize(negpdf, x0, bounds=[bound],
+                                    method="L-BFGS-B",
+                                    options={"gtol": 1e-12, "ftol": 1e-12}).x
+
+                self._fmax.append(-1. * negpdf(xmin))
+
+        return bf_pars
 
     @docs.dedent
     def fun(self, t, pars):
@@ -345,6 +375,7 @@ class SinusRateFunction(RateFunction):
 
         # Samples times for all sources at once
         times = rejection_sampling(sample_fun, bounds=dts, n_samples=n_samples,
+                                   max_fvals=self._fmax,
                                    random_state=random_state)
 
         return times
@@ -399,7 +430,8 @@ class Sinus1yrRateFunction(SinusRateFunction):
 
     Time is measured in MJD days.
     """
-    def __init__(self):
+    def __init__(self, t=None, trange=None):
+        super(Sinus1yrRateFunction, self).__init__(t, trange)
         self._b = 2 * np.pi / 365.25
         return
 
