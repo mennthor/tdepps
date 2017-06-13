@@ -108,6 +108,18 @@ class GRBLLH(object):
 
         (default: None)
 
+    llh_args : dict, optional
+        Arguments controlling the LLH calculation. Must contain keys:
+
+        - "sob_rel_eps", float, optional: Realative signal over background
+          threshold. Events which have `SoB_i / max(SoB) < sob_rel_eps` are not
+          further used in the LLH evluation. (default: 1e-6)
+        - "sob_abs_abs", float: Absolute signal over background threshold.
+          Events which have `SoB_i < sob_abs_eps` are not further used in the
+          LLH evluation. (default: 1e-3)
+
+        (default: None)
+
     Notes
     -----
     .. [1] Barlow, "Statistics - A Guide to the Use of Statistical Methods in
@@ -116,7 +128,7 @@ class GRBLLH(object):
     .. [3] https://en.wikipedia.org/wiki/Kent_distribution
     """
     def __init__(self, X, MC, srcs, spatial_pdf_args, energy_pdf_args,
-                 time_pdf_args=None):
+                 time_pdf_args=None, llh_args=None):
         # Check if data, MC and srcs have all needed names
         X_names = ["dec", "logE"]
         for n in X_names:
@@ -170,6 +182,17 @@ class GRBLLH(object):
             raise ValueError("'sigma_t_min' must be < 'sigma_t_max'.")
         if tmin <= 0:
             raise ValueError("'sigma_t_min' must be > 0.")
+
+        # Setup LLH args
+        required_keys = []
+        opt_keys = {"sob_rel_eps": 1e-6, "sob_abs_eps": 1e-3}
+        self.llh_args = fill_dict_defaults(llh_args.copy(), required_keys,
+                                           opt_keys)
+
+        if self.llh_args["sob_rel_eps"] < 0:
+            raise ValueError("'sob_rel_eps' must be >= 0.")
+        if self.llh_args["sob_abs_eps"] < 0:
+            raise ValueError("'sob_abs_eps' must be >= 0.")
 
         # Setup common variables
         self.energy_pdf_args["bins"] = [sin_dec_bins, logE_bins]
@@ -303,6 +326,23 @@ class GRBLLH(object):
         src_w = self.get_src_weights(src_dec, src_w_theo)
         nb = nb.reshape(len(nb), 1)
         sob = np.sum(sob * src_w / nb, axis=0)
+
+        # If mutliple srcs: sum over signal contribution from each src.
+        # The single src case is automatically included due to broadcasting
+        src_w = self.get_src_weights(src_dec, src_w_theo)
+        nb = nb.reshape(len(nb), 1)
+        sob = np.sum(sob * src_w / nb, axis=0)
+
+        # Apply a SoB ratio cut, to save computation time on events that don't
+        # contribute anyway. We have a relative and an absolute threshold
+        sob_max = np.amax(sob)
+        if sob_max > 0:
+            sob_rel_mask = (sob / sob_max) < self.llh_args["sob_rel_eps"]
+        else:
+            sob_rel_mask = np.ones_like(sob, dtype=bool)
+        sob_abs_mask = sob < self.llh_args["sob_abs_eps"]
+
+        sob = sob[sob_rel_mask | sob_abs_mask]
 
         # Teststatistic 2 * ln(LLH-ratio)
         x = ns * sob
