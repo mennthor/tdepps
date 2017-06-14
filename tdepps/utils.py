@@ -34,7 +34,7 @@ def flatten_list_of_1darrays(l):
     return np.array([el for arr in l for el in arr])
 
 
-def fill_dict_defaults(d, required_keys=[], opt_keys={}):
+def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
     """
     Populate dictionary with data from a given dict `d`, and check if `d` has
     required and optional keys. Set optionals with default if not present.
@@ -50,6 +50,9 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}):
     opt_keys : dict, optional
         Keys that are optional. `opt_keys` provides optional keys and the
         default values, if not present in `d`. (default: {})
+    noleft : bool, optional
+        If True, raises a KeyError, when `d` contains more keys, than given in
+        `required_keys` and `opt_keys`. (default: True)
 
     Returns
     -------
@@ -71,14 +74,14 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}):
         if key in d:
             out[key] = d.pop(key)
         else:
-            raise KeyError("Dict is missing key '{}'.".format(key))
+            raise KeyError("Dict is missing required key '{}'.".format(key))
     # Set optional values, if key not given
     for key, val in opt_keys.items():
         out[key] = d.pop(key, val)
-    # Should have no extra keys left
-    if d:
-        for key in d.keys():
-            raise KeyError("Key '{}' not used in dict.".format(key))
+    # Complain when extra keys are left and noleft is True
+    if d and noleft:
+        raise KeyError("Keys ['{}'] not used in dict `d`.".format(
+            "', '".join(list(d.keys()))))
     return out
 
 
@@ -180,7 +183,7 @@ def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
 
             fmax = pdf(xmin)
         else:
-            # Use cached values if given
+            # Use cached values instead, if given
             fmax = max_fvals[i]
 
         # Draw remaining events until all samples per sourcee are created
@@ -193,7 +196,7 @@ def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
             r2 = fmax * rndgen.uniform(0, 1, nsam)
 
             accepted = (r2 <= pdf(r1))
-            _sample += r1[accepted].tolist()  # Concatenate
+            _sample += r1[accepted].tolist()
 
             nsam = np.sum(~accepted)  # Number of remaining samples to draw
 
