@@ -7,6 +7,7 @@ from future import standard_library
 standard_library.install_aliases()
 import numpy as np
 import scipy.stats as scs
+import scipy.optimize as sco
 import scipy.interpolate as sci
 
 from .utils import fill_dict_defaults, get_binmids
@@ -113,7 +114,7 @@ class GRBLLH(object):
 
         - "sob_rel_eps", float, optional: Realative signal over background
           threshold. Events which have `SoB_i / max(SoB) < sob_rel_eps` are not
-          further used in the LLH evluation. (default: 1e-6)
+          further used in the LLH evluation. (default: 0)
         - "sob_abs_abs", float: Absolute signal over background threshold.
           Events which have `SoB_i < sob_abs_eps` are not further used in the
           LLH evluation. (default: 1e-3)
@@ -142,7 +143,7 @@ class GRBLLH(object):
         # Setup spatial PDF args
         required_keys = ["bins"]
         opt_keys = {"k": 3, "kent": True}
-        self.spatial_pdf_args = fill_dict_defaults(spatial_pdf_args.copy(),
+        self.spatial_pdf_args = fill_dict_defaults(spatial_pdf_args,
                                                    required_keys, opt_keys)
         bins = self.spatial_pdf_args["bins"]
         k = self.spatial_pdf_args["k"]
@@ -154,7 +155,7 @@ class GRBLLH(object):
         # Setup energy PDF args
         required_keys = ["bins"]
         opt_keys = {"gamma": 2., "fillval": "col", "interpol_log": False}
-        self.energy_pdf_args = fill_dict_defaults(energy_pdf_args.copy(),
+        self.energy_pdf_args = fill_dict_defaults(energy_pdf_args,
                                                   required_keys, opt_keys)
         if len(self.energy_pdf_args["bins"]) != 2:
             raise ValueError("Bins for energy hist must have shape " +
@@ -170,8 +171,8 @@ class GRBLLH(object):
         # Setup time PDF args
         required_keys = []
         opt_keys = {"nsig": 4., "sigma_t_min": 2., "sigma_t_max": 30.}
-        self.time_pdf_args = fill_dict_defaults(time_pdf_args.copy(),
-                                                required_keys, opt_keys)
+        self.time_pdf_args = fill_dict_defaults(time_pdf_args, required_keys,
+                                                opt_keys)
         nsig = self.time_pdf_args["nsig"]
         if nsig < 3:
             raise ValueError("'nsig' must be >= 3.")
@@ -185,12 +186,12 @@ class GRBLLH(object):
 
         # Setup LLH args
         required_keys = []
-        opt_keys = {"sob_rel_eps": 1e-6, "sob_abs_eps": 1e-3}
-        self.llh_args = fill_dict_defaults(llh_args.copy(), required_keys,
-                                           opt_keys)
+        opt_keys = {"sob_rel_eps": 0, "sob_abs_eps": 1e-3}
+        self.llh_args = fill_dict_defaults(llh_args, required_keys, opt_keys)
 
-        if self.llh_args["sob_rel_eps"] < 0:
-            raise ValueError("'sob_rel_eps' must be >= 0.")
+        rel_eps = self.llh_args["sob_rel_eps"]
+        if (rel_eps < 0) or (rel_eps > 1):
+            raise ValueError("'sob_rel_eps' must be in [0, 1]")
         if self.llh_args["sob_abs_eps"] < 0:
             raise ValueError("'sob_abs_eps' must be >= 0.")
 
@@ -219,10 +220,11 @@ class GRBLLH(object):
 
         return
 
-    def lnllh_ratio(self, X, theta, args):
+    def lnllh_ratio(self, X, ns, args):
         """
-        Return the natural logarithm of the ratio of Likelihoods under the null
-        hypothesis and the alternative hypothesis.
+        Return two times the the natural logarithm of the ratio of Likelihoods
+        under the null hypothesis -- here: :math:`n_S = 0` -- and the
+        alternative hypothesis that we have non-zero signal contribution.
 
         The ratio :math:`\Lambda` used here is defined as:
 
@@ -240,110 +242,173 @@ class GRBLLH(object):
 
         .. math::
 
-          \Lambda = -n_S + \sum_{i=1}^N\ln\left(
+          \Lambda(n_S) = -n_S + \sum_{i=1}^N\ln\left(
                     \frac{n_S S_i}{\langle n_B\rangle B_i} + 1\right)
-
 
         Parameters
         ----------
-        X : record-array
+        X : record-array, shape (nevts)
             Fixed data set the LLH depends on. dtypes are ["name", type].
-            Here `X` must have keys:
+            Here `X` must have names:
 
-            - "timeMJD", floats: Per event times in MJD days.
-            - "ra", "sinDec", floats: Per event right-ascension positions in
-              equatorial coordinates, given in radians and sinus declination in
-              intervall [-1, 1].
-            - "logE", floats: Per event energy proxy, given in log10(1/GeV).
-            - "sigma", floats: Per event positional uncertainty, given in
-              radians. It is assumed, that a circle with radius `sigma` contains
-              approximatly :math:`1\sigma` (~0.39) of probability of the
-              reconstrucion likelihood space.
+            - 'timeMJD': Per event times in MJD days.
+            - 'ra', 'sinDec': Per event right-ascension positions in equatorial
+              coordinates, given in radians and sinus declination in
+              :math_`[-1, 1]`.
+            - 'logE': Per event energy proxy, given in
+              :math:`\log_{10}(1/\text{GeV})`.
+            - 'sigma': Per event positional uncertainty, given in radians. It is
+              assumed, that a circle with radius `sigma` contains approximately
+              :math:`1\sigma` (~0.39) of probability of the reconstrucion
+              likelihood space.
 
-        theta : dict
-            Parameter set {"par_name": value} to evaluate the ln-LLH at.
-            Here the LLH depends on:
-
-            - "ns": Number of signal events that we want to fit.
+        ns : float
+            Fitparameter: number of signal events that we expect at the source
+            locations.
 
         args : dict
-            Other fixed parameters {"par_name": value}, the LLH depents on.
+            Other fixed parameters {'par_name': value}, the LLH depents on.
             Here `args` must have keys:
 
-            - "nb", floats: Number of expected background events in each time
-               window, shape (nsrcs).
-            - "srcs", record-array, shape (nsrcs): Must have names:
+            - 'ns', array-like, shape (nsrcs): Number of expected background
+              events for each sources time window.
+            - 'srcs', record-array, shape (nsrcs): Fixed source parameters,
+              must have names:
 
-              + "ra", floats: Right-ascension coordinate of each source in
-                radian in intervall [0, 2pi], shape (nsrcs).
-              + "dec", floats: Declinatiom coordinate of each source in radian
-                in intervall [-pi/2, pi/2], shape (nsrcs).
-              + "t", float: Time of the occurence of the source event in MJD
+              + 'ra', float: Right-ascension coordinate of each source in
+                radian in intervall :math:`[0, 2\pi]`.
+              + 'dec', float: Declinatiom coordinate of each source in radian
+                in intervall :math:`[-\pi / 2, \pi / 2]`.
+              + 't', float: Time of the occurence of the source event in MJD
                 days.
-              + "dt0", "dt1": float: Lower/upper border of the time search
+              + 'dt0', 'dt1': float: Lower/upper border of the time search
                 window in seconds, centered around each source time `t`.
-              + "w_theo", float: Theoretical source weight per source, eg. from
+              + 'w_theo', float: Theoretical source weight per source, eg. from
                 a known gamma flux.
-
 
         Returns
         -------
         TS : float
             Lambda test statistic, 2 times the natural logarithm of the LLH
-            ratio for the given `X`, `theta` and `args`.
+            ratio.
         ns_grad : array-like, shape (1)
-            Gradient of the test statistic in the fit parameter ns.
+            Gradient of the test statistic in the fit parameter `ns`.
+
+        Note:
+        -----
+        Which events contribute to the LLH is controlled using the options given
+        in `GRBLLH.llh_args`.
+
         """
-        # Get data values
-        t = X["timeMJD"]
-        ev_ra = X["ra"]
-        ev_sin_dec = X["sinDec"]
-        ev_logE = X["logE"]
-        ev_sig = X["sigma"]
+        sob = self._soverb(X, args)
+        return self._lnllh_ratio(ns, sob)
 
-        # Get variable parameters
-        ns = theta["ns"]
+    def fit_lnllh_ratio(self, X, ns0, args, minimizer_opts):
+        """
+        Fit the LLH parameter :math:`n_S` for a given set of data and fixed
+        LLH arguments.
 
-        # Get other fixed paramters
-        nb = np.atleast_1d(args["nb"])
-        srcs = args["srcs"]
+        The fit is calculated for the test statistic, which is two times the
+        natural logarithm of the ratio of Likelihoods under the null hypothesis
+        -- here: :math:`n_S = 0` -- and the alternative hypothesis that we have
+        non-zero signal contribution.
 
-        # Setup sources
-        src_t = srcs["t"]
-        dt = np.vstack((srcs["dt0"], srcs["dt1"])).T
-        src_ra = srcs["ra"]
-        src_dec = srcs["dec"]
-        src_w_theo = srcs["w_theo"]
+        Parameters
+        ----------
+        X : record-array
+            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+        ns0 : float
+            Fitter seed for the fit parameter ns: number of signal events that
+            we expect at the source locations.
+        args : dict
+            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+        minimizer_opts : dict
+            Options passed to `scipy.optimize.minimize` [1] using the "L-BFGS-B"
+            algorithm. Explicit options are:
 
-        # Per event probabilities
-        sob = (self._soverb_time(t, src_t, dt) *
-               self._soverb_spatial(src_ra, src_dec, ev_ra,
-                                    ev_sin_dec, ev_sig) *
-               self._soverb_energy(ev_sin_dec, ev_logE))
+            - 'bounds', array-like, shape (1, 2): Bounds `[[min, max]]` for
+              `ns`. Use None for one of min or max when there is no bound in
+              that direction.
 
-        # If mutliple srcs: sum over signal contribution from each src.
-        # The single src case is automatically included due to broadcasting
-        src_w = self.get_src_weights(src_dec, src_w_theo)
-        nb = nb.reshape(len(nb), 1)
-        sob = np.sum(sob * src_w / nb, axis=0)
+        Returns
+        -------
+        ns : float
+            Best fit parameter number of signal events :math:`n_S`.
+        TS : float
+            Best fit test statistic value.
 
-        # If mutliple srcs: sum over signal contribution from each src.
-        # The single src case is automatically included due to broadcasting
-        src_w = self.get_src_weights(src_dec, src_w_theo)
-        nb = nb.reshape(len(nb), 1)
-        sob = np.sum(sob * src_w / nb, axis=0)
+        Notes
+        -----
+        .. [1] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466 # noqa
+        """
+        def _neglnllh(ns):
+            """
+            Wrapper for the LLH function returning the negative ln-LLH ratio
+            suitable for the minimizer.
 
-        # Apply a SoB ratio cut, to save computation time on events that don't
-        # contribute anyway. We have a relative and an absolute threshold
-        sob_max = np.amax(sob)
-        if sob_max > 0:
-            sob_rel_mask = (sob / sob_max) < self.llh_args["sob_rel_eps"]
+            Parameters
+            ----------
+            ns : float
+                :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+
+            Returns
+            -------
+            lnllh : float
+                :ref:`(See 'lnllh-ratio', Returns) <GRBLLH.lnllh_ratio>`
+            lnllh_grad : array-like
+                :ref:`(See 'lnllh-ratio', Returns) <GRBLLH.lnllh_ratio>`
+            """
+            lnllh, lnllh_grad = self._lnllh_ratio(ns, sob)
+            return -1. * lnllh, -1. * lnllh_grad
+
+        # If no events are given, best fit is always 0, skip all further steps
+        if len(X) == 0:
+            return 0., -2.
+
+        # Get the best fit parameter and TS. Analytic cases are handled:
+        # For ns = 1, 2 we get a linear, quadratic equation to solve.
+        sob = self._soverb(X, args)
+        nevts = len(sob)
+        if nevts == 1:
+            ns = 1. - (1. / sob)
+            TS, _ = self._lnllh_ratio(ns, sob)
+            return ns, TS
+        elif nevts == 2:
+            a = 1. / np.prod(sob)
+            c = np.sum(sob) * a
+            ns = 1. - 0.5 * c + np.sqrt(c**2 / 4. - a + 1.)
+            if ns <= 0:
+                return 0., -2.
+            else:
+                TS, _ = self._lnllh_ratio(ns, sob)
+            return ns, TS
         else:
-            sob_rel_mask = np.ones_like(sob, dtype=bool)
-        sob_abs_mask = sob < self.llh_args["sob_abs_eps"]
+            # Fit other cases. Bounds must be given explicitely
+            bounds = minimizer_opts.pop("bounds", None)
 
-        sob = sob[sob_rel_mask | sob_abs_mask]
+            res = sco.minimize(fun=_neglnllh, x0=ns0, jac=True, bounds=bounds,
+                               method="L-BFGS-B", options=minimizer_opts)
 
+        # Return function value with correct sign
+        return res.x[0], -1. * res.fun
+
+    def _lnllh_ratio(self, ns, sob):
+        """
+        Internal wrapper to calculate the ln-LLH ratio on the already cutted
+        sob values, to avoid recalculation.
+
+        Parameters
+        ----------
+        ns : float
+            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+
+        Returns
+        -------
+        lnllh : float
+            :ref:`(See 'lnllh-ratio', Returns) <GRBLLH.lnllh_ratio>`
+        lnllh_grad : array-like
+            :ref:`(See 'lnllh-ratio', Returns) <GRBLLH.lnllh_ratio>`
+        """
         # Teststatistic 2 * ln(LLH-ratio)
         x = ns * sob
         TS = 2. * (-ns + np.sum(np.log1p(x)))
@@ -351,7 +416,9 @@ class GRBLLH(object):
         ns_grad = 2. * (-1. + np.sum(sob / (x + 1.)))
         return TS, np.atleast_1d(ns_grad)
 
-    def get_src_weights(self, src_dec, src_w_theo):
+    # #########################################################################
+    # Public accessible helper methods
+    def src_weights(self, src_dec, src_w_theo):
         """
         Make combined, normalized source weights from the detector exposure and
         a theoretical source weight.
@@ -378,7 +445,7 @@ class GRBLLH(object):
         src_w = src_w.reshape(nsrcs, 1) / np.sum(src_w)
         return src_w
 
-    def get_injection_trange(self, src_t, dt):
+    def time_pdf_def_range(self, src_t, dt):
         """
         Returns the time window per source, in which the PDF ratio is defined.
 
@@ -405,7 +472,79 @@ class GRBLLH(object):
 
         return trange
 
+    # #########################################################################
     # Signal over background probabilities for time, spatial and energy PDFs
+    def _soverb(self, X, args):
+        """
+        Returns total signal over background ratio for given data X and fixed
+        LLH arguments args.
+
+        Parameters
+        ----------
+        X : record-array
+            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+        args : dict
+            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+
+        Returns
+        -------
+        sob : array-like, shape (nevts)
+            Total signal over background ratio for each event, already reduced
+            over all sources.
+
+        Note:
+        -----
+        Which events contribute to the LLH is controlled using the options given
+        in `GRBLLH.llh_args`.
+        """
+        # With no events given, we can skip this step
+        if len(X) == 0:
+            print("X empty, returning empty zero length array")
+            return np.empty(0, dtype=np.float)
+
+        # Get data values
+        t = X["timeMJD"]
+        ev_ra = X["ra"]
+        ev_sin_dec = X["sinDec"]
+        ev_logE = X["logE"]
+        ev_sig = X["sigma"]
+
+        # Get other fixed paramters
+        nb = args["nb"]
+        srcs = args["srcs"]
+
+        # Setup source parameters
+        src_t = srcs["t"]
+        dt = np.vstack((srcs["dt0"], srcs["dt1"])).T
+        src_ra = srcs["ra"]
+        src_dec = srcs["dec"]
+        src_w_theo = srcs["w_theo"]
+
+        # Per event probabilities
+        sob = (self._soverb_time(t, src_t, dt) *
+               self._soverb_spatial(src_ra, src_dec, ev_ra,
+                                    ev_sin_dec, ev_sig) *
+               self._soverb_energy(ev_sin_dec, ev_logE))
+
+        # If mutliple srcs: sum over signal contribution from each src.
+        # The single src case is automatically included due to broadcasting
+        src_w = self.src_weights(src_dec, src_w_theo)
+        nb = nb.reshape(len(nb), 1)
+        sob = np.sum(sob * src_w / nb, axis=0)
+
+        # Apply a SoB ratio cut, to save computation time on events that don't
+        # contribute anyway. We have a relative and an absolute threshold
+        sob_max = np.amax(sob)
+        if sob_max > 0:
+            sob_rel_mask = (sob / sob_max) < self.llh_args["sob_rel_eps"]
+        else:
+            sob_rel_mask = np.zeros_like(sob, dtype=bool)
+        sob_abs_mask = sob < self.llh_args["sob_abs_eps"]
+
+        # Only return events surviving both thresholds
+        survive = np.logical_not(np.logical_or(sob_rel_mask, sob_abs_mask))
+        return sob[survive]
+
     def _soverb_time(self, t, src_t, dt):
         """
         Time signal over background ratio.
@@ -422,7 +561,7 @@ class GRBLLH(object):
         t : array-like
             Times given in MJD for which we want to evaluate the ratio.
         src_t, dt
-            See `get_injection_trange`, Parameters
+            See `time_pdf_def_range`, Parameters
 
         Returns
         -------
@@ -554,7 +693,8 @@ class GRBLLH(object):
 
         return sob
 
-    # Time PDF helpers
+    # #########################################################################
+    # PDFs and PDF helper methods
     def _setup_time_windows(self, src_t, dt):
         """
         Bring the given source times and time windows in proper shape.
@@ -562,12 +702,12 @@ class GRBLLH(object):
         Parameters
         ----------
         src_t, dt
-            See `get_injection_trange`, Parameters
+            See `time_pdf_def_range`, Parameters
 
         Returns
         -------
         src_t, dt
-            See `get_injection_trange`, Parameters
+            See `time_pdf_def_range`, Parameters
         sig_t : array-like, shape (nsrcs)
             sigma of the gaussian edges of the time signal PDF.
         sig_t_clip : array-like, shape (nsrcs)
@@ -598,7 +738,6 @@ class GRBLLH(object):
 
         return src_t, dt, sig_t, sig_t_clip
 
-    # Spatial PDFs
     def _pdf_spatial_background(self, ev_sin_dec):
         """
         Calculate the value of the background PDF for each event.
@@ -678,7 +817,6 @@ class GRBLLH(object):
 
         return S
 
-    # Energy PDF helpers
     def _create_sin_dec_logE_spline(self, ev_sin_dec, ev_logE,
                                     mc_sin_dec, mc_logE, trueE, ow):
         """
@@ -783,7 +921,6 @@ class GRBLLH(object):
                                           bounds_error=False, fill_value=None)
         return spl
 
-    # Other helpers
     def _create_sin_dec_spline(self, sin_dec, bins, mc=None):
         """
         Fit an interpolating spline to a histogram of sin(dec).
