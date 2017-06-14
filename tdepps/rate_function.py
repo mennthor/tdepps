@@ -252,7 +252,7 @@ class SinusRateFunction(RateFunction):
         self.t, self.trange = None, None
         if (t is not None) and (trange is not None):
             self.t, self.trange = self._transform_trange_mjd(t, trange)
-        self._fmax = []
+        self._fmax = None
         return
 
     def fit(self, t, rate, p0=None, rate_std=None, **kwargs):
@@ -265,13 +265,13 @@ class SinusRateFunction(RateFunction):
             def negpdf(t):
                 return -1. * self.fun(t, bf_pars)
 
+            self._fmax = []
             for bound in self.trange:
                 # Get maximum func value in bound to maximize efficiency
                 # Start seed for minimizer by quick scan in the interval
                 x_scan = np.linspace(bound[0], bound[1], 7)[1:-1]
-                max_idx = np.argmax(-1 * negpdf(x_scan))
+                max_idx = np.argmin(negpdf(x_scan))
                 x0 = x_scan[max_idx]
-                # x0 = 0.5 * (xlow + xhig)
                 # gtol, ftol are explicitely low, when dealing with low rates.
                 xmin = sco.minimize(negpdf, x0, bounds=[bound],
                                     method="L-BFGS-B",
