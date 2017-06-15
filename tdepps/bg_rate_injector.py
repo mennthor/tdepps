@@ -98,7 +98,7 @@ class BGRateInjector(object):
 
         Returns
         -------
-        nb : array-like, shape (nsrcs, 1)
+        nb : array-like, shape (nsrcs)
             Expected number of background events for each sources time window.
         """
         if self.best_pars is None:
