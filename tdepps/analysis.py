@@ -112,18 +112,17 @@ class TransientsAnalysis(object):
 
         rndgen = check_random_state(random_state)
 
-        # Setup minimizer defaults
+        # Setup minimizer defaults and bounds
         if minimizer_opts is None:
-            minopts = {}
-        else:
-            minopts = minimizer_opts.copy()
+            minimizer_opts = {}
+
+        bounds = minimizer_opts.pop("bounds", [[0., None]])
 
         required_keys = []
-        opt_keys = {"bounds": [[0, None]],
-                    "ftol": 1e-12,
+        opt_keys = {"ftol": 1e-12,
                     "gtol": 1e-12,
                     "maxiter": int(1e3)}
-        minopts = fill_dict_defaults(minopts, required_keys, opt_keys,
+        minopts = fill_dict_defaults(minimizer_opts, required_keys, opt_keys,
                                      noleft=False)
         assert len(minopts) >= len(opt_keys)
 
@@ -133,14 +132,14 @@ class TransientsAnalysis(object):
 
         # Total injection time window in which the time PDF is defined and
         # nonzero.
-        trange = self.llh.get_injection_trange(src_t, src_dt)
+        trange = self.llh.time_pdf_def_range(src_t, src_dt)
         assert len(trange) == len(self.srcs)
         assert trange.shape == (len(self.srcs), 2)
 
         # Number of expected background events in each given time frame
         nb = bg_rate_inj.get_nb(src_t, trange)
         assert len(nb) == len(self.srcs)
-        assert nb.shape == (len(self.srcs), 1)
+        assert nb.shape == (self.srcs.shape)
 
         # Create args and do trials
         nzeros = 0
@@ -164,8 +163,8 @@ class TransientsAnalysis(object):
                               usemask=False)
 
             # Only store the best fit params and the TS value if nonzero
-            _ns, _TS = self.llh.fit_lnllh_ratio_params(X, ns, args,
-                                                       minimizer_opts)
+            _ns, _TS = self.llh.fit_lnllh_ratio(X, ns0, args, bounds,
+                                                minimizer_opts)
             if (_ns == 0) and (_TS == 0):
                 nzeros += 1
             else:
