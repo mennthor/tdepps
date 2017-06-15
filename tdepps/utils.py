@@ -129,7 +129,7 @@ def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
         Number of events to sample per source.
     fmax_vals : array-like, shape (nsrcs)
         If given, these values are used as the upper function bounds for each
-        sampling interval. This can boost up calculation because we do not have
+        sampling interval. This can speed up calculation because we do not have
         to find the same maximum again for every call. Be sure these are right
         values, otherwise nonsense is sampled. (default: None)
     random_state : seed, optional
@@ -173,15 +173,7 @@ def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
     for i, (bound, nsam) in enumerate(zip(bounds, n_samples)):
         # Get maximum func value in bound to maximize sampling efficiency
         if max_fvals is None:
-            # Start seed for minimizer by quick scan in the interval
-            x_scan = np.linspace(bound[0], bound[1], 7)[1:-1]
-            max_idx = np.argmax(pdf(x_scan))
-            x0 = x_scan[max_idx]
-            # gtol, and ftol are explicitely low, when dealing with low rates.
-            xmin = sco.minimize(negpdf, x0, bounds=[bound], method="L-BFGS-B",
-                                options={"gtol": 1e-12, "ftol": 1e-12}).x
-
-            fmax = pdf(xmin)
+            fmax = -1. * func_min_in_interval(negpdf, bound)
         else:
             # Use cached values instead, if given
             fmax = max_fvals[i]
@@ -203,3 +195,33 @@ def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
         sample.append(np.array(_sample))
 
     return sample
+
+
+def func_min_in_interval(func, interval, nscan=7):
+    """
+    Find the minimum of `func` the given intervall. A small scan in that range
+    is performed prior to the fit to get a reasonable seed.
+
+    Parameters
+    ----------
+    func : callcable
+        Called as a function of 1 array-like parameter `func([x1, ..., xn])`.
+    interval : array-like, shape (2)
+        Interval boundaries `[min, max]` in which the minimization is performed.
+    nscan : how many equidistant scan points prior to the fit to use. More
+        points give a better see, but also take more time.
+
+    Returns
+    -------
+    fmin : float
+        Minimum function value in the given interval.
+    """
+    # Get start seed for minimizer by quick scan in the interval, avoid borders
+    x_scan = np.linspace(interval[0], interval[1], nscan)[1:-1]
+    min_idx = np.argmin(func(x_scan))
+    x0 = x_scan[min_idx]
+    # gtol, and ftol are explicitely low, when dealing with low rates.
+    xmin = sco.minimize(func, x0, bounds=[interval], method="L-BFGS-B",
+                        options={"gtol": 1e-12, "ftol": 1e-12}).x
+
+    return func(xmin)
