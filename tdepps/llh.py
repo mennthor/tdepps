@@ -221,7 +221,7 @@ class GRBLLH(object):
         return
 
     def lnllh_ratio(self, X, ns, args):
-        """
+        r"""
         Return two times the the natural logarithm of the ratio of Likelihoods
         under the null hypothesis -- here: :math:`n_S = 0` -- and the
         alternative hypothesis that we have non-zero signal contribution.
@@ -230,20 +230,21 @@ class GRBLLH(object):
 
         .. math::
 
-          \Lambda &= -2\ln\left(\frac{\mathcal{L}_0}
-                                     {\mathcal{L}_1}\right)
-                   =  2\ln\left(\mathcal{L}_1 - \mathcal{L}_0\right)
-
+          \Lambda = -2\ln\left(\frac{\mathcal{L}_0}{\mathcal{L}_1}\right)
+                  =  2\ln\left(\mathcal{L}_1 - \mathcal{L}_0\right)
 
         High values of :math:`\Lambda` indicate, that the null hypothesis is
         more unlikely contrary to the alternative.
 
-        For GRBLLH this reduces to
+        For GRBLLH this reduces to:
 
         .. math::
 
-          \Lambda(n_S) = -n_S + \sum_{i=1}^N\ln\left(
-                    \frac{n_S S_i}{\langle n_B\rangle B_i} + 1\right)
+          \Lambda(n_S) = -n_S + \sum_{i=1}^N\ln
+                         \left(\frac{n_S S_i}{\langle n_B\rangle B_i} + 1\right)
+
+        .. note:: Which events contribute to the LLH is controlled using the
+          options given in `GRBLLH.llh_args`.
 
         Parameters
         ----------
@@ -254,7 +255,7 @@ class GRBLLH(object):
             - 'timeMJD': Per event times in MJD days.
             - 'ra', 'sinDec': Per event right-ascension positions in equatorial
               coordinates, given in radians and sinus declination in
-              :math_`[-1, 1]`.
+              :math:`[-1, 1]`.
             - 'logE': Per event energy proxy, given in
               :math:`\log_{10}(1/\text{GeV})`.
             - 'sigma': Per event positional uncertainty, given in radians. It is
@@ -293,12 +294,6 @@ class GRBLLH(object):
             ratio.
         ns_grad : array-like, shape (1)
             Gradient of the test statistic in the fit parameter `ns`.
-
-        Note:
-        -----
-        Which events contribute to the LLH is controlled using the options given
-        in `GRBLLH.llh_args`.
-
         """
         sob = self._soverb(X, args)
         return self._lnllh_ratio(ns, sob)
@@ -316,14 +311,14 @@ class GRBLLH(object):
         Parameters
         ----------
         X : record-array
-            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+            See :func:`lnllh_ratio`, Parameters
         ns0 : float
             Fitter seed for the fit parameter ns: number of signal events that
             we expect at the source locations.
         args : dict
-            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+            See :func:`lnllh_ratio`, Parameters
         minimizer_opts : dict
-            Options passed to `scipy.optimize.minimize` [1] using the "L-BFGS-B"
+            Options passed to `scipy.optimize.minimize` [4] using the "L-BFGS-B"
             algorithm. Explicit options are:
 
             - 'bounds', array-like, shape (1, 2): Bounds `[[min, max]]` for
@@ -339,7 +334,7 @@ class GRBLLH(object):
 
         Notes
         -----
-        .. [1] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466 # noqa
+        .. [4] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466 # noqa
         """
         def _neglnllh(ns):
             """
@@ -349,14 +344,14 @@ class GRBLLH(object):
             Parameters
             ----------
             ns : float
-                :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+                See :func:`lnllh_ratio`, Parameters
 
             Returns
             -------
             lnllh : float
-                :ref:`(See 'lnllh-ratio', Returns) <GRBLLH.lnllh_ratio>`
+                See :func:`lnllh_ratio`, Returns
             lnllh_grad : array-like
-                :ref:`(See 'lnllh-ratio', Returns) <GRBLLH.lnllh_ratio>`
+                See :func:`lnllh_ratio`, Returns
             """
             lnllh, lnllh_grad = self._lnllh_ratio(ns, sob)
             return -1. * lnllh, -1. * lnllh_grad
@@ -400,14 +395,14 @@ class GRBLLH(object):
         Parameters
         ----------
         ns : float
-            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+            See :func:`lnllh_ratio`, Parameters
 
         Returns
         -------
         lnllh : float
-            :ref:`(See 'lnllh-ratio', Returns) <GRBLLH.lnllh_ratio>`
+            See :func:`lnllh_ratio`, Returns
         lnllh_grad : array-like
-            :ref:`(See 'lnllh-ratio', Returns) <GRBLLH.lnllh_ratio>`
+            See :func:`lnllh_ratio`, Returns
         """
         # Teststatistic 2 * ln(LLH-ratio)
         x = ns * sob
@@ -482,9 +477,9 @@ class GRBLLH(object):
         Parameters
         ----------
         X : record-array
-            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+            See :func:`lnllh_ratio`, Parameters
         args : dict
-            :ref:`(See 'lnllh-ratio', Parameters) <GRBLLH.lnllh_ratio>`
+            See :func:`lnllh_ratio`, Parameters
 
         Returns
         -------
