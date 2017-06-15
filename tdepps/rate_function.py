@@ -11,7 +11,8 @@ import numpy as np
 import scipy.optimize as sco
 from sklearn.utils import check_random_state
 
-from .utils import rejection_sampling
+from .utils import (rejection_sampling, func_min_in_interval,
+                    flatten_list_of_1darrays)
 
 import docrep  # Reuse docstrings
 docs = docrep.DocstringProcessor()
@@ -24,11 +25,10 @@ class RateFunction(object):
     Classes must implement methods:
     ["fun", "integral", "sample", "_get_default_seed"].
 
-    Class then provides methos:
+    Class object then provides methods:
     ["fun", "integral", "sample", "fit"]
 
-    Rate function must be interpretable as a PDF despite a normalization and
-    thus must not be negative.
+    Rate function must be interpretable as a PDF and must not be negative.
     """
     # Set up globals for shared inherited constants
     _SECINDAY = 24. * 60. * 60.
@@ -55,7 +55,7 @@ class RateFunction(object):
         Returns
         -------
         rate : array-like
-            Rate in Hz for each time t.
+            Rate in Hz for each time `t`.
         """
         raise NotImplementedError("RateFunction is an interface.")
 
@@ -64,21 +64,21 @@ class RateFunction(object):
     @docs.dedent
     def integral(self, t, trange, pars):
         """
-        Integral of rate function in interval trange around time t in MJD.
+        Integral of rate function in intervals trange around source times t.
 
         Parameters
         ----------
         t : array-like, shape (nsrcs)
             MJD times of sources.
         trange : array-like, shape(nsrcs, 2)
-            Time windows [[t0, t1], ...] in seconds around each given time t.
+            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
         pars : tuple
             Further parameters `self.fun` depends on.
 
         Returns
         -------
         integral : array-like, shape (nsrcs)
-            Integral of `self.fun` within given time windows trange.
+            Integral of `self.fun` within given time windows `trange`.
         """
         raise NotImplementedError("RateFunction is an interface.")
 
@@ -96,7 +96,7 @@ class RateFunction(object):
         t : array-like, shape (nsrcs)
             MJD times of sources.
         trange : array-like, shape(nsrcs, 2)
-            Time windows [[t0, t1], ...] in seconds around each given time t.
+            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
         pars : tuple
             Further parameters `self.fun` depends on.
         n_samples : array-like, shape (nsrcs)
@@ -107,12 +107,16 @@ class RateFunction(object):
 
         Returns
         -------
-        times : list of lists, len (nsrcs)
-            Sampled times in MJD of background events per source. If n_samples
-            is 0 for a source, an empty list is included at that position.
+        times : list of arrays, len (nsrcs)
+            Sampled times in MJD of background events per source. If `n_samples`
+            is 0 for a source, an empty arrays is placed at that position.
         """
         raise NotImplementedError("RateFunction is an interface.")
 
+    @docs.get_summaryf("RateFunction.fit")
+    @docs.get_sectionsf("RateFunction.fit",
+                        sections=["Parameters", "Returns"])
+    @docs.dedent
     def fit(self, t, rate, p0=None, rate_std=None, **kwargs):
         """
         Fits the function parameters to experimental data using a weighted
@@ -123,16 +127,16 @@ class RateFunction(object):
         t : array-like
             MJD times of experimental data.
         rate : array-like, shape (len(t))
-            Rates at given times t in Hz.
+            Rates at given times `t` in Hz.
         p0 : tuple, optional
             Seed values for the fit parameters. If None, default ones are used,
             that may or may not work. (default: None)
         rate_std : array-like, shape(len(t)), optional
             Standard deviations for each datapoint. If None, all are set to 1.
             If rate_std is a good description of the standard deviation, then
-            the fit statistics follows a chi2 distribution. But for a binned
-            fit this makes less sense, becuase low stddec means low statistics,
-            so better use unweighted. (default: None)
+            the fit statistics follows a :math:`\chi^2` distribution. But for a
+            binned fit this makes less sense, because low standard deviation
+            means low statistics, so better use unweighted. (default: None)
         kwargs
             Other keywords are passed to `scipy.optimize.minimize`.
 
@@ -163,36 +167,48 @@ class RateFunction(object):
 
         Parameters
         ----------
-        t, rate, rate_std
-            See `RateFunction.fit`, Parameters
+        t : array-like
+            MJD times of experimental data.
+        rate : array-like, shape (len(t))
+            Rates at given times `t` in Hz.
+        rate_std : array-like, shape(len(t)), optional
+            Standard deviations for each datapoint. If None, all are set to 1.
+            If rate_std is a good description of the standard deviation, then
+            the fit statistics follows a :math:`\chi^2` distribution. But for a
+            binned fit this makes less sense, because low standard deviation
+            means low statistics, so better use unweighted. (default: None)
 
         Returns
         -------
         p0 : tuple
-            Seed values for each parameter the specific RateFunction uses.
+            Seed values for each parameter the specific `RateFunction` uses.
         """
         raise NotImplementedError("RateFunction is an interface.")
 
     def _lstsq(self, pars, *args):
         """
-        Weighted leastsquares loss: sum_i((wi * (yi - fi))**2)
+        Weighted leastsquares loss: :math:`\sum_i (w_i * (y_i - f_i))^2`
 
         Parameters
         ----------
         pars : tuple
             Fitparameter for `self.fun` that gets fitted.
         args : tuple
-            Fixed values for the loss function: (t, rate, rate_std)
+            Fixed values `(t, rate, rate_std)` for the loss function:
 
-            - t, rate, rate_std : See `RateFunction.fit`, Parameters
+            - t, array-like: See :func:`RateFunction.fit`, Parameters
+            - rate, array-like, shape (len(t)): See :func:`RateFunction.fit`,
+              Parameters
+            - rate_std, array-like, shape(len(t)): See :func:`RateFunction.fit`,
+              Parameters
 
-            The weights are wi = (1 / rate_std_i) which is equivalent to the
-            weighted mean, when a constant is fitted.
+            The weights are :math:`w_i = 1/\text{rate_std}_i` which is
+            equivalent to the weighted mean, when a constant is fitted.
 
         Returns
         -------
         loss : float
-            The weighted least squares loss for the given pars and args.
+            The weighted least squares loss for the given `pars` and `args`.
         """
         t, rate, rate_std = args
         w = 1 / rate_std
@@ -201,21 +217,21 @@ class RateFunction(object):
 
     def _transform_trange_mjd(self, t, trange):
         """
-        Transform time window to MJD
+        Transform time window to MJD and check on correct shapes
 
         Parameters
         ----------
         t : array-like, shape (nsrcs)
-            MJD times of the sources.
+            MJD times of sources.
         trange : array-like, shape(nsrcs, 2)
-            Time windows [[t0, t1], ...] in seconds around each given time t.
+            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
 
         Returns
         -------
         t : array-like, shape (nsrcs)
-            MJD times of the sources.
+            MJD times of sources.
         trange : array-like, shape(nsrcs, 2)
-            Time windows [[t0, t1], ...] in MJD around each given time t.
+            Time windows `[[t0, t1], ...]` in MJD around each time `t`.
         """
         t = np.atleast_1d(t)
         nsrcs = len(t)
@@ -229,24 +245,28 @@ class SinusRateFunction(RateFunction):
     """
     Sinus Rate Function
 
-    Function describes time dependent background rate. Function is a sinus with:
+    Describes time dependent background rate. Used function is a sinus with:
 
     .. math:: f(t|a,b,c,d) = a \sin(b (t - c)) + d
 
-    Parameters are commonly used in methods and not given at object creation.
-    Times t are used in MJD days.
+    depending on 4 parameters:
+
+    - a, float: Amplitude in Hz.
+    - b, float: Angular frequency, :math:`\omega = 2\pi/T` with period :math:`T`
+      given in 1/MJD.
+    - c, float: x-axis offset in MJD.
+    - d, float: y-axis offset in Hz
+
+    When `t, trange` where given at object creation the function bounds for
+    the rejection sampling step are precalculated in `fit` to save computation
+    time on subsequent calls of `sample`.
 
     Parameters
     ----------
-    a : float
-        Amplitude in Hz.
-    b : float
-        Angular frequency, omega = 2*pi/T with period T given in 1/MJD.
-    c : float
-        x-axis offset in MJD.
-    d : float
-        y-axis offset in Hz
-
+    t : array-like, shape (nsrcs)
+        MJD times of sources.
+    trange : array-like, shape(nsrcs, 2)
+        Time windows `[[t0, t1], ...]` in seconds around each time `t`.
     """
     def __init__(self, t=None, trange=None):
         self.t, self.trange = None, None
@@ -255,8 +275,24 @@ class SinusRateFunction(RateFunction):
         self._fmax = None
         return
 
+    @docs.dedent
     def fit(self, t, rate, p0=None, rate_std=None, **kwargs):
-        # After fit try to cache the maximum of the pdf to avoid calculating
+        """
+        %(RateFunction.fit.summary)s
+
+        When `t, trange` where given at object creation the function bounds for
+        the rejection sampling step are precalculated here to save computation
+        time on subsequent calls of `sample`.
+
+        Parameters
+        ----------
+        %(RateFunction.fit.parameters)s
+
+        Returns
+        -------
+        %(RateFunction.fit.returns)s
+        """
+        # After fitting, cache the maximum of the pdf to avoid recalculating
         # that in the rejection sampling step
         bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, rate_std,
                                                      **kwargs)
@@ -265,19 +301,10 @@ class SinusRateFunction(RateFunction):
             def negpdf(t):
                 return -1. * self.fun(t, bf_pars)
 
-            self._fmax = []
+            _fmax = []
             for bound in self.trange:
-                # Get maximum func value in bound to maximize efficiency
-                # Start seed for minimizer by quick scan in the interval
-                x_scan = np.linspace(bound[0], bound[1], 7)[1:-1]
-                max_idx = np.argmin(negpdf(x_scan))
-                x0 = x_scan[max_idx]
-                # gtol, ftol are explicitely low, when dealing with low rates.
-                xmin = sco.minimize(negpdf, x0, bounds=[bound],
-                                    method="L-BFGS-B",
-                                    options={"gtol": 1e-12, "ftol": 1e-12}).x
-
-                self._fmax.append(-1. * negpdf(xmin))
+                _fmax.append(-1. * func_min_in_interval(negpdf, bound))
+            self._fmax = flatten_list_of_1darrays(_fmax)
 
         return bf_pars
 
@@ -289,7 +316,8 @@ class SinusRateFunction(RateFunction):
         Parameters
         ----------
         %(RateFunction.fun.parameters)s
-            pars : See `SinusRateFunction`, Parameters
+
+            See :class:`SinusRateFunction`, Summary
 
         Returns
         -------
@@ -306,7 +334,8 @@ class SinusRateFunction(RateFunction):
         Parameters
         ----------
         %(RateFunction.integral.parameters)s
-            pars : See `SinusRateFunction`, Parameters
+
+            See :class:`SinusRateFunction`, Summary
 
         Returns
         -------
@@ -327,39 +356,16 @@ class SinusRateFunction(RateFunction):
         #     [a / b] = Hz * MJD; [d * (t1 - t0)] = HZ * MJD
         return (per + lin) * RateFunction._SECINDAY
 
-        """
-        Generate random samples from the rate function for multiple source times
-        and time windows.
-
-        Parameters
-        ----------
-        t : array-like, shape (nsrcs)
-            MJD times of sources.
-        trange : array-like, shape(nsrcs, 2)
-            Time windows [[t0, t1], ...] in seconds around each given time t.
-        pars : tuple
-            Further parameters `self.fun` depends on.
-        n_samples : list of ints, len (nsrcs)
-            Number of events to sample per source. (default: nsrcs * [1])
-        random_state : RandomState, optional
-            A random number generator instance. (default: None)
-
-        Returns
-        -------
-        times : array-like, shape (n_samples)
-            Sampled times in MJD of background events per source. If n_samples
-            is 0, an empty array is returned.
-        """
-
     @docs.dedent
     def sample(self, t, trange, pars, n_samples, random_state=None):
         """
         %(RateFunction.sample.summary)s
 
+        For `pars`, see :class:`SinusRateFunction`, summary.
+
         Parameters
         ----------
         %(RateFunction.sample.parameters)s
-            pars : See `SinusRateFunction`, Parameters
 
         Returns
         -------
@@ -389,9 +395,9 @@ class SinusRateFunction(RateFunction):
 
         - a0 : Using the maximum amplitude in variation of rate bins.
         - b0 : The expected seasonal variation is 1 year.
-        - c0 : Earliest time in t.
+        - c0 : Earliest time in `t`.
         - d0 : Weighted averaged rate, which is the best fit value for a
-           constant target function.
+          constant target function.
 
         Parameters
         ----------
@@ -400,12 +406,12 @@ class SinusRateFunction(RateFunction):
         Returns
         -------
         p0 : tuple, shape (4)
-            Seed values (a0, b0, c0, d0):
+            Seed values `(a0, b0, c0, d0)`:
 
-            - a0 : (max(rate) + min(rate)) / 2
-            - b0 : 2pi / 365
-            - c0 : min(t)
-            - d0 : np.average(rate, weights=rate_std**2)
+            - a0 : :math:`(\max(\text{rate}) + \min(\text{rate})) / 2`
+            - b0 : :math:`2\pi / 365`
+            - c0 : :math:`\min(t)`
+            - d0 : `np.average(rate, weights=rate_std**2)`
         """
         a0 = 0.5 * (np.amax(rate) - np.amin(rate))
         b0 = 2. * np.pi / 365.
@@ -418,17 +424,26 @@ class Sinus1yrRateFunction(SinusRateFunction):
     """
     Sinus Rate Function fixing the period to 1 year.
 
-    Function describes time dependent background rate. Function is a sinus with:
+    Function describes time dependent background rate. Function is a sinus with
 
     .. math:: f(t|a,c,d) = a \sin((2\pi/\mathrm{365.25}) (t - c)) + d
 
-    where:
+    depending on 3 parameters:
 
-    - a : Amplitude in Hz
-    - c : x-offset in MJD
-    - d : y-offset in Hz
+    - a, float: Amplitude in Hz.
+    - c, float: x-axis offset in MJD.
+    - d, float: y-axis offset in Hz
 
-    Time is measured in MJD days.
+    When `t, trange` where given at object creation the function bounds for
+    the rejection sampling step are precalculated in `fit` to save computation
+    time on subsequent calls of `sample`.
+
+    Parameters
+    ----------
+    t : array-like, shape (nsrcs)
+        MJD times of sources.
+    trange : array-like, shape(nsrcs, 2)
+        Time windows `[[t0, t1], ...]` in seconds around each time `t`.
     """
     def __init__(self, t=None, trange=None):
         super(Sinus1yrRateFunction, self).__init__(t, trange)
@@ -443,7 +458,8 @@ class Sinus1yrRateFunction(SinusRateFunction):
         Parameters
         ----------
         %(RateFunction.fun.parameters)s
-            pars : See `Sinus1yrRateFunction`, Parameters
+
+            See :class:`Sinus1yrRateFunction`, Summary
 
         Returns
         -------
@@ -461,7 +477,8 @@ class Sinus1yrRateFunction(SinusRateFunction):
         Parameters
         ----------
         %(RateFunction.integral.parameters)s
-            pars : See `Sinus1yrRateFunction`, Parameters
+
+            See :class:`Sinus1yrRateFunction`, Summary
 
         Returns
         -------
@@ -478,20 +495,20 @@ class Sinus1yrRateFunction(SinusRateFunction):
         Motivation for default seed:
 
         - a0 : Using the maximum amplitude in variation of rate bins.
-        - c0 : Earliest time in t.
+        - c0 : Earliest time in `t`.
         - d0 : Weighted averaged rate, which is the best fit value for a
            constant target function.
 
         Parameters
         ----------
-        t, rate, rate_std
-            See `SinusRateFunction._get_default_seed`, Parameters
+        %(RateFunction._get_default_seed.parameters)s
 
         Returns
         -------
         p0 : tuple, shape (3)
-            See `SinusRateFunction._get_default_seed`, Parameters.
-            But b is fixed here, so only a0, c0 and d0 are seed values.
+
+            See :class:`Sinus1yrRateFunction._get_default_seed`, Returns.
+            Here `b` is fixed, so only `(a0, c0, d0)` are returned.
         """
         seed = super(Sinus1yrRateFunction, self)._get_default_seed(t, rate,
                                                                    rate_std)
@@ -501,12 +518,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
 
 class ConstantRateFunction(RateFunction):
     """
-    Returns a constant rate at a given time in MJD.
-
-    Parameters
-    ----------
-    rate : float
-        Constant rate in Hz.
+    Uses a constant rate in Hz at a given time in MJD.
     """
     def __init__(self):
         return
@@ -519,8 +531,8 @@ class ConstantRateFunction(RateFunction):
 
         Parameters
         ----------
-        %(RateFunction.fun.parameters)s
-            pars : See `ConstantRateFunction`, Parameters
+        rate : float
+            Constant rate in Hz.
 
         Returns
         -------
@@ -532,14 +544,13 @@ class ConstantRateFunction(RateFunction):
     @docs.dedent
     def integral(self, t, trange, pars):
         """
-        Analytic integral of the rate function in interval trange.
-
-        As rate function is constant, integral is simply trange * rate.
+        Analytic integral of the rate function in interval trange. Because the
+        rate function is constant, integral is simply `trange * rate`.
 
         Parameters
         ----------
-        %(RateFunction.integral.parameters)s
-            pars : See `ConstantRateFunction`, Parameters
+        rate : float
+            Constant rate in Hz.
 
         Returns
         -------
@@ -581,7 +592,7 @@ class ConstantRateFunction(RateFunction):
 
         Motivation for default seed:
 
-        - rate0 : Mean of the given rates, this is the anlytic solution to the
+        - rate0 : Mean of the given rates. This is the anlytic solution to the
           fit, so we seed with the best fit.
 
         Parameters
@@ -593,6 +604,6 @@ class ConstantRateFunction(RateFunction):
         p0 : tuple, shape(1)
             Seed values (rate0):
 
-            - rate0 : mean(rate)
+            - rate0 : `np.mean(rate)`
         """
         return np.mean(rate)
