@@ -25,8 +25,8 @@ class BGInjector(object):
 
     Describes a `fit` and a `sample` method.
 
-    Usage
-    -----
+    Example
+    -------
     >>> import tdepps.bg_injector as BGInj
     >>> data_inj = BGInj.DataBGInjector()
     >>>
@@ -417,6 +417,7 @@ class MRichmanBGInjector(BGInjector):
         self._n_features = None
         return
 
+    @docs.dedent
     def fit(self, X, nbins=10, minmax=False):
         """
         Build the injection model with the provided data.
