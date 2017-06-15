@@ -298,7 +298,7 @@ class GRBLLH(object):
         sob = self._soverb(X, args)
         return self._lnllh_ratio(ns, sob)
 
-    def fit_lnllh_ratio(self, X, ns0, args, minimizer_opts):
+    def fit_lnllh_ratio(self, X, ns0, args, bounds, minimizer_opts):
         """
         Fit the LLH parameter :math:`n_S` for a given set of data and fixed
         LLH arguments.
@@ -317,13 +317,14 @@ class GRBLLH(object):
             we expect at the source locations.
         args : dict
             See :func:`lnllh_ratio`, Parameters
+        bounds : array-like, shape (1, 2)
+            Minimization bounds `[[min, max]]` for `ns`. Use None for one of
+            `min` or `max` when there is no bound in that direction.
         minimizer_opts : dict
             Options passed to `scipy.optimize.minimize` [4] using the "L-BFGS-B"
-            algorithm. Explicit options are:
+            algorithm.
 
-            - 'bounds', array-like, shape (1, 2): Bounds `[[min, max]]` for
-              `ns`. Use None for one of min or max when there is no bound in
-              that direction.
+
 
         Returns
         -------
@@ -358,34 +359,38 @@ class GRBLLH(object):
 
         # If no events are given, best fit is always 0, skip all further steps
         if len(X) == 0:
-            return 0., -2.
+            return 0., 0.
 
         # Get the best fit parameter and TS. Analytic cases are handled:
-        # For ns = 1, 2 we get a linear, quadratic equation to solve.
+        # For nevts = [1 | 2] we get a [linear | quadratic] equation to solve.
         sob = self._soverb(X, args)
         nevts = len(sob)
+        # Test again, because we applied some threshold cuts
+        if nevts == 0:
+            return 0., 0.
         if nevts == 1:
             ns = 1. - (1. / sob)
-            TS, _ = self._lnllh_ratio(ns, sob)
-            return ns, TS
+            if ns <= 0:
+                return 0., 0.
+            else:
+                TS = -2. * (sob - 1) / sob + 2. * np.log(sob)
+            return ns[0], TS[0]
         elif nevts == 2:
             a = 1. / np.prod(sob)
             c = np.sum(sob) * a
             ns = 1. - 0.5 * c + np.sqrt(c**2 / 4. - a + 1.)
             if ns <= 0:
-                return 0., -2.
+                return 0., 0.
             else:
                 TS, _ = self._lnllh_ratio(ns, sob)
             return ns, TS
         else:
-            # Fit other cases. Bounds must be given explicitely
-            bounds = minimizer_opts.pop("bounds", None)
-
-            res = sco.minimize(fun=_neglnllh, x0=ns0, jac=True, bounds=bounds,
+            # Fit other cases
+            res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True, bounds=bounds,
                                method="L-BFGS-B", options=minimizer_opts)
 
         # Return function value with correct sign
-        return res.x[0], -1. * res.fun
+        return res.x[0], -1. * res.fun[0]
 
     def _lnllh_ratio(self, ns, sob):
         """
@@ -494,7 +499,6 @@ class GRBLLH(object):
         """
         # With no events given, we can skip this step
         if len(X) == 0:
-            print("X empty, returning empty zero length array")
             return np.empty(0, dtype=np.float)
 
         # Get data values
@@ -973,3 +977,31 @@ class GRBLLH(object):
         y = np.log(hist)
         y = np.concatenate((y[[0]], y, y[[-1]]))
         return sci.InterpolatedUnivariateSpline(x, y, k=k, ext="extrapolate")
+
+    def __str__(self):
+        rep = "GRBLLH object\n"
+        rep += "-------------\n\n"
+
+        rep += "Spatial PDF settings:\n"
+        for key, val in self.spatial_pdf_args.items():
+            rep += "  - {:12s} : {}\n".format(key, val)
+
+        rep += "\n"
+
+        rep += "Time PDF settings:\n"
+        for key, val in self.time_pdf_args.items():
+            rep += "  - {:12s} : {}\n".format(key, val)
+
+        rep += "\n"
+
+        rep += "Energy PDF settings:\n"
+        for key, val in self.energy_pdf_args.items():
+            rep += "  - {:12s} : {}\n".format(key, val)
+
+        rep += "\n"
+
+        rep += "LLH settings:\n"
+        for key, val in self.llh_args.items():
+            rep += "  - {:12s} : {}\n".format(key, val)
+
+        return rep
