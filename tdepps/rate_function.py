@@ -1,12 +1,10 @@
 # coding: utf-8
 
-from __future__ import division
-from __future__ import print_function
-from __future__ import absolute_import
-from builtins import zip
-from builtins import super
+from __future__ import print_function, division, absolute_import
+from builtins import zip, super
 from future import standard_library
-standard_library.install_aliases()
+standard_library.install_aliases()                                              # noqa
+
 import numpy as np
 import scipy.optimize as sco
 from sklearn.utils import check_random_state
@@ -14,33 +12,40 @@ from sklearn.utils import check_random_state
 from .utils import (rejection_sampling, func_min_in_interval,
                     flatten_list_of_1darrays)
 
+import abc     # Abstract Base Class
 import docrep  # Reuse docstrings
 docs = docrep.DocstringProcessor()
 
 
 class RateFunction(object):
     """
-    Interface for rate functions describing time dependent background rates.
+    Rate Function Base Class
+
+    Base class for rate functions describing time dependent background rates.
+    Rate function must be interpretable as a PDF and must not be negative.
 
     Classes must implement methods:
-    ["fun", "integral", "sample", "_get_default_seed"].
 
-    Class object then provides methods:
-    ["fun", "integral", "sample", "fit"]
+    - `fun`
+    - `integral`
+    - `sample`
+    - `_get_default_seed`
 
-    Rate function must be interpretable as a PDF and must not be negative.
+    Class object then provides public methods:
+
+    - `fun`
+    - `integral`
+    - `fit`
+    - `sample`
     """
-    # Set up globals for shared inherited constants
-    _SECINDAY = 24. * 60. * 60.
+    __metaclass__ = abc.ABCMeta
 
     def __init__(self):
-        self._DESCRIBES = ["fun", "integral", "sample", "_get_default_seed"]
-        raise NotImplementedError("Interface only. Describes functions: ",
-                                  self._DESCRIBES)
-        return
+        self._SECINDAY = 24. * 60. * 60.
 
     @docs.get_sectionsf("RateFunction.fun", sections=["Parameters", "Returns"])
     @docs.dedent
+    @abc.abstractmethod
     def fun(self, t, pars):
         """
         Returns the rate in Hz at a given time t in MJD.
@@ -57,11 +62,12 @@ class RateFunction(object):
         rate : array-like
             Rate in Hz for each time `t`.
         """
-        raise NotImplementedError("RateFunction is an interface.")
+        pass
 
     @docs.get_sectionsf("RateFunction.integral",
                         sections=["Parameters", "Returns"])
     @docs.dedent
+    @abc.abstractmethod
     def integral(self, t, trange, pars):
         """
         Integral of rate function in intervals trange around source times t.
@@ -80,12 +86,13 @@ class RateFunction(object):
         integral : array-like, shape (nsrcs)
             Integral of `self.fun` within given time windows `trange`.
         """
-        raise NotImplementedError("RateFunction is an interface.")
+        pass
 
     @docs.get_summaryf("RateFunction.sample")
     @docs.get_sectionsf("RateFunction.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
+    @abc.abstractmethod
     def sample(self, t, trange, pars, n_samples, random_state=None):
         """
         Generate random samples from the rate function for multiple source times
@@ -111,7 +118,36 @@ class RateFunction(object):
             Sampled times in MJD of background events per source. If `n_samples`
             is 0 for a source, an empty arrays is placed at that position.
         """
-        raise NotImplementedError("RateFunction is an interface.")
+        pass
+
+    @docs.get_summaryf("RateFunction._get_default_seed")
+    @docs.get_sectionsf("RateFunction._get_default_seed",
+                        sections=["Parameters"])
+    @docs.dedent
+    @abc.abstractmethod
+    def _get_default_seed(self, t, trange, rate_std):
+        """
+        Default seed values for the specifiv RateFunction fit.
+
+        Parameters
+        ----------
+        t : array-like
+            MJD times of experimental data.
+        rate : array-like, shape (len(t))
+            Rates at given times `t` in Hz.
+        rate_std : array-like, shape(len(t)), optional
+            Standard deviations for each datapoint. If None, all are set to 1.
+            If rate_std is a good description of the standard deviation, then
+            the fit statistics follows a :math:`\chi^2` distribution. But for a
+            binned fit this makes less sense, because low standard deviation
+            means low statistics, so better use unweighted. (default: None)
+
+        Returns
+        -------
+        p0 : tuple
+            Seed values for each parameter the specific `RateFunction` uses.
+        """
+        pass
 
     @docs.get_summaryf("RateFunction.fit")
     @docs.get_sectionsf("RateFunction.fit",
@@ -156,34 +192,6 @@ class RateFunction(object):
         res = sco.minimize(fun=self._lstsq, x0=p0, args=args, **kwargs)
 
         return res.x
-
-    @docs.get_summaryf("RateFunction._get_default_seed")
-    @docs.get_sectionsf("RateFunction._get_default_seed",
-                        sections=["Parameters"])
-    @docs.dedent
-    def _get_default_seed(self, t, trange, rate_std):
-        """
-        Default seed values for the specifiv RateFunction fit.
-
-        Parameters
-        ----------
-        t : array-like
-            MJD times of experimental data.
-        rate : array-like, shape (len(t))
-            Rates at given times `t` in Hz.
-        rate_std : array-like, shape(len(t)), optional
-            Standard deviations for each datapoint. If None, all are set to 1.
-            If rate_std is a good description of the standard deviation, then
-            the fit statistics follows a :math:`\chi^2` distribution. But for a
-            binned fit this makes less sense, because low standard deviation
-            means low statistics, so better use unweighted. (default: None)
-
-        Returns
-        -------
-        p0 : tuple
-            Seed values for each parameter the specific `RateFunction` uses.
-        """
-        raise NotImplementedError("RateFunction is an interface.")
 
     def _lstsq(self, pars, *args):
         """
@@ -238,7 +246,7 @@ class RateFunction(object):
         # Proper braodcasting to process multiple srcs at once
         t = t.reshape(nsrcs, 1)
         trange = np.atleast_2d(trange).reshape(nsrcs, 2)
-        return t, t + trange / RateFunction._SECINDAY
+        return t, t + trange / self._SECINDAY
 
 
 class SinusRateFunction(RateFunction):
@@ -269,6 +277,8 @@ class SinusRateFunction(RateFunction):
         Time windows `[[t0, t1], ...]` in seconds around each time `t`.
     """
     def __init__(self, t=None, trange=None):
+        super(SinusRateFunction, self).__init__()
+
         self.t, self.trange = None, None
         if (t is not None) and (trange is not None):
             self.t, self.trange = self._transform_trange_mjd(t, trange)
@@ -354,7 +364,7 @@ class SinusRateFunction(RateFunction):
         # Match units with secinday = 24 * 60 * 60 s/MJD = 86400 / (Hz*MJD)
         #     [a], [d] = Hz;M [b] = 1/MJD; [c], [t] = MJD
         #     [a / b] = Hz * MJD; [d * (t1 - t0)] = HZ * MJD
-        return (per + lin) * RateFunction._SECINDAY
+        return (per + lin) * self._SECINDAY
 
     @docs.dedent
     def sample(self, t, trange, pars, n_samples, random_state=None):
@@ -447,6 +457,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
     """
     def __init__(self, t=None, trange=None):
         super(Sinus1yrRateFunction, self).__init__(t, trange)
+
         self._b = 2 * np.pi / 365.25
         return
 
@@ -521,6 +532,7 @@ class ConstantRateFunction(RateFunction):
     Uses a constant rate in Hz at a given time in MJD.
     """
     def __init__(self):
+        super(ConstantRateFunction, self).__init__()
         return
 
     @docs.dedent
@@ -558,8 +570,8 @@ class ConstantRateFunction(RateFunction):
         """
         t, dts = self._transform_trange_mjd(t, trange)
         # Multiply first then diff to avoid roundoff errors
-        return (np.diff(dts * RateFunction._SECINDAY, axis=1) *
-                self.fun(t, pars))
+        return (np.diff(dts * self._SECINDAY, axis=1) *
+                self.fun(t, pars)).flatten()
 
     @docs.dedent
     def sample(self, t, trange, pars, n_samples, random_state=None):
