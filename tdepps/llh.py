@@ -9,6 +9,7 @@ import numpy as np
 import scipy.stats as scs
 import scipy.optimize as sco
 import scipy.interpolate as sci
+import math
 
 from .utils import fill_dict_defaults, get_binmids
 
@@ -369,16 +370,18 @@ class GRBLLH(object):
         if nevts == 0:
             return 0., 0.
         if nevts == 1:
+            # Use scalar math functions, they're faster than numpy
+            sob = sob[0]
             ns = 1. - (1. / sob)
             if ns <= 0:
                 return 0., 0.
             else:
-                TS = -2. * (sob - 1) / sob + 2. * np.log(sob)
-            return ns[0], TS[0]
+                TS = -ns + math.log(sob)
+            return ns, 2. * TS
         elif nevts == 2:
-            a = 1. / np.prod(sob)
-            c = np.sum(sob) * a
-            ns = 1. - 0.5 * c + np.sqrt(c**2 / 4. - a + 1.)
+            a = 1. / (sob[0] * sob[1])
+            c = (sob[0] + sob[1]) * a
+            ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
             if ns <= 0:
                 return 0., 0.
             else:
