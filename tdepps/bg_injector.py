@@ -1,29 +1,37 @@
 # coding: utf-8
 
-from __future__ import print_function
-from __future__ import division
-from __future__ import absolute_import
+from __future__ import print_function, division, absolute_import
 from builtins import range
 from future import standard_library
-standard_library.install_aliases()
+standard_library.install_aliases()                                              # noqa
+
 import numpy as np
 from numpy.lib.recfunctions import drop_fields, append_fields
 from sklearn.utils import check_random_state
 
 import anapymods3.stats.KDE as KDE
 
+import abc     # Abstract Base Class
 import docrep  # Reuse docstrings
 docs = docrep.DocstringProcessor()
 
 
 class BGInjector(object):
     """
-    Background Injector Interface
+    Background Injector Base Class
 
-    Generates background events with 3 features: declination, logE proxy and
-    directional reconstruction error sigma.
+    Base class for generating background events with 3 features: declination,
+    logE proxy and directional reconstruction error sigma.
 
-    Describes a `fit` and a `sample` method.
+    Classes must implement methods:
+
+    - `fun`
+    - `sample`
+
+    Class object then provides public methods:
+
+    - `fun`
+    - `sample`
 
     Example
     -------
@@ -39,15 +47,14 @@ class BGInjector(object):
     >>> data_inj.fit(X)
     >>> data_sam = data_inj.sample(n_samples=1000)
     """
-    _X_names = ["logE", "dec", "sigma"]
+    __metaclass__ = abc.ABCMeta
 
     def __init__(self):
-        self._DESCRIBES = ["fit", "sample"]
-        print("Interface only. Describes functions: ", self._DESCRIBES)
-        return
+        self._X_names = ["logE", "dec", "sigma"]
 
     @docs.get_sectionsf("BGInjector.fit", sections=["Parameters", "Returns"])
     @docs.dedent
+    @abc.abstractmethod
     def fit(self, X):
         """
         Build the injection model with the provided data
@@ -68,10 +75,11 @@ class BGInjector(object):
 
             Other names are dropped.
         """
-        raise NotImplementedError("BGInjector is an interface.")
+        pass
 
     @docs.get_sectionsf("BGInjector.sample", sections=["Parameters", "Returns"])
     @docs.dedent
+    @abc.abstractmethod
     def sample(self, n_samples=1, random_state=None):
         """
         Generate random samples from the fitted model.
@@ -95,9 +103,8 @@ class BGInjector(object):
             - "sinDec", float: Sinus declination in range [-1, 1] transformed
               from sampled declination values.
         """
-        raise NotImplementedError("BGInjector is an interface.")
+        pass
 
-    # Private methods
     def _add_ra_sin_dec(self, X, rndgen):
         """
         Adds uniformly sampled right ascension and sinus declination to the
@@ -204,6 +211,8 @@ class KDEBGInjector(BGInjector):
     """
     def __init__(self, glob_bw="silverman", alpha=0.5,
                  diag_cov=False, max_gb=2.):
+        super(KDEBGInjector, self).__init__()
+
         self._n_features = None
         # Create KDE model
         self.kde_model = KDE.GaussianKDE(glob_bw=glob_bw, alpha=alpha,
@@ -292,6 +301,7 @@ class DataBGInjector(BGInjector):
     Background Injector selecting random data events from the given sample.
     """
     def __init__(self):
+        super(DataBGInjector, self).__init__()
         self._n_features = None
         return
 
@@ -350,7 +360,9 @@ class UniformBGInjector(BGInjector):
     - Sigma in radian modeled as :math:`f(x) = 3^2 x exp(-3x)`
     """
     def __init__(self):
-        # "Close" to real data
+        super(UniformBGInjector, self).__init__()
+
+        # Values "close" to real data
         self._logE_mean = 3.
         self._logE_sigma = .25
         self._sigma_scale = 3.
@@ -363,7 +375,8 @@ class UniformBGInjector(BGInjector):
         """
         Method has no effect: Model generates pseudo data only, no fit needed.
         """
-        raise AttributeError("Function disabled. Generating pesudo data only.")
+        raise NotImplementedError(
+            "Function disabled. Generating pesudo data only.")
 
     @docs.dedent
     def sample(self, n_samples=1, random_state=None):
@@ -414,6 +427,7 @@ class MRichmanBGInjector(BGInjector):
     then sampling uniformly from those bins. Data must have 3 dimensions.
     """
     def __init__(self):
+        super(MRichmanBGInjector, self).__init__()
         self._n_features = None
         return
 
