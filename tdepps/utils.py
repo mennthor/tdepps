@@ -1,11 +1,14 @@
 # coding: utf-8
 
-from __future__ import print_function
-from __future__ import division
-from __future__ import absolute_import
+"""
+Collection of repetedly used or large helper functions.
+"""
+
+from __future__ import print_function, division, absolute_import
 from builtins import zip
 from future import standard_library
-standard_library.install_aliases()
+standard_library.install_aliases()                                              # noqa
+
 import numpy as np
 import scipy.optimize as sco
 from sklearn.utils import check_random_state
@@ -85,29 +88,6 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
     return out
 
 
-def get_binmids(bins):
-    """
-    Given a list of bins, return the bin mids.
-
-    Doesn't catch any falsely formatted data so be sure what you do.
-
-    Parameter
-    ---------
-    bins : list
-        Contains one array per binning.
-
-    Returns
-    -------
-    mids : list
-        List with the bin mids for each binning in bins.
-        Mids have one point lesse than the input bins.
-    """
-    m = []
-    for b in bins:
-        m.append(0.5 * (b[:-1] + b[1:]))
-    return m
-
-
 def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
                        random_state=None):
     """
@@ -178,7 +158,7 @@ def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
             # Use cached values instead, if given
             fmax = max_fvals[i]
 
-        # Draw remaining events until all samples per sourcee are created
+        # Draw remaining events until all samples per source are created
         _sample = []
         xlow, xhig = bound[0], bound[1]
         while nsam > 0:
