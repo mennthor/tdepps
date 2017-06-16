@@ -1,57 +1,73 @@
 # coding: utf-8
 
-from __future__ import print_function
-from __future__ import division
-from __future__ import absolute_import
-from builtins import dict
-from builtins import open
-from builtins import filter
-from builtins import zip
+from __future__ import print_function, division, absolute_import
+from builtins import dict, open, filter, zip
 from future import standard_library
-standard_library.install_aliases()
+standard_library.install_aliases()                                              # noqa
+
 import os
 import json
 import numpy as np
 from astropy.time import Time as astrotime
 
+import abc     # Abstract Base Class
 import docrep  # Reuse docstrings
 docs = docrep.DocstringProcessor()
 
 
 class BGRateInjector(object):
     """
-    Background Rate Injector Interface
+    Background Rate Injector Base Class
 
-    Samples times of BG-like events for a given time frame.
-    Describes a `fit` and a `sample` method.
+    Samples times of background-like events for a given time frame.
+
+    Classes must implement methods:
+
+    - `fun`
+    - `sample`
+
+    Class object then provides public methods:
+
+    - `fun`
+    - `sample`
+    - `get_nb`
     """
-    # Set up globals for shared inherited constants
-    _SECINDAY = 24. * 60. * 60.
+    __metaclass__ = abc.ABCMeta
 
     def __init__(self):
-        self._DESCRIBES = ["fit", "sample"]
-        print("Interface only. Describes functions: ", self._DESCRIBES)
-        return
+        self._SECINDAY = 24. * 60. * 60.
+        self.best_pars = None
+        self.best_estimator = None
+        self.best_estimator_integral = None
 
     @docs.get_summaryf("BGRateInjector.fit")
     @docs.get_sectionsf("BGRateInjector.fit",
                         sections=["Parameters", "Returns"])
     @docs.dedent
+    @abc.abstractmethod
     def fit(self, T):
         """
         Build the injection model with times from experimental data.
+
+        Additionally creates new class attributes:
+
+        - best_pars, tuple: Best fit parameters.
+        - best_estimator, callable: Rate function with `best_pars` plugged in.
+        - best_estimator_integral, callable: Rate function integral with
+          `best_pars` plugged in.
 
         Parameters
         ----------
         T : array_like, shape (n_samples)
             Per event times in MJD days of experimental data.
         """
-        raise NotImplementedError("BGInjector is an interface.")
+        pass
 
     @docs.get_summaryf("BGRateInjector.sample")
     @docs.get_sectionsf("BGRateInjector.sample",
                         sections=["Parameters", "Returns"])
     @docs.dedent
+    @abc.abstractmethod
     def sample(self, t, trange, poisson=True, random_state=None):
         """
         Generate random samples from the fitted model for multiple source event
@@ -82,7 +98,7 @@ class BGRateInjector(object):
             The times in MJD for each sampled srcs. Arrays might be empty, when
             the background expectation is low for small time windows.
         """
-        raise NotImplementedError("BGInjector is an interface.")
+        pass
 
     def get_nb(self, t, trange):
         """
@@ -107,8 +123,7 @@ class BGRateInjector(object):
         t, trange = self._prep_t_trange(t, trange)
 
         # BG expectations are the integrals over each time frames, shape (nsrcs)
-        nb = self.best_estimator_integral(t, trange)
-        return nb
+        return self.best_estimator_integral(t, trange)
 
     def _prep_t_trange(self, t, trange):
         """
@@ -131,6 +146,29 @@ class BGRateInjector(object):
             raise ValueError("`trange` shape must be (nsrcs, 2).")
 
         return t, trange
+
+    def _set_best_fit(self, pars):
+        """
+        Sets new class attributes with the best fit parameters.
+
+        Creates new class attributes:
+
+        - best_pars, tuple: Best fit parameters.
+        - best_estimator, callable: Rate function with `best_pars` plugged in.
+        - best_estimator_integral, callable: Rate function integral with
+          `best_pars` plugged in.
+
+        Parameters
+        ----------
+        pars : tuple
+            Best fit parameters plugged into `fun` and `integral`.
+        """
+        self.best_pars = pars
+        self.best_estimator = (lambda t: self.rate_func.fun(t, pars))
+        self.best_estimator_integral = (
+            lambda t, trange: self.rate_func.integral(t, trange, pars))
+
+        return self.best_pars
 
 
 class RunlistBGRateInjector(BGRateInjector):
@@ -161,8 +199,7 @@ class RunlistBGRateInjector(BGRateInjector):
     .. [1] https://live.icecube.wisc.edu/snapshots/
     """
     def __init__(self, runlist, filter_runs, rate_func):
-        # Class defaults
-        self.best_pars = None
+        super(RunlistBGRateInjector, self).__init__()
 
         # Create a goodrun list from the JSON snapshot
         runlist = os.path.abspath(runlist)
@@ -205,13 +242,8 @@ class RunlistBGRateInjector(BGRateInjector):
 
         resx = self.rate_func.fit(binmids, rate, p0=None, rate_std=rate_std)
 
-        # Wrappers for functions with best fit pars plugged in
-        self.best_pars = resx
-        self.best_estimator = (lambda t: self.rate_func.fun(t, resx))
-        self.best_estimator_integral = (
-            lambda t, trange: self.rate_func.integral(t, trange, resx))
-
-        return self.best_estimator
+        # Setup wrappers for functions with best fit pars plugged in
+        return self._set_best_fit(resx)
 
     @docs.dedent
     def sample(self, t, trange, poisson=True, random_state=None):
@@ -349,10 +381,10 @@ class RunlistBGRateInjector(BGRateInjector):
 
         # Normalize to rate in Hz
         runtime = stop_mjd - start_mjd
-        rate = evts / (runtime * BGRateInjector._SECINDAY)
+        rate = evts / (runtime * self._SECINDAY)
 
         # Calculate 1 / sqrt(N) stddev for scaled rates
-        rate_std = np.sqrt(rate) / np.sqrt(runtime * BGRateInjector._SECINDAY)
+        rate_std = np.sqrt(rate) / np.sqrt(runtime * self._SECINDAY)
 
         # Create record-array
         names = ["run", "rate", "runtime", "start_mjd",
