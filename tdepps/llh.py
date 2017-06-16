@@ -1,17 +1,16 @@
 # coding: utf-8
 
-from __future__ import division
-from __future__ import print_function
-from __future__ import absolute_import
+from __future__ import print_function, division, absolute_import
 from future import standard_library
-standard_library.install_aliases()
+standard_library.install_aliases()                                              # noqa
+
+import math
 import numpy as np
 import scipy.stats as scs
 import scipy.optimize as sco
 import scipy.interpolate as sci
-import math
 
-from .utils import fill_dict_defaults, get_binmids
+from .utils import fill_dict_defaults
 
 
 class GRBLLH(object):
@@ -129,9 +128,9 @@ class GRBLLH(object):
     .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight # noqa: 501
     .. [3] https://en.wikipedia.org/wiki/Kent_distribution
     """
-    def __init__(self, X, MC, srcs, spatial_pdf_args, energy_pdf_args,
+    def __init__(self, X, MC, spatial_pdf_args, energy_pdf_args,
                  time_pdf_args=None, llh_args=None):
-        # Check if data, MC and srcs have all needed names
+        # Check if data, MC have all needed names
         X_names = ["dec", "logE"]
         for n in X_names:
             if n not in X.dtype.names:
@@ -851,7 +850,9 @@ class GRBLLH(object):
 
         # Create binmids to fit spline to bin centers
         bins = self.energy_pdf_args["bins"]
-        mids = get_binmids(bins)
+        mids = []
+        for b in bins:
+            mids.append(0.5 * (b[:-1] + b[1:]))
 
         if np.any((ev_logE < bins[1][0]) | (ev_logE > bins[1][-1])):
             raise ValueError("Not all logE events fall into given bins. If " +
@@ -974,7 +975,7 @@ class GRBLLH(object):
                              "happen. Empty bins idx:\n{}".format(
                                  np.arange(len(bins) - 1)[hist <= 0.]))
 
-        mids = get_binmids([bins])[0]
+        mids = 0.5 * (bins[:-1] + bins[1:])
         # Add the outermost bin edges to avoid overshoots at the edges
         x = np.concatenate((bins[[0]], mids, bins[[-1]]))
         y = np.log(hist)
