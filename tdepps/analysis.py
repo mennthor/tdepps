@@ -1,15 +1,12 @@
 # coding: utf-8
 
-from __future__ import print_function
-from __future__ import division
-from __future__ import absolute_import
-from builtins import range
-from builtins import int
+from __future__ import print_function, division, absolute_import
+from builtins import range, int
 from future import standard_library
-standard_library.install_aliases()
+standard_library.install_aliases()                                              # noqa
+
 import numpy as np
 from numpy.lib.recfunctions import append_fields
-import scipy.optimize as sco
 from sklearn.utils import check_random_state
 
 from tdepps.llh import GRBLLH
