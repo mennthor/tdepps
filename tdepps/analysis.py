@@ -52,10 +52,17 @@ class TransientsAnalysis(object):
         self.llh = llh
         return
 
-    def do_trials(self, n_trials, ns0, bg_inj, bg_rate_inj, signal_inj=None,
-                  random_state=None, minimizer_opts=None):
+    def do_bg_trials(self, n_trials, ns0, bg_inj, bg_rate_inj,
+                     random_state=None, minimizer_opts=None):
         """
-        Do pseudo experiment trials using the given event injectors.
+        Do pseudo experiment trials using only background-like evetns from the
+        given event injectors.
+
+        We need to build the background (or null hypothesis) test statistic (TS)
+        to estimate the signifiance of a TS result on data.
+        We can either sample the TS very often to populate even the range beyond
+        5 sigma with sufficent statistics or we can fit an appropriate model
+        function to fewer samples, hoping that it decribes the TS well enough.
 
         Parameters
         ----------
@@ -104,9 +111,6 @@ class TransientsAnalysis(object):
             How many trials with `ns = 0` and `TS = 0` occured. This is done to
             save memory, because usually a lot of trials are zero.
         """
-        if signal_inj is not None:
-            raise NotImplementedError("Signal injection not yet implemented.")
-
         rndgen = check_random_state(random_state)
 
         # Setup minimizer defaults and bounds
