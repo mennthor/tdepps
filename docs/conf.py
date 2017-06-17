@@ -106,6 +106,11 @@ html_theme_options = {
 # so a file named "default.css" will overwrite the builtin "default.css".
 # html_static_path = ['_static']
 
+# If not None, a 'Last updated on:' timestamp is inserted at every page
+# bottom, using the given strftime format.
+# The empty string is equivalent to '%b %d, %Y'.
+html_last_updated_fmt = ""
+
 
 # -- Options for HTMLHelp output ------------------------------------------
 
