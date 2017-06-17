@@ -205,3 +205,152 @@ def func_min_in_interval(func, interval, nscan=7):
                         options={"gtol": 1e-12, "ftol": 1e-12}).x
 
     return func(xmin)
+
+
+def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
+    """
+    Rotate coordinates (ra3, dec3) using the same rotation to get from
+    (ra1, dec1) to (ra2, dec2).
+
+    Angles are given in equatorial coordinates right-ascension in radians, in
+    :math:`[0,2\pi]` and declination, in :math:`[-\pi / 2,\pi / 2]`.
+
+    Parameters
+    ----------
+    ra1, dec1 : array-like, shape (nevts)
+        Start directions `(ra1, dec1)` of rotation per event.
+    ra2, dec2 : array-like, shape (nevts)
+        End directions `(ra2, dec2)` of rotation per event. The rotation
+        angles are `(d_ra, d_dec) = (ra2, dec2) - (ra1, dec1)`
+    ra3, dec3 : array-like, shape (nevts)
+        The directions which are actually rotated per event. The final points
+        will be `(ra3', dec3') = (ra3, dec3) + (d_ra, d_dec)` correctly
+        wrapped around the unit sphere.
+
+    Returns
+    -------
+    ra3t, dec3t : array-like
+        The rotated coordinates of `(ra3, dec3)` per event.
+    """
+    def wrap_theta_phi_range(th, phi):
+        """
+        Shift over-/underflow of theta, phi angles back to their valid ranges.
+
+        Parameters
+        ----------
+        th, phi : array-like
+            Theta and phi angles in radians. Ranges are `th` in
+            :math`[0, \pi]` and `phi` in :math`[0, 2\pi]`.
+
+        Returns
+        -------
+        th, phi : array-like
+            Same angles as before, but those outside the ranges are shifted
+            back to the sphere correctly.
+
+        Notes
+        -----
+        Phi is easy to do, because it's periodic on 2pi on the sphere, so we
+        can simply remap in the same fashion `astropy` does.
+
+        Theta is more difficult because it's not peridioc. If theta runs
+        outside it's range, it's going over the poles.
+        Thus the theta angle is decresing again, but phi gets flipped by 180°.
+        So theta is treated as 2pi periodic first, so going a whole round over
+        the poles we end up where we started.
+        Then we mirror angles greater pi so the range (pi, 2pi] is mapped back
+        to the range (pi, 0].
+        Simultaniously phi is mirrored 180° coming down the other side of the
+        pole. Then phi is shifted to it's valid range in [0, 2pi] again.
+        """
+        # Start with a correct phi angle
+        phi = wrap_angle(phi, np.deg2rad(360))
+
+        # First pretend that theta is peridic in 360°. So going one round over
+        # the poles gets us to where we started
+        th = wrap_angle(th, np.deg2rad(360))
+
+        # Now mirror the thetas >180° to run up the sphere again.
+        # Eg. th = 210° is truely a theta of 150°, th = 300° is 60°, etc.
+        m = th > np.deg2rad(180)
+        th[m] = 2 * np.deg2rad(180) - th[m]
+
+        # For the mirrored thetas we move the phis 180° around the sphere,
+        # which is all that happens when crossing the poles on a sphere
+        phi[m] = phi[m] + np.deg2rad(180)
+
+        # Now put the phis which where transformed to vals > 360° back to
+        # [0°, 360°]
+        phi = wrap_angle(phi, np.deg2rad(360))
+
+        return th, phi
+
+    def wrap_angle(angles, wrap_angle=2 * np.pi):
+        """
+        Wraps angles :math:`\alpha` to range
+        :math:`\Phi - 2\pi \leq \alpha < \Phi`, where :math:`\Phi` is the
+        `wrap_angle`.
+
+        Parameters
+        ----------
+        angles : array-like
+            Angles in radian.
+        wrap_angle : float, optional
+            Defines the upper border of the wrapping interval. Default is
+            :math:`2\pi`, so angles are wrapped to :math`[0, 2\pi]`.
+
+        Returns
+        -------
+        wrapped : array-like
+            Wrappend angles :math:`\alpha` in radian in range
+            :math:`\Phi - 2\pi <= \alpha < \Phi`
+
+        Notes
+        -----
+        This method is taken 1:1 from `astropy.coordinates.Angle.wrap_at` [1].
+
+        .. [1] http://docs.astropy.org/en/stable/api/astropy.coordinates.Angle.html#astropy.coordinates.Angle.wrap_at # noqa
+        """
+        return (np.mod(angles - wrap_angle, 2 * np.pi) -
+                (2 * np.pi - wrap_angle))
+
+    def RaDecToThetaPhi(ra, dec):
+        """
+        Convert equatorial ra, dec to spherical phi, theta coordinates.
+        Only the declination get shifted from :math:`[-\pi/2, \pi/2]` to
+        :math:`[0, \pi]`.
+
+        Parameters
+        ----------
+        ra, dec : array-like
+            Right-ascension, in :math:`[0,2\pi]` and declination, in
+            :math:`[-\pi / 2,\pi / 2]`, both in radians.
+
+        Returns
+        -------
+        theta, phi : array-like
+            Theta and phi angles in radians. Ranges are `theta` in
+            :math`[0, \pi]` and `phi` in :math`[0, 2\pi]`.
+        """
+        return np.pi / 2. - dec, ra
+
+    def ThetaPhiToRaDec(th, phi):
+        """
+        Back transformation, see above for details. Returns: ra, dec.
+        """
+        return phi, np.pi / 2. - th
+
+    # Convert to spherical coordinates theta in [0, pi], phi = ra
+    th1, _ = RaDecToThetaPhi(ra1, dec1)
+    th2, _ = RaDecToThetaPhi(ra2, dec2)
+    th3, _ = RaDecToThetaPhi(ra3, dec3)
+
+    # Delta angles = rotation angles (ra1, dec1) -> (ra2, dec2)
+    dra = ra2 - ra1
+    dth = th2 - th1
+
+    # Rotate (ra3, dec3) by adding dra, dth and wrapping back to sphere
+    th3, ra3 = wrap_theta_phi_range(th3 + dth, ra3 + dra)
+
+    # Convert back to equatorial
+    return ThetaPhiToRaDec(th3, ra3)
