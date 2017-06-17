@@ -530,6 +530,10 @@ class Sinus1yrRateFunction(SinusRateFunction):
 class ConstantRateFunction(RateFunction):
     """
     Uses a constant rate in Hz at a given time in MJD.
+
+    Uses one parameter:
+
+    - rate, float: Constant rate in Hz.
     """
     def __init__(self):
         super(ConstantRateFunction, self).__init__()
@@ -543,14 +547,15 @@ class ConstantRateFunction(RateFunction):
 
         Parameters
         ----------
-        rate : float
-            Constant rate in Hz.
+        %(RateFunction.fun.parameters)s
+
+            See :class:`ConstantRateFunction`, Summary
 
         Returns
         -------
         %(RateFunction.fun.returns)s
         """
-        rate = pars
+        (rate,) = pars
         return np.ones_like(t) * rate
 
     @docs.dedent
@@ -561,8 +566,9 @@ class ConstantRateFunction(RateFunction):
 
         Parameters
         ----------
-        rate : float
-            Constant rate in Hz.
+        %(RateFunction.integral.parameters)s
+
+            See :class:`ConstantRateFunction`, Summary
 
         Returns
         -------
@@ -618,4 +624,4 @@ class ConstantRateFunction(RateFunction):
 
             - rate0 : `np.mean(rate)`
         """
-        return np.mean(rate)
+        return (np.mean(rate), )
