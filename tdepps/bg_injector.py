@@ -215,8 +215,8 @@ class KDEBGInjector(BGInjector):
 
         self._n_features = None
         # Create KDE model
-        self.kde_model = KDE.GaussianKDE(glob_bw=glob_bw, alpha=alpha,
-                                         diag_cov=diag_cov, max_gb=max_gb)
+        self._kde_model = KDE.GaussianKDE(glob_bw=glob_bw, alpha=alpha,
+                                          diag_cov=diag_cov, max_gb=max_gb)
 
         return
 
@@ -245,7 +245,7 @@ class KDEBGInjector(BGInjector):
 
         # Turn record-array in normal 2D array for more general KDE class
         X = np.vstack((X[n] for n in self._X_names)).T
-        self.kde_model.fit(X)
+        self._kde_model.fit(X)
         return
 
     @docs.dedent
@@ -279,7 +279,7 @@ class KDEBGInjector(BGInjector):
         X = []
         bounds = self._bounds
         while n_samples > 0:
-            gen = self.kde_model.sample(n_samples, rndgen)
+            gen = self._kde_model.sample(n_samples, rndgen)
             accepted = np.all(np.logical_and(gen >= bounds[:, 0],
                                              gen <= bounds[:, 1]), axis=1)
             n_samples = np.sum(~accepted)
