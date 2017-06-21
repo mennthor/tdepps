@@ -577,7 +577,7 @@ class ConstantRateFunction(RateFunction):
         t, dts = self._transform_trange_mjd(t, trange)
         # Multiply first then diff to avoid roundoff errors
         return (np.diff(dts * self._SECINDAY, axis=1) *
-                self.fun(t, pars)).flatten()
+                self.fun(t, pars)).ravel()
 
     @docs.dedent
     def sample(self, t, trange, pars, n_samples, random_state=None):
