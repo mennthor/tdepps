@@ -51,7 +51,7 @@ class SignalInjector(object):
         self._srcs = None
         self._nsrcs = None
         self._sin_dec_range = np.array([-1., 1.])
-        self._SECINDAY = 24. * 60. + 60.
+        self._SECINDAY = 24. * 60. * 60.
 
         return
 
@@ -434,10 +434,10 @@ class SignalInjector(object):
         """
         # Transform time window to MJD and check on correct shapes
         src_t = np.atleast_1d(src_t)
-        nsrcs = len(src_t)
+        nevts = len(src_t)
         # Proper braodcasting to process all srcs at once
-        src_t = src_t.reshape(nsrcs, 1)
-        dt = np.atleast_2d(dt).reshape(nsrcs, 2)
+        src_t = src_t.reshape(nevts, 1)
+        dt = np.atleast_2d(dt).reshape(nevts, 2)
         trange = src_t + dt / self._SECINDAY
 
         return rndgen.uniform(trange[:, 0], trange[:, 1])
