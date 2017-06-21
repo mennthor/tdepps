@@ -469,8 +469,8 @@ class GRBLLH(object):
 
         # Total time window per source in seconds
         trange = np.empty_like(dt, dtype=np.float)
-        trange[:, 0] = dt[:, 0] - sig_t_clip.flatten()
-        trange[:, 1] = dt[:, 1] + sig_t_clip.flatten()
+        trange[:, 0] = dt[:, 0] - sig_t_clip.ravel()
+        trange[:, 1] = dt[:, 1] + sig_t_clip.ravel()
 
         return trange
 
