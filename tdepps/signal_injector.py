@@ -4,7 +4,7 @@ import numpy as np
 from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
 
-from .utils import rotator
+from .utils import flatten_list_of_1darrays
 
 
 class SignalInjector(object):
@@ -53,6 +53,9 @@ class SignalInjector(object):
         self._sin_dec_range = np.array([-1., 1.])
         self._SECINDAY = 24. * 60. * 60.
 
+        # Debug flag. Set True and injection bands get calculated as in skylab
+        self._skylab_band = False
+
         return
 
     @property
@@ -67,7 +70,7 @@ class SignalInjector(object):
     def inj_width(self):
         return self._inj_width
 
-    def fit(self, srcs, MC, livetime):
+    def fit(self, srcs, MC):
         """
         Fill injector with Monte Carlo events, preselecting events around the
         source positions.
@@ -111,17 +114,9 @@ class SignalInjector(object):
               [2]_, already divided by `nevts * nfiles` known from SimProd.
               Units are 'GeV sr cm^2'. Final event weights are obtained by
               multiplying with desired flux.
-
-        livetime : float or dict(enum, float)
-            Livetime in MJD days per sample with same `enum` as in `MC`.
         """
-        if isinstance(MC, dict) ^ isinstance(livetime, dict):
-            raise TypeError("`MC` and `livetime` must both be a dict or " +
-                            "recarray and float.")
-
         if not isinstance(MC, dict):  # Work consitently with dicts
             MC = {-1: MC}
-            livetime = {-1: livetime}
 
         required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
         for n in required_names:
@@ -131,46 +126,47 @@ class SignalInjector(object):
         MC_names = ["timeMJD", "ra", "dec", "logE", "sigma",
                     "trueRa", "trueDec", "trueE", "ow"]
         for n in MC_names:
-            if n not in MC.dtype.names:
-                raise ValueError("`MC` is missing name '{}'.".format(n))
+            for key, mc_i in MC.items():
+                if n not in mc_i.dtype.names:
+                    e = "MC sample '{}' is missing name '{}'.".format(n, key)
+                    raise ValueError(e)
 
         # For new srcs set injection solid angle
         self._srcs = srcs
         self._nsrcs = len(srcs)
         self._set_solid_angle()
 
-        # self.mc_arr: Store selected event ids to sample from a single array
-        # ev_idx: event ID, src_idx: src ID, enum: sample ID
+        # Store selected event ids in mc_arr to sample from a single array
+        # ev_idx: event ID per sam., src_idx: src ID per sam., enum: sample ID
+        # ev_idx : [ 1, 5,11,47,58,66,70,93, ..., 0, 4, 7,12,24,71,86, ...]
+        # src_idx: [ 0, 0, 1, 2, 2, 3, 4, 4, ..., 0, 2, 2, 2, 3, 4, 4, ...]
+        # enum   : [ 0, 0, 0, 0, 0, 0, 0, 0, ..., 1, 1, 1, 1, 1, 1, 1, ...]
         dtype = [("ev_idx", np.int), ("src_idx", np.int), ("enum", np.int)]
         self.mc_arr = np.empty(0, dtype=dtype)
         # self.MC: Store unique events selected for sampling per sample
         self.MC = dict()
-
-        # Broadcast to mask all srcs at once
-        _min_sin_decs = np.sin(self._min_dec).reshape(self._nsrcs, 1)
-        _max_sin_decs = np.sin(self._max_dec).reshape(self._nsrcs, 1)
 
         # Loop all samples
         assert self.mode in ["band", "circle"]
         for key, mc_i in MC.items():
             # Select events in the injection regions
             if self.mode == "band":
-                _mc_sin_dec = np.sin(mc_i["trueDec"])
-                inj_mask = ((_mc_sin_dec > _min_sin_decs) &
-                            (_mc_sin_dec < _max_sin_decs))
+                # Broadcast to mask all srcs at once
+                min_decs = self._min_dec.reshape(self._nsrcs, 1)
+                max_decs = self._max_dec.reshape(self._nsrcs, 1)
+                mc_true_dec = mc_i["trueDec"]
+                inj_mask = ((mc_true_dec > min_decs) & (mc_true_dec < max_decs))
             else:
                 # Compare great circle distance to each src with inj_width
                 src_ra = np.atleast_2d(srcs["ra"]).reshape(self._nsrcs, 1)
                 src_dec = np.atleast_2d(srcs["dec"]).reshape(self._nsrcs, 1)
-                mc_ra = mc_i["trueRa"]
-                mc_dec = mc_i["trueDec"]
-                cos_dist = (np.cos(src_ra - mc_ra) *
-                            np.cos(src_dec) * np.cos(mc_dec) +
-                            np.sin(src_dec) * np.sin(mc_dec))
+                mc_true_ra = mc_i["trueRa"]
+                mc_true_dec = mc_i["trueDec"]
+                cos_dist = (np.cos(src_ra - mc_true_ra) *
+                            np.cos(src_dec) * np.cos(mc_true_dec) +
+                            np.sin(src_dec) * np.sin(mc_true_dec))
                 cos_r = np.cos(self.inj_width)
-                inj_mask = cos_dist < cos_r
-
-            print(inj_mask.shape)
+                inj_mask = cos_dist > cos_r
 
             if not np.any(inj_mask):
                 print("Sample {:d}: No events were selected!".format(key))
@@ -189,22 +185,24 @@ class SignalInjector(object):
             # Append all events to sampling array
             mc_arr = np.empty(n_tot, dtype=dtype)
 
-            # Create id to acces the events in the sampling step
+            # Bookkeeping: Create id to acces the events in the sampling step
             _core = core_mask.ravel()
-            # Unique id for selected events, one src after another
+            # Unique id for selected events per sample and per src
             mc_arr["ev_idx"] = np.tile(np.arange(N_unique), self._nsrcs)[_core]
             # Same src id for each selected evt per src (rows in core_mask)
             mc_arr['src_idx'] = np.repeat(np.arange(self._nsrcs),
                                           np.sum(core_mask, axis=1))
             # Repeat enum id for each sample
-            mc_arr["enum"] = key * np.ones(n, dtype=np.int)
+            mc_arr["enum"] = key * np.ones(n_tot, dtype=np.int)
 
             self.mc_arr = np.append(self.mc_arr, mc_arr)
 
+            del mc_arr  # Only needed next loop again, but with different shape
+
             print("Sample {:d}: Selected {:6d} evts at {:6d} sources.".format(
-                key, n, self._nsrcs))
+                key, n_tot, self._nsrcs))
             print("  # Sources without selected evts: {}".format(
-                np.count_nonzero(np.sum(core_mask, axis=1))))
+                self._nsrcs - np.count_nonzero(np.sum(core_mask, axis=1))))
 
         if len(self.mc_arr) < 1:
             raise ValueError("No events were selected. Check `inj_width`.")
@@ -262,7 +260,7 @@ class SignalInjector(object):
 
             # If only one sample: return single recarray
             if len(enums) == 1 and enums[0] < 0:
-                sam_ev = np.copy(self.MC[enums[0]][sam_idx["idx"]])
+                sam_ev = np.copy(self.MC[enums[0]][sam_idx["ev_idx"]])
                 sam_ev = self._rot_and_strip(src_ra[sam_idx['src_idx']],
                                              src_dec[sam_idx['src_idx']],
                                              sam_ev)
@@ -274,7 +272,7 @@ class SignalInjector(object):
             sam_ev = dict()
             for enum in enums:
                 # Filter events per enum
-                idx = sam_idx[sam_idx["enum"] == enum]["idx"]
+                idx = sam_idx[sam_idx["enum"] == enum]["ev_idx"]
                 sam_ev_i = np.copy(self.MC[enum][idx])
                 # Broadcast corresponding sources for correct rotation
                 src_ind = sam_idx[sam_idx["enum"] == enum]["src_idx"]
@@ -314,25 +312,27 @@ class SignalInjector(object):
         generated events per sample. So if the acceptance was lower the
         simulation just threw away more events resulting in lower OneWeights.
 
-        So we only include the theoretical weights here manually.
+        So we only include the theoretical weights here manually by multiplying
+        the events belonging to each source with the sources theoretical weight.
         """
-        w_theo = self._srcs["w_theo"].astype(np.float)
+        w_theo = self._srcs["w_theo"]
         w_theo /= np.sum(w_theo)
         assert np.allclose(np.sum(w_theo), 1.)
 
         # Broadcast src dependent weight parts to each evt
-        omega = (self._omega / self.w_theo)[self.mc_arr['src_idx']]
+        omega = (self._omega / w_theo)[self.mc_arr["src_idx"]]
         assert len(omega) == len(self.mc_arr)
 
         # Calculate physical weights for E^-gamma fluence for all events
         w = []
-        for mc_i in self.MC.values():
-            _w = ((mc_i["ow"] * mc_i["trueE"]**(-self.gamma))
-                  [self.mc_arr["idx"]])
-            w.append(_w / omega)
+        for enum, mc_i in self.MC.items():  # Select again per sample
+            idx = self.mc_arr[self.mc_arr["enum"] == enum]["ev_idx"]
+            w.append((mc_i["ow"][idx] * mc_i["trueE"][idx]**(-self.gamma)))
 
-        w = np.array(w)
+        w = flatten_list_of_1darrays(w)
         assert len(w) == len(self.mc_arr)
+        # Finalize by dividing with per event injection solid angle
+        w /= omega
 
         # Total injected fluence and normalized sampling weights
         self._raw_fluence = np.sum(w)
@@ -360,7 +360,13 @@ class SignalInjector(object):
         if self.mode == "band":
             sin_dec_bandwidth = np.sin(self.inj_width)
             A, B = self._sin_dec_range
-            sin_dec = np.sin(self._srcs["dec"])
+
+            if self._skylab_band:
+                m = (A - B + 2. * sin_dec_bandwidth) / (A - B)
+                b = sin_dec_bandwidth * (A + B) / (B - A)
+                sin_dec = m * np.sin(self._srcs["dec"]) + b
+            else:
+                sin_dec = np.sin(self._srcs["dec"])
 
             min_sin_dec = np.maximum(A, sin_dec - sin_dec_bandwidth)
             max_sin_dec = np.minimum(B, sin_dec + sin_dec_bandwidth)
@@ -401,6 +407,7 @@ class SignalInjector(object):
         ev : structured array
             Array with rotated value, true information is deleted
         """
+        raise NotImplementedError("Wrong rotator, fix that first")
         rec["ra"], _dec = rotator(rec["trueRa"], rec["trueDec"],
                                   src_ras, src_decs,
                                   rec["ra"], rec["dec"])
