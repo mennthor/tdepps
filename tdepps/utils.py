@@ -209,148 +209,202 @@ def func_min_in_interval(func, interval, nscan=7):
 
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
     """
-    Rotate coordinates (ra3, dec3) using the same rotation to get from
-    (ra1, dec1) to (ra2, dec2).
+    Rotate vectors pointing to directions given by pairs `(ra3, dec3)` by the
+    rotation defined by going from `(ra1, dec1)` to `(ra2, dec2)`.
 
-    Angles are given in equatorial coordinates right-ascension in radians, in
-    :math:`[0,2\pi]` and declination, in :math:`[-\pi / 2,\pi / 2]`.
+    `ra`, `dec` are per event right-ascension in :math:`[0, 2\pi]` and
+    declination in :math:`[-\pi/2, \pi/2]`, both in radians.
 
     Parameters
     ----------
     ra1, dec1 : array-like, shape (nevts)
-        Start directions `(ra1, dec1)` of rotation per event.
+        The points we start the rotation at.
     ra2, dec2 : array-like, shape (nevts)
-        End directions `(ra2, dec2)` of rotation per event. The rotation
-        angles are `(d_ra, d_dec) = (ra2, dec2) - (ra1, dec1)`
+        The points we end the rotation at.
     ra3, dec3 : array-like, shape (nevts)
-        The directions which are actually rotated per event. The final points
-        will be `(ra3', dec3') = (ra3, dec3) + (d_ra, d_dec)` correctly
-        wrapped around the unit sphere.
+        The points we actually rotate around the axis defined by the directions
+        above.
 
     Returns
     -------
-    ra3t, dec3t : array-like
-        The rotated coordinates of `(ra3, dec3)` per event.
+    ra3t, dec3t : array-like, shape (nevts)
+        The rotated directions `(ra3, dec3) -> (ra3t, dec3t)`.
+
+    Notes
+    -----
+    Using quaternion rotation from [1]_. Was a good way to recap this stuff.
+    If you are keen, you can show that this is the same as the rotation
+    matrix formalism used in skylabs rotator.
+
+    Alternative ways to express the quaternion conjugate product:
+
+    .. code-block::
+       A) ((q0**2 - np.sum(qv * qv, axis=1).reshape(qv.shape[0], 1)) * rv +
+            2 * q0 * np.cross(qv, rv) +
+            2 * np.sum(qv * rv, axis=1).reshape(len(qv), 1) * qv)
+
+       B) rv + 2 * q0 * np.cross(qv, rv) + 2 * np.cross(qv, np.cross(qv, rv))
+
+
+    .. [1] http://people.csail.mit.edu/bkph/articles/Quaternions.pdf
     """
-    def wrap_theta_phi_range(th, phi):
+    def ra_dec_to_quat(ra, dec):
         """
-        Shift over-/underflow of theta, phi angles back to their valid ranges.
+        Convert equatorial coordinates to quaternion representation.
 
         Parameters
         ----------
-        th, phi : array-like
-            Theta and phi angles in radians. Ranges are `th` in
-            :math`[0, \pi]` and `phi` in :math`[0, 2\pi]`.
+        ra, dec : array-like, shape (nevts)
+            Per event right-ascension in :math:`[0, 2\pi]` and declination in
+            :math:`[-\pi/2, \pi/2]`, both in radians.
 
         Returns
         -------
-        th, phi : array-like
-            Same angles as before, but those outside the ranges are shifted
-            back to the sphere correctly.
-
-        Notes
-        -----
-        Phi is easy to do, because it's periodic on 2pi on the sphere, so we
-        can simply remap in the same fashion `astropy` does.
-
-        Theta is more difficult because it's not peridioc. If theta runs
-        outside it's range, it's going over the poles.
-        Thus the theta angle is decresing again, but phi gets flipped by 180°.
-        So theta is treated as 2pi periodic first, so going a whole round over
-        the poles we end up where we started.
-        Then we mirror angles greater pi so the range (pi, 2pi] is mapped back
-        to the range (pi, 0].
-        Simultaniously phi is mirrored 180° coming down the other side of the
-        pole. Then phi is shifted to it's valid range in [0, 2pi] again.
+        out : array-like, shape (nevts, 4)
+            One quaternion per row from each (ra, dec) pair.
         """
-        # Start with a correct phi angle
-        phi = wrap_angle(phi, np.deg2rad(360))
+        x = np.cos(dec) * np.cos(ra)
+        y = np.cos(dec) * np.sin(ra)
+        z = np.sin(dec)
+        return np.vstack((np.zeros_like(x), x, y, z)).T
 
-        # First pretend that theta is peridic in 360°. So going one round over
-        # the poles gets us to where we started
-        th = wrap_angle(th, np.deg2rad(360))
-
-        # Now mirror the thetas >180° to run up the sphere again.
-        # Eg. th = 210° is truely a theta of 150°, th = 300° is 60°, etc.
-        m = th > np.deg2rad(180)
-        th[m] = 2 * np.deg2rad(180) - th[m]
-
-        # For the mirrored thetas we move the phis 180° around the sphere,
-        # which is all that happens when crossing the poles on a sphere
-        phi[m] = phi[m] + np.deg2rad(180)
-
-        # Now put the phis which where transformed to vals > 360° back to
-        # [0°, 360°]
-        phi = wrap_angle(phi, np.deg2rad(360))
-
-        return th, phi
-
-    def wrap_angle(angles, wrap_angle=2 * np.pi):
+    def quat_to_ra_dec(q):
         """
-        Wraps angles :math:`\alpha` to range
-        :math:`\Phi - 2\pi \leq \alpha < \Phi`, where :math:`\Phi` is the
-        `wrap_angle`.
+        Convert quaternions back to quatorial coordinates.
 
         Parameters
         ----------
-        angles : array-like
-            Angles in radian.
-        wrap_angle : float, optional
-            Defines the upper border of the wrapping interval. Default is
-            :math:`2\pi`, so angles are wrapped to :math`[0, 2\pi]`.
+        q : array-like, shape (nevts, 4)
+            One quaternion per row to convert to a (ra, dec) pair each.
 
         Returns
         -------
-        wrapped : array-like
-            Wrappend angles :math:`\alpha` in radian in range
-            :math:`\Phi - 2\pi <= \alpha < \Phi`
-
-        Notes
-        -----
-        This method is taken 1:1 from `astropy.coordinates.Angle.wrap_at` [1].
-
-        .. [1] http://docs.astropy.org/en/stable/api/astropy.coordinates.Angle.html#astropy.coordinates.Angle.wrap_at # noqa
+        ra, dec : array-like, shape (nevts)
+            Per event right-ascension in :math:`[0, 2\pi]` and declination in
+            :math:`[-\pi/2, \pi/2]`, both in radians.
         """
-        return (np.mod(angles - wrap_angle, 2 * np.pi) -
-                (2 * np.pi - wrap_angle))
+        nv = norm(q[:, 1:])
+        x, y, z = nv[:, 0], nv[:, 1], nv[:, 2]
+        dec = np.arcsin(z)
+        ra = np.arctan2(y, x)
+        ra[ra < 0] += 2. * np.pi
+        return ra, dec
 
-    def RaDecToThetaPhi(ra, dec):
+    def norm(v):
         """
-        Convert equatorial ra, dec to spherical phi, theta coordinates.
-        Only the declination get shifted from :math:`[-\pi/2, \pi/2]` to
-        :math:`[0, \pi]`.
+        Normalize a vector, so that the sum over the squared elements is one.
+
+        Also valid for quaternions.
 
         Parameters
         ----------
-        ra, dec : array-like
-            Right-ascension, in :math:`[0,2\pi]` and declination, in
-            :math:`[-\pi / 2,\pi / 2]`, both in radians.
+        v : array-like, shape (nevts, ndim)
+            One vector per row to normalize
 
         Returns
         -------
-        theta, phi : array-like
-            Theta and phi angles in radians. Ranges are `theta` in
-            :math`[0, \pi]` and `phi` in :math`[0, 2\pi]`.
+        nv : array-like, shape (nevts, ndim)
+            Normed vectors per row.
         """
-        return np.pi / 2. - dec, ra
+        norm = np.sqrt(np.sum(v**2, axis=1)).reshape(v.shape[0], 1)
+        norm[norm == 0.] = 1.
+        vn = v / norm
+        assert np.allclose(np.sum(vn[~(norm == 0.)]**2, axis=1), 1.)
+        return vn
 
-    def ThetaPhiToRaDec(th, phi):
+    def quat_mult(p, q):
         """
-        Back transformation, see above for details. Returns: ra, dec.
+        Multiply p * q in exactly this order.
+
+        Parameters
+        ----------
+        p, q : array-like, shape (nevts, 4)
+            Quaternions in each row to multiply.
+
+        Returns
+        -------
+        out : array-like, shape (nevts, 4)
+            Result of the quaternion multiplication. One quaternion per row.
         """
-        return phi, np.pi / 2. - th
+        p0, p1, p2, p3 = p[:, [0]], p[:, [1]], p[:, [2]], p[:, [3]]
+        q0, q1, q2, q3 = q[:, [0]], q[:, [1]], q[:, [2]], q[:, [3]]
+        # This algebra reflects the similarity to the rotation matrices
+        a = q0 * p0 - q1 * p1 - q2 * p2 - q3 * p3
+        x = q0 * p1 + q1 * p0 - q2 * p3 + q3 * p2
+        y = q0 * p2 + q1 * p3 + q2 * p0 - q3 * p1
+        z = q0 * p3 - q1 * p2 + q2 * p1 + q3 * p0
 
-    # Convert to spherical coordinates theta in [0, pi], phi = ra
-    th1, _ = RaDecToThetaPhi(ra1, dec1)
-    th2, _ = RaDecToThetaPhi(ra2, dec2)
-    th3, _ = RaDecToThetaPhi(ra3, dec3)
+        return np.hstack((a, x, y, z))
 
-    # Delta angles = rotation angles (ra1, dec1) -> (ra2, dec2)
-    dra = ra2 - ra1
-    dth = th2 - th1
+    def quat_conj(q):
+        """
+        Get the conjugate quaternion. This means switched signs of the
+        imagenary parts `(i,j,k) -> (-i,-j,-k)`.
 
-    # Rotate (ra3, dec3) by adding dra, dth and wrapping back to sphere
-    th3, ra3 = wrap_theta_phi_range(th3 + dth, ra3 + dra)
+        Parameters
+        ----------
+        q : array-like, shape (nevts, 4)
+            One quaternion per row to conjugate.
 
-    # Convert back to equatorial
-    return ThetaPhiToRaDec(th3, ra3)
+        Returns
+        -------
+        out : array-like, shape (nevts, 4)
+            Conjugated quaternions. One quaternion per row.
+        """
+        return np.hstack((q[:, [0]], -q[:, [1]], -q[:, [2]], -q[:, [3]]))
+
+    def get_rot_quat_from_ra_dec(ra1, dec1, ra2, dec2):
+        """
+        Construct quaternion which defines the rotation from a vector
+        pointing to `(ra1, dec1)` to another one pointing to `(ra2, dec2)`.
+
+        The rotation quaternion has the rotation angle in it's first
+        component and the axis around which is rotated in the last three
+        components. The quaternion must be normed :math:`\sum(q_i^2)=1`.
+
+        Parameters
+        ----------
+        ra1, dec1 : array-like, shape (nevts)
+            The points we start the rotation at.
+        ra2, dec2 : array-like, shape (nevts)
+            The points we end the rotation at.
+
+        Returns
+        -------
+        out : array-like, shape (nevts, 4)
+            One quaternion per row defining the rotation axis and angle for
+            each given pair of `(ra1, dec1)`, `(ra2, dec2)`.
+        """
+        p0 = ra_dec_to_quat(ra1, dec1)
+        p1 = ra_dec_to_quat(ra2, dec2)
+        # Norm rotation axis for proper quaternion normalization
+        ax = norm(np.cross(p0[:, 1:], p1[:, 1:]))
+
+        cos_ang = np.clip((np.cos(ra1 - ra2) * np.cos(dec1) * np.cos(dec2) +
+                           np.sin(dec1) * np.sin(dec2)), -1. , 1.)
+
+        ang = np.arccos(cos_ang).reshape(cos_ang.shape[0], 1)
+        ang /= 2.
+        a = np.cos(ang)
+        ax = ax * np.sin(ang)
+        # Normed because: sin^2 + cos^2 * vec(ax)^2 = sin^2 + cos^2 = 1
+        return np.hstack((a, ax[:, [0]], ax[:, [1]], ax[:, [2]]))
+
+    ra1, dec1, ra2, dec2, ra3, dec3 = map(np.atleast_1d,
+                                          [ra1, dec1, ra2, dec2, ra3, dec3])
+    assert(len(ra1) == len(dec1) == len(ra2) == len(dec2) ==
+           len(ra3) == len(dec3))
+
+    # Convert (ra3, dec3) to imaginary quaternion -> (0, vec(ra, dec))
+    q3 = ra_dec_to_quat(ra3, dec3)
+
+    # Make rotation quaternion: (angle, vec(rot_axis)
+    q_rot = get_rot_quat_from_ra_dec(ra1, dec1, ra2, dec2)
+
+    # Rotate by multiplying q3' = q_rot * q3 * q_rot_conj
+    q3t = quat_mult(q_rot, quat_mult(q3, quat_conj(q_rot)))
+    # Rotations preserves vectors, so imaganery part stays zero
+    assert np.allclose(q3t[:, 0], 0.)
+
+    # And transform back to (ra3', dec3')
+    return quat_to_ra_dec(q3t)
