@@ -306,10 +306,11 @@ def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
         nv : array-like, shape (nevts, ndim)
             Normed vectors per row.
         """
-        norm = np.sqrt(np.sum(v**2, axis=1)).reshape(v.shape[0], 1)
-        norm[norm == 0.] = 1.
-        vn = v / norm
-        assert np.allclose(np.sum(vn[~(norm == 0.)]**2, axis=1), 1.)
+        norm = np.sqrt(np.sum(v**2, axis=1))
+        m = (norm == 0.)
+        norm[m] = 1.
+        vn = v / norm.reshape(v.shape[0], 1)
+        assert np.allclose(np.sum(vn[~m]**2, axis=1), 1.)
         return vn
 
     def quat_mult(p, q):
@@ -381,7 +382,7 @@ def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
         ax = norm(np.cross(p0[:, 1:], p1[:, 1:]))
 
         cos_ang = np.clip((np.cos(ra1 - ra2) * np.cos(dec1) * np.cos(dec2) +
-                           np.sin(dec1) * np.sin(dec2)), -1. , 1.)
+                           np.sin(dec1) * np.sin(dec2)), -1., 1.)
 
         ang = np.arccos(cos_ang).reshape(cos_ang.shape[0], 1)
         ang /= 2.
