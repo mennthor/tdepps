@@ -145,28 +145,54 @@ class GRBLLH(object):
         opt_keys = {"k": 3, "kent": True}
         self.spatial_pdf_args = fill_dict_defaults(spatial_pdf_args,
                                                    required_keys, opt_keys)
-        bins = self.spatial_pdf_args["bins"]
         k = self.spatial_pdf_args["k"]
-        if np.any(bins < -1) or np.any(bins > 1):
-            raise ValueError("Bins for BG spline not in valid range [-1, 1].")
         if (k < 1) or (k > 5):
             raise ValueError("'k' must be integer in [1, 5].")
+        # Check if binning is OK
+        bins = np.atleast_1d(self.spatial_pdf_args["bins"])
+        if np.any(bins < -1) or np.any(bins > 1):
+            raise ValueError("Bins for BG spline not in valid range [-1, 1].")
+        sin_dec = np.sin(X["dec"])
+        if np.any(sin_dec < bins[0]) or np.any(sin_dec > bins[-1]):
+            raise ValueError("sinDec data events outside given bins. If this" +
+                             "is intended, please remove them beforehand.")
+        self.spatial_pdf_args["bins"] = bins
 
         # Setup energy PDF args
         required_keys = ["bins"]
         opt_keys = {"gamma": 2., "fillval": "col", "interpol_log": False}
         self.energy_pdf_args = fill_dict_defaults(energy_pdf_args,
                                                   required_keys, opt_keys)
-        if len(self.energy_pdf_args["bins"]) != 2:
-            raise ValueError("Bins for energy hist must have shape " +
-                             "[sin_dec_bins, logE_bins].")
-        sin_dec_bins = np.atleast_1d(self.energy_pdf_args["bins"][0])
-        logE_bins = np.atleast_1d(self.energy_pdf_args["bins"][1])
-        if np.any(sin_dec_bins < -1) or np.any(sin_dec_bins > 1):
-            raise ValueError("Sinus declination bins for energy spline not in" +
-                             " valid range [-1, 1].")
         if self.energy_pdf_args["fillval"] not in ["minmax", "col"]:
             raise ValueError("'fillval' must be one of ['minmax'|'col'].")
+        # Check if binning is OK
+        if len(self.energy_pdf_args["bins"]) != 2:
+            raise ValueError("Bins for energy hist must be of format " +
+                             "[sin_dec_bins, logE_bins].")
+
+        sin_dec_bins = np.atleast_1d(self.energy_pdf_args["bins"][0])
+        if np.any(sin_dec_bins < -1) or np.any(sin_dec_bins > 1):
+            raise ValueError("sinDec declination bins for energy spline not " +
+                             "in valid range [-1, 1].")
+        sin_dec = np.sin(X["dec"])
+        if (np.any(sin_dec < sin_dec_bins[0]) or
+                np.any(sin_dec > sin_dec_bins[-1])):
+            raise ValueError("sinDec data events outside given bins. If this" +
+                             "is intended, please remove them beforehand.")
+        sin_dec = np.sin(MC["dec"])
+        if (np.any(sin_dec < sin_dec_bins[0]) or
+                np.any(sin_dec > sin_dec_bins[-1])):
+            raise ValueError("sinDec MC events outside given bins. If this" +
+                             "is intended, please remove them beforehand.")
+
+        ev_logE = X["logE"]
+        logE_bins = np.atleast_1d(self.energy_pdf_args["bins"][1])
+        if np.any((ev_logE < logE_bins[0]) or (ev_logE > logE_bins[-1])):
+            raise ValueError("logE MC events outside given bins. If this " +
+                             "is intended, please remove them beforehand.")
+
+        self.energy_pdf_args["bins"][0] = sin_dec_bins
+        self.energy_pdf_args["bins"][1] = logE_bins
 
         # Setup time PDF args
         required_keys = []
@@ -403,6 +429,9 @@ class GRBLLH(object):
         ----------
         ns : float
             See :func:`lnllh_ratio`, Parameters
+        sob : array-like, shape (nevts)
+            Total signal over background ratio for each event, already reduced
+            over all sources.
 
         Returns
         -------
@@ -414,9 +443,9 @@ class GRBLLH(object):
         # Teststatistic 2 * ln(LLH-ratio)
         x = ns * sob
         TS = 2. * (-ns + np.sum(np.log1p(x)))
-        # Gradient in ns (chain rule: ln(x + 1)' * x')
+        # Gradient in ns (chain rule: ln(x + 1)' * x') -> list for minimizer
         ns_grad = 2. * (-1. + np.sum(sob / (x + 1.)))
-        return TS, np.atleast_1d(ns_grad)
+        return TS, [ns_grad]
 
     # #########################################################################
     # Public accessible helper methods
@@ -443,8 +472,7 @@ class GRBLLH(object):
 
         # Make combined src weight by multiplying with the theoretical weights
         src_w = src_dec_w * src_w_theo
-        nsrcs = len(src_dec)
-        src_w = src_w.reshape(nsrcs, 1) / np.sum(src_w)
+        src_w = src_w[:, None] / np.sum(src_w)
         return src_w
 
     def time_pdf_def_range(self, src_t, dt):
@@ -530,7 +558,7 @@ class GRBLLH(object):
         # If mutliple srcs: sum over signal contribution from each src.
         # The single src case is automatically included due to broadcasting
         src_w = self.src_weights(src_dec, src_w_theo)
-        nb = nb.reshape(len(nb), 1)
+        nb = nb[:, None]
         sob = np.sum(sob * src_w / nb, axis=0)
 
         # Apply a SoB ratio cut, to save computation time on events that don't
@@ -574,7 +602,6 @@ class GRBLLH(object):
 
         # Setup input to proper shapes
         src_t, dt, sig_t, sig_t_clip = self._setup_time_windows(src_t, dt)
-        nsrc = dt.shape[0]
         dt_len = np.diff(dt, axis=1)
 
         # Create signal PDF
@@ -585,8 +612,8 @@ class GRBLLH(object):
         _t = t * self._SECINDAY - src_t * self._SECINDAY
 
         # Broadcast
-        dt0 = dt[:, 0].reshape(nsrc, 1)
-        dt1 = dt[:, 1].reshape(nsrc, 1)
+        dt0 = dt[:, [0]]
+        dt1 = dt[:, [1]]
         # Split in PDF regions: gauss rising, uniform, gauss falling
         gr = (_t < dt0) & (_t >= dt0 - sig_t_clip)
         gf = (_t > dt1) & (_t <= dt1 + sig_t_clip)
@@ -594,11 +621,10 @@ class GRBLLH(object):
 
         # Broadcast
         nevts = len(t)
-        _dt0 = np.repeat(dt[:, 0].reshape(nsrc, 1), axis=1, repeats=nevts)
-        _dt1 = np.repeat(dt[:, 1].reshape(nsrc, 1), axis=1, repeats=nevts)
-        _sig_t = np.repeat(sig_t.reshape(nsrc, 1), axis=1, repeats=nevts)
-        _gaus_norm = np.repeat(gaus_norm.reshape(nsrc, 1),
-                               axis=1, repeats=nevts)
+        _dt0 = np.repeat(dt[:, [0]], axis=1, repeats=nevts)
+        _dt1 = np.repeat(dt[:, [1]], axis=1, repeats=nevts)
+        _sig_t = np.repeat(sig_t[:, None], axis=1, repeats=nevts)
+        _gaus_norm = np.repeat(gaus_norm[:, None], axis=1, repeats=nevts)
         # Get pdf values in the masked regions
         pdf = np.zeros_like(_t, dtype=np.float)
         pdf[gr] = scs.norm.pdf(_t[gr], loc=_dt0[gr], scale=_sig_t[gr])
@@ -719,18 +745,13 @@ class GRBLLH(object):
         sigma_t_max = self.time_pdf_args["sigma_t_max"]
 
         src_t = np.atleast_1d(src_t)
-        nsrc = len(src_t)
         dt = np.atleast_2d(dt)
-        if dt.shape[1] != 2:
-            raise ValueError("Timeframe 'dt' must be [start, end] in seconds" +
-                             " for each source.")
-        if dt.shape[0] != nsrc:
-            raise ValueError("Length of 'src_t' and 'dt' must be equal.")
-        if np.any(dt[:, 0] >= dt[:, 1]):
-            raise ValueError("Interval 'dt' must not be negative or zero.")
+        assert dt.shape[0] == len(src_t)
+        assert dt.shape[1] == 2
+        assert np.any(dt[:, 0] >= dt[:, 1])
 
         # Each src in its own array for proper broadcasting
-        src_t = np.atleast_2d(src_t).reshape(nsrc, 1)
+        src_t = np.atleast_2d(src_t)[:, None]
 
         # Constrain sig_t to given min/max, regardless of uniform time window
         dt_len = np.diff(dt, axis=1)
@@ -757,15 +778,12 @@ class GRBLLH(object):
         B : array-like, shape (nevts)
             The value of the background PDF for each event.
         """
-        # TODO: Maybe better raise a value error? Otherwise ratio is +inf which
-        #       might boost sensitivity. Or make the test in soverb_spatial.
-        B = np.zeros_like(ev_sin_dec)
         min_sin_dec, max_sin_dec = self.spatial_pdf_args["bins"][[0, -1]]
-        valid = (ev_sin_dec >= min_sin_dec) & (ev_sin_dec <= max_sin_dec)
-        B[valid] = 1. / (2. * np.pi) * np.exp(self._spatial_bg_spl(
-            ev_sin_dec[valid]))
+        if np.any(ev_sin_dec < min_sin_dec) or np.any(ev_sin_dec > max_sin_dec):
+            raise ValueError("Requested to evaluate the spatial BG PDF " +
+                             "outside it's definition range.")
 
-        return B
+        return 1. / (2. * np.pi) * np.exp(self._spatial_bg_spl(ev_sin_dec))
 
     def _pdf_spatial_signal(self, src_ra, src_dec, ev_ra, ev_sin_dec, ev_sig):
         """
@@ -792,10 +810,8 @@ class GRBLLH(object):
         S : array-like, shape (nsrcs, nevts)
             Spatial signal probability for each event and each source position.
         """
-        nsrcs = len(np.atleast_1d(src_ra))
-        # Shape (nsrcs, 1) to use broadcasting to shape (nsrcs, nevts)
-        src_ra = np.atleast_2d(src_ra).reshape(nsrcs, 1)
-        src_dec = np.atleast_2d(src_dec).reshape(nsrcs, 1)
+        src_ra = np.atleast_2d(src_ra)[:, None]
+        src_dec = np.atleast_2d(src_dec)[:, None]
 
         # Dot product to get great circle distance for every evt to every src
         cos_dist = (np.cos(src_ra - ev_ra) *
@@ -803,7 +819,7 @@ class GRBLLH(object):
                     np.sin(src_dec) * ev_sin_dec)
 
         # Handle possible floating precision errors
-        cos_dist = np.clip(cos_dist, -1, 1)
+        cos_dist = np.clip(cos_dist, -1., 1.)
 
         if self.spatial_pdf_args["kent"]:
             # Stabilized version for possibly large kappas
@@ -813,7 +829,7 @@ class GRBLLH(object):
         else:
             # Otherwise use standard symmetric 2D gaussian
             dist = np.arccos(cos_dist)
-            ev_sig_2 = 2 * ev_sig**2
+            ev_sig_2 = 2. * ev_sig**2
             S = np.exp(-dist**2 / ev_sig_2) / (np.pi * ev_sig_2)
 
         return S
@@ -854,9 +870,7 @@ class GRBLLH(object):
         for b in bins:
             mids.append(0.5 * (b[:-1] + b[1:]))
 
-        if np.any((ev_logE < bins[1][0]) | (ev_logE > bins[1][-1])):
-            raise ValueError("Not all logE events fall into given bins. If " +
-                             "this is intended, please remove them beforehand.")
+        assert np.any((ev_logE < bins[1][0]) or (ev_logE > bins[1][-1]))
 
         # Weight MC to power law *shape* only, because we normalize anyway to
         # get a PDF
@@ -955,9 +969,7 @@ class GRBLLH(object):
         """
         k = self.spatial_pdf_args["k"]
 
-        if np.any((sin_dec < bins[0]) | (sin_dec > bins[-1])):
-            raise ValueError("Not all sinDec events fall into given bins. If " +
-                             "this is intended, please remove them beforehand.")
+        assert np.any((sin_dec < bins[0]) | (sin_dec > bins[-1]))
 
         if mc is not None:
             # Weight MC to power law shape only, because we normalize anyway
@@ -983,6 +995,9 @@ class GRBLLH(object):
         return sci.InterpolatedUnivariateSpline(x, y, k=k, ext="extrapolate")
 
     def __str__(self):
+        """
+        Use to print all settings: `>>> print(llh_object)`
+        """
         rep = "GRBLLH object\n"
         rep += "-------------\n\n"
 

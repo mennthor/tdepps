@@ -59,7 +59,7 @@ class TransientsAnalysis(object):
     def llh(self):
         return self._llh
 
-    def do_bg_trials(self, n_trials, ns0, bg_inj, bg_rate_inj,
+    def do_trials(self, n_trials, ns0, bg_inj, bg_rate_inj, signal_inj=None,
                      random_state=None, minimizer_opts=None):
         """
         Do pseudo experiment trials using only background-like evetns from the
@@ -82,9 +82,9 @@ class TransientsAnalysis(object):
             Injector to generate background-like pseudo events.
         bg_rate_inj : `tdepps.bg_rate_injector` instance
             Injector to generate the times of background-like pseudo events.
-        signal_inj : `tdepps.signal_injector` instance, optional
-            Injector to generate signal events. If None, pure background trials
-            are done. (default: None)
+        signal_inj : `tdepps.signal_injector.sample` generator, optional
+            Injector generator to generate signal events. If None, pure
+            background trials are done. (default: None)
         random_state : RandomState, optional
             Turn seed into a `np.random.RandomState` instance. Method from
             `sklearn.utils`. Can be None, int or RndState. (default: None)
@@ -150,9 +150,11 @@ class TransientsAnalysis(object):
         assert nb.shape == (self.srcs.shape)
 
         # Create args and do trials
+        X_names = ["ra", "dec", "timeMJD", "logE", "sigma"]
+        dtype = [(n, np.float) for n in X_names]
+        args = {"nb": nb, "srcs": self.srcs}
         nzeros = 0
         ns, TS = [], []
-        args = {"nb": nb, "srcs": self.srcs}
         for i in range(n_trials):
             # Inject events from given injectors
             times = bg_rate_inj.sample(src_t, trange, poisson=True,
@@ -164,6 +166,11 @@ class TransientsAnalysis(object):
             if nevts == 0:
                 nzeros += 1
                 continue
+
+            if signal_inj is not None:
+                nsig, Xsig = next(signal_inj)
+
+            X = np.empty((nzeros,), dtype=dtype)
 
             # Else ask LLH what value we have
             X = bg_inj.sample(nevts, random_state=rndgen)
