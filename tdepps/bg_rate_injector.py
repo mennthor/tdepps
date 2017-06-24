@@ -21,7 +21,7 @@ class BGRateInjector(object):
 
     @docs.get_sectionsf("BGRateInjector.init", sections=["Parameters"])
     @docs.dedent
-    def __init__(self, rate_func):
+    def __init__(self, rate_func, random_state=None):
         """
         Background Rate Injector Base Class
 
@@ -53,6 +53,9 @@ class BGRateInjector(object):
             Class defining the function to describe the time dependent
             background rate. Must provide functions
             ['fun', 'integral', 'fit', 'sample'].
+        random_state : seed, optional
+            Turn seed into a `np.random.RandomState` instance. See
+            `sklearn.utils.check_random_state`. (default: None)
 
         Example
         -------
@@ -149,7 +152,7 @@ class BGRateInjector(object):
         """
         pass
 
-    def sample(self, t, trange, poisson=True, random_state=None):
+    def sample(self, t, trange, poisson=True):
         """
         Generate random samples from the fitted model for multiple source event
         times and corrseponding time frames at once.
@@ -169,9 +172,6 @@ class BGRateInjector(object):
             distribution, with expectation from the background expectation in
             each time window. Otherwise they are rounded to the next integer to
             the expectation value and alway the same. (default: True)
-        random_state : seed, optional
-            Turn seed into a `np.random.RandomState` instance. See
-            `sklearn.utils.check_random_state`. (default: None)
 
         Returns
         -------
@@ -179,8 +179,6 @@ class BGRateInjector(object):
             The times in MJD for each sampled srcs. Arrays might be empty, when
             the background expectation is low for small time windows.
         """
-        rndgen = check_random_state(random_state)
-
         # BG expectations are the integrals over each time frames, shape (nsrcs)
         t, trange = self._prep_t_trange(t, trange)
         expect = self.get_nb(t, trange)
@@ -188,14 +186,13 @@ class BGRateInjector(object):
 
         # Get number of actual events to sample times for
         if poisson:
-            nevents = rndgen.poisson(lam=expect, size=nsrcs)
+            nevents = self._rndgen.poisson(lam=expect, size=nsrcs)
         else:  # If one expectation is < 0.5 no event is sampled for that src
             nevents = np.round(expect).astype(int)
 
         # Sample all nevents for this trial from the rate function at once
-        return self.rate_func.sample(t, trange, self.best_pars,
-                                     n_samples=nevents,
-                                     random_state=random_state)
+        return self._rate_func.sample(t, trange, self._best_pars,
+                                      n_samples=nevents)
 
     def get_nb(self, t, trange):
         """
@@ -214,13 +211,13 @@ class BGRateInjector(object):
         nb : array-like, shape (nsrcs)
             Expected number of background events for each sources time window.
         """
-        if self.best_pars is None:
+        if self._best_pars is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
         t, trange = self._prep_t_trange(t, trange)
 
         # BG expectations are the integrals over each time frames, shape (nsrcs)
-        return self.best_estimator_integral(t, trange)
+        return self._best_estimator_integral(t, trange)
 
     def _prep_t_trange(self, t, trange):
         """
@@ -261,9 +258,9 @@ class BGRateInjector(object):
             Best fit parameters plugged into `fun` and `integral`.
         """
         self._best_pars = pars
-        self._best_estimator = (lambda t: self.rate_func.fun(t, pars))
+        self._best_estimator = (lambda t: self._rate_func.fun(t, pars))
         self._best_estimator_integral = (
-            lambda t, trange: self.rate_func.integral(t, trange, pars))
+            lambda t, trange: self._rate_func.integral(t, trange, pars))
 
         return self._best_estimator
 
@@ -299,7 +296,7 @@ class RunlistBGRateInjector(BGRateInjector):
 
         # Create a goodrun list from the JSON snapshot
         runlist = os.path.abspath(runlist)
-        self.goodrun_dict = self.create_goodrun_dict(runlist, filter_runs)
+        self._goodrun_dict = self.create_goodrun_dict(runlist, filter_runs)
 
         return
 
@@ -331,14 +328,14 @@ class RunlistBGRateInjector(BGRateInjector):
             Rate function with the best fit parameters plugged in.
         """
         # Put data into run bins to fit them
-        h = self._create_runtime_hist(T, self.goodrun_dict, remove_zero_runs)
+        h = self._create_runtime_hist(T, self._goodrun_dict, remove_zero_runs)
 
         rate = h["rate"]
         rate_std = h["rate_std"]
         binmids = 0.5 * (h["start_mjd"] + h["stop_mjd"])
 
-        resx = self.rate_func.fit(binmids, rate, p0=x0, rate_std=rate_std,
-                                  **kwargs)
+        resx = self._rate_func.fit(binmids, rate, p0=x0, rate_std=rate_std,
+                                   **kwargs)
 
         # Set wrappers for functions with best fit pars plugged in and livetime
         # class variables as promised
@@ -522,8 +519,8 @@ class BinnedBGRateInjector(BGRateInjector):
         start_mjd = tbins[:, 0]
         stop_mjd = tbins[:, 1]
         binmids = 0.5 * (start_mjd + stop_mjd)
-        resx = self.rate_func.fit(binmids, rate, p0=x0, rate_std=rate_std,
-                                  **kwargs)
+        resx = self._rate_func.fit(binmids, rate, p0=x0, rate_std=rate_std,
+                                   **kwargs)
 
         # Set wrappers for functions with best fit pars plugged in and livetime
         # class variables as promised

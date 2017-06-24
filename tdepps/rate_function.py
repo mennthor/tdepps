@@ -37,11 +37,22 @@ class RateFunction(object):
     - `integral`
     - `fit`
     - `sample`
+
+    Parameters
+    ----------
+    random_state : seed, optional
+        Turn seed into a `np.random.RandomState` instance. See
+        `sklearn.utils.check_random_state`. (default: None)
     """
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self):
+    def __init__(self, random_state=None):
+        self._rndgen = check_random_state(random_state)
         self._SECINDAY = 24. * 60. * 60.
+
+    @property
+    def rndgen(self):
+        return self._rndgen
 
     @docs.get_sectionsf("RateFunction.fun", sections=["Parameters", "Returns"])
     @docs.dedent
@@ -93,7 +104,7 @@ class RateFunction(object):
                         sections=["Parameters", "Returns"])
     @docs.dedent
     @abc.abstractmethod
-    def sample(self, t, trange, pars, n_samples, random_state=None):
+    def sample(self, t, trange, pars, n_samples):
         """
         Generate random samples from the rate function for multiple source times
         and time windows.
@@ -108,9 +119,6 @@ class RateFunction(object):
             Further parameters `self.fun` depends on.
         n_samples : array-like, shape (nsrcs)
             Number of events to sample per source.
-        random_state : seed, optional
-            Turn seed into a `np.random.RandomState` instance. See
-            `sklearn.utils.check_random_state`. (default: None)
 
         Returns
         -------
@@ -367,7 +375,7 @@ class SinusRateFunction(RateFunction):
         return (per + lin) * self._SECINDAY
 
     @docs.dedent
-    def sample(self, t, trange, pars, n_samples, random_state=None):
+    def sample(self, t, trange, pars, n_samples):
         """
         %(RateFunction.sample.summary)s
 
@@ -391,8 +399,7 @@ class SinusRateFunction(RateFunction):
 
         # Samples times for all sources at once
         times = rejection_sampling(sample_fun, bounds=dts, n_samples=n_samples,
-                                   max_fvals=self._fmax,
-                                   random_state=random_state)
+                                   rndgen=self._rndgen, max_fvals=self._fmax)
 
         return times
 
@@ -580,7 +587,7 @@ class ConstantRateFunction(RateFunction):
                 self.fun(t, pars)).ravel()
 
     @docs.dedent
-    def sample(self, t, trange, pars, n_samples, random_state=None):
+    def sample(self, t, trange, pars, n_samples):
         """
         %(RateFunction.sample.summary)s
 
@@ -593,13 +600,12 @@ class ConstantRateFunction(RateFunction):
         %(RateFunction.sample.returns)s
         """
         # Just sample uniformly in MJD time windows
-        rndgen = check_random_state(random_state)
         t, dts = self._transform_trange_mjd(t, trange)
 
         # Samples times for all sources at once
         sample = []
         for dt, nsam in zip(dts, n_samples):
-            sample.append(rndgen.uniform(dt[0], dt[1], size=nsam))
+            sample.append(self._rndgen.uniform(dt[0], dt[1], size=nsam))
 
         return sample
 

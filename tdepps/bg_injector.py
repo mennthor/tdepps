@@ -33,6 +33,12 @@ class BGInjector(object):
     - `fun`
     - `sample`
 
+    Parameters
+    ----------
+    random_state : RandomState, optional
+        Turn seed into a `np.random.RandomState` instance. Method from
+        `sklearn.utils`. Can be None, int or RndState. (default: None)
+
     Example
     -------
     >>> import tdepps.bg_injector as BGInj
@@ -49,8 +55,15 @@ class BGInjector(object):
     """
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self):
-        self._X_names = ["logE", "dec", "sigma"]
+    def __init__(self, random_state=None):
+        self._rndgen = check_random_state(random_state)
+
+        # self._X_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
+        self._X_names = ["dec", "logE", "sigma"]
+
+    @property
+    def rndgen(self):
+        return self._rndgen
 
     @docs.get_sectionsf("BGInjector.fit", sections=["Parameters", "Returns"])
     @docs.dedent
@@ -73,14 +86,14 @@ class BGInjector(object):
               :math:`1\sigma\approx 0.39` of probability of the reconstrucion
               likelihood space.
 
-            Other names are dropped.
+            Other names are dropped and not fitted by the injector.
         """
         pass
 
     @docs.get_sectionsf("BGInjector.sample", sections=["Parameters", "Returns"])
     @docs.dedent
     @abc.abstractmethod
-    def sample(self, n_samples=1, random_state=None):
+    def sample(self, n_samples=1):
         """
         Generate random samples from the fitted model.
 
@@ -88,9 +101,6 @@ class BGInjector(object):
         ----------
         n_samples : int, optional
             Number of samples to generate. (default: 1)
-        random_state : RandomState, optional
-            Turn seed into a `np.random.RandomState` instance. Method from
-            `sklearn.utils`. Can be None, int or RndState. (default: None)
 
         Returns
         -------
@@ -105,7 +115,7 @@ class BGInjector(object):
         """
         pass
 
-    def _add_ra_sin_dec(self, X, rndgen):
+    def _add_ra_sin_dec(self, X):
         """
         Adds uniformly sampled right ascension and sinus declination to the
         record array.
@@ -114,8 +124,6 @@ class BGInjector(object):
         ----------
         X
             See `BGInjector.fit`, Parameters
-        rndgen : `numpy.random.RandomState` instance
-            Instance of a numpy random generator.
 
         Returns
         -------
@@ -123,7 +131,7 @@ class BGInjector(object):
             See `BGInjector.sample`, Returns
         """
         nevts = len(X)
-        ra = rndgen.uniform(0, 2 * np.pi, size=nevts)
+        ra = self._rndgen.uniform(0, 2 * np.pi, size=nevts)
         sin_dec = np.sin(X["dec"])
 
         # Append ra, sin_dec fields to X output array
@@ -249,7 +257,7 @@ class KDEBGInjector(BGInjector):
         return
 
     @docs.dedent
-    def sample(self, n_samples=1, random_state=None):
+    def sample(self, n_samples=1):
         """
         Sample from a KDE model that has been build on given data.
 
@@ -267,19 +275,17 @@ class KDEBGInjector(BGInjector):
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
-        rndgen = check_random_state(random_state)
-
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
             X = np.empty((0, ),
                          dtype=[(n, np.float) for n in self._X_names])
-            return self._add_ra_sin_dec(X, rndgen)
+            return self._add_ra_sin_dec(X)
 
         # Check which samples are in bounds, redraw those that are not
         X = []
         bounds = self._bounds
         while n_samples > 0:
-            gen = self._kde_model.sample(n_samples, rndgen)
+            gen = self._kde_model.sample(n_samples, self._rndgen)
             accepted = np.all(np.logical_and(gen >= bounds[:, 0],
                                              gen <= bounds[:, 1]), axis=1)
             n_samples = np.sum(~accepted)
@@ -291,7 +297,7 @@ class KDEBGInjector(BGInjector):
         X = np.core.records.fromarrays(X.T, names=self._X_names,
                                        formats=self._n_features * ["float64"])
 
-        return self._add_ra_sin_dec(X, rndgen)
+        return self._add_ra_sin_dec(X)
 
 
 class DataBGInjector(BGInjector):
@@ -319,7 +325,7 @@ class DataBGInjector(BGInjector):
         return
 
     @docs.dedent
-    def sample(self, n_samples=1, random_state=None):
+    def sample(self, n_samples=1):
         """
         Sample by choosing random events from the given data.
 
@@ -334,18 +340,16 @@ class DataBGInjector(BGInjector):
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
-        rndgen = check_random_state(random_state)
-
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
             X = np.empty((0, ),
                          dtype=[(n, np.float) for n in self._X_names])
-            return self._add_ra_sin_dec(X, rndgen)
+            return self._add_ra_sin_dec(X)
 
         # Choose uniformly from given data
-        X = rndgen.choice(self.X, size=n_samples)
+        X = self._rndgen.choice(self.X, size=n_samples)
 
-        return self._add_ra_sin_dec(X, rndgen)
+        return self._add_ra_sin_dec(X)
 
 
 class UniformBGInjector(BGInjector):
@@ -379,7 +383,7 @@ class UniformBGInjector(BGInjector):
             "Function disabled. Generating pesudo data only.")
 
     @docs.dedent
-    def sample(self, n_samples=1, random_state=None):
+    def sample(self, n_samples=1):
         """
         Sample pseudo events that look somewhat similar to data.
 
@@ -397,28 +401,26 @@ class UniformBGInjector(BGInjector):
         -----
         .. [1] # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html # noqa
         """
-        rndgen = check_random_state(random_state)
-
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
             X = np.empty((0, ),
                          dtype=[(n, np.float) for n in self._X_names])
-            return self._add_ra_sin_dec(X, rndgen)
+            return self._add_ra_sin_dec(X)
 
         X = np.empty((n_samples, ),
                      dtype=[(n, np.float) for n in self._X_names])
 
         # Sample logE from gaussian, sinDec uniformly, sigma from x*exp(-x)
-        X["logE"] = rndgen.normal(self._logE_mean, self._logE_sigma,
-                                  size=n_samples)
+        X["logE"] = self._rndgen.normal(self._logE_mean, self._logE_sigma,
+                                        size=n_samples)
 
-        X["dec"] = (np.arccos(rndgen.uniform(-1, 1, size=n_samples)) -
+        X["dec"] = (np.arccos(self._rndgen.uniform(-1, 1, size=n_samples)) -
                     np.pi / 2.)
 
-        u1, u2 = rndgen.uniform(size=(2, n_samples))
+        u1, u2 = self._rndgen.uniform(size=(2, n_samples))
         X["sigma"] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
 
-        return self._add_ra_sin_dec(X, rndgen)
+        return self._add_ra_sin_dec(X)
 
 
 class MRichmanBGInjector(BGInjector):
@@ -553,7 +555,7 @@ class MRichmanBGInjector(BGInjector):
         return ax0_bins, ax1_bins, ax2_bins
 
     @docs.dedent
-    def sample(self, n_samples=1, random_state=None):
+    def sample(self, n_samples=1):
         """
         Sample pseudo events uniformly from each bin.
 
@@ -568,21 +570,19 @@ class MRichmanBGInjector(BGInjector):
         if self._n_features is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
-        rndgen = check_random_state(random_state)
-
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
             X = np.empty((0, ),
                          dtype=[(n, np.float) for n in self._X_names])
-            return self._add_ra_sin_dec(X, rndgen)
+            return self._add_ra_sin_dec(X)
 
         # Sample indices to select from which bin is injected
-        ax0_idx = rndgen.randint(0, self._nbins[0], size=n_samples)
-        ax1_idx = rndgen.randint(0, self._nbins[1], size=n_samples)
-        ax2_idx = rndgen.randint(0, self._nbins[2], size=n_samples)
+        ax0_idx = self._rndgen.randint(0, self._nbins[0], size=n_samples)
+        ax1_idx = self._rndgen.randint(0, self._nbins[1], size=n_samples)
+        ax2_idx = self._rndgen.randint(0, self._nbins[2], size=n_samples)
 
         # Sample uniform in [0, 1] to decide where each point lies in the bins
-        r = rndgen.uniform(0, 1, size=(n_samples, self._n_features))
+        r = self._rndgen.uniform(0, 1, size=(n_samples, self._n_features))
 
         # Get edges of each bin
         ax0_edges = np.vstack((self._ax0_bins[ax0_idx],
@@ -604,4 +604,4 @@ class MRichmanBGInjector(BGInjector):
         X = np.core.records.fromarrays(X, names=self._X_names,
                                        formats=self._n_features * ["float64"])
 
-        return self._add_ra_sin_dec(X, rndgen)
+        return self._add_ra_sin_dec(X)

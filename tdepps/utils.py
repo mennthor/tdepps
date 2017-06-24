@@ -11,7 +11,6 @@ standard_library.install_aliases()                                              
 
 import numpy as np
 import scipy.optimize as sco
-from sklearn.utils import check_random_state
 
 
 def flatten_list_of_1darrays(l):
@@ -88,8 +87,7 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
     return out
 
 
-def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
-                       random_state=None):
+def rejection_sampling(pdf, bounds, n_samples, rndgen, max_fvals=None):
     """
     Rejection sampler function to sample from multiple 1D regions at once.
 
@@ -107,14 +105,13 @@ def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
         Borders [[xlow, xhig], ...] in which func is sampled per source.
     n_samples : array-like, shape (nsrcs)
         Number of events to sample per source.
+    rndgen : `np.random.RandomState` instance
+        Random number generator instance to have control over the sample chain.
     fmax_vals : array-like, shape (nsrcs)
         If given, these values are used as the upper function bounds for each
         sampling interval. This can speed up calculation because we do not have
         to find the same maximum again for every call. Be sure these are right
         values, otherwise nonsense is sampled. (default: None)
-    random_state : seed, optional
-        Turn seed into a `np.random.RandomState` instance. See
-        `sklearn.utils.check_random_state`. (default: None)
 
     Returns
     -------
@@ -141,8 +138,6 @@ def rejection_sampling(pdf, bounds, n_samples, max_fvals=None,
         max_fvals = np.atleast_1d(max_fvals)
         if len(max_fvals) != bounds.shape[0]:
             raise ValueError("'max_fvals' must have same length as 'bounds'.")
-
-    rndgen = check_random_state(random_state)
 
     def negpdf(x):
         """Wrapper to use scipy.minimize minimization."""

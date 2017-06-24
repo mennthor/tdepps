@@ -7,7 +7,6 @@ standard_library.install_aliases()                                              
 
 import numpy as np
 from numpy.lib.recfunctions import append_fields
-from sklearn.utils import check_random_state
 
 from tdepps.llh import GRBLLH
 from tdepps.utils import fill_dict_defaults, flatten_list_of_1darrays
@@ -60,9 +59,9 @@ class TransientsAnalysis(object):
         return self._llh
 
     def do_trials(self, n_trials, ns0, bg_inj, bg_rate_inj, signal_inj=None,
-                     random_state=None, minimizer_opts=None):
+                  minimizer_opts=None):
         """
-        Do pseudo experiment trials using only background-like evetns from the
+        Do pseudo experiment trials using only background-like events from the
         given event injectors.
 
         We need to build the background (or null hypothesis) test statistic (TS)
@@ -85,9 +84,6 @@ class TransientsAnalysis(object):
         signal_inj : `tdepps.signal_injector.sample` generator, optional
             Injector generator to generate signal events. If None, pure
             background trials are done. (default: None)
-        random_state : RandomState, optional
-            Turn seed into a `np.random.RandomState` instance. Method from
-            `sklearn.utils`. Can be None, int or RndState. (default: None)
         minimizer_opts : dict, optional
             Options passed to `scipy.optimize.minimize` [1] using the 'L-BFGS-B'
             algorithm. If specific key is not given or argument is None, default
@@ -118,8 +114,6 @@ class TransientsAnalysis(object):
             How many trials with `ns = 0` and `TS = 0` occured. This is done to
             save memory, because usually a lot of trials are zero.
         """
-        rndgen = check_random_state(random_state)
-
         # Setup minimizer defaults and bounds
         if minimizer_opts is None:
             minimizer_opts = {}
@@ -135,30 +129,29 @@ class TransientsAnalysis(object):
         assert len(minopts) >= len(opt_keys)
 
         # Prepare fixed source parameters for injectors
-        src_t = self.srcs["t"]
-        src_dt = np.vstack((self.srcs["dt0"], self.srcs["dt1"])).T
+        src_t = self._srcs["t"]
+        src_dt = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
 
         # Total injection time window in which the time PDF is defined and
         # nonzero.
         trange = self.llh.time_pdf_def_range(src_t, src_dt)
-        assert len(trange) == len(self.srcs)
-        assert trange.shape == (len(self.srcs), 2)
+        assert len(trange) == len(self._srcs)
+        assert trange.shape == (len(self._srcs), 2)
 
         # Number of expected background events in each given time frame
         nb = bg_rate_inj.get_nb(src_t, trange)
-        assert len(nb) == len(self.srcs)
-        assert nb.shape == (self.srcs.shape)
+        assert len(nb) == len(self._srcs)
+        assert nb.shape == (self._srcs.shape)
 
         # Create args and do trials
         X_names = ["ra", "dec", "timeMJD", "logE", "sigma"]
         dtype = [(n, np.float) for n in X_names]
-        args = {"nb": nb, "srcs": self.srcs}
+        args = {"nb": nb, "srcs": self._srcs}
         nzeros = 0
         ns, TS = [], []
         for i in range(n_trials):
             # Inject events from given injectors
-            times = bg_rate_inj.sample(src_t, trange, poisson=True,
-                                       random_state=rndgen)
+            times = bg_rate_inj.sample(src_t, trange, poisson=True)
             times = flatten_list_of_1darrays(times)
             nevts = len(times)
 
@@ -173,7 +166,7 @@ class TransientsAnalysis(object):
             X = np.empty((nzeros,), dtype=dtype)
 
             # Else ask LLH what value we have
-            X = bg_inj.sample(nevts, random_state=rndgen)
+            X = bg_inj.sample(nevts)
             X = append_fields(X, "timeMJD", times, dtypes=np.float,
                               usemask=False)
 
