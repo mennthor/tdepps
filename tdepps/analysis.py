@@ -47,10 +47,17 @@ class TransientsAnalysis(object):
             raise ValueError("`llh` must be an instance of " +
                              "`tdepps.llh.GRBLLH`.")
 
-        self.srcs = srcs
-        self.n_srcs = len(srcs)
-        self.llh = llh
+        self._srcs = srcs
+        self._llh = llh
         return
+
+    @property
+    def srcs(self):
+        return self._srcs
+
+    @property
+    def llh(self):
+        return self._llh
 
     def do_bg_trials(self, n_trials, ns0, bg_inj, bg_rate_inj,
                      random_state=None, minimizer_opts=None):
