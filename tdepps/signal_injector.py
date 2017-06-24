@@ -4,7 +4,7 @@ import numpy as np
 from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
 
-from .utils import flatten_list_of_1darrays
+from .utils import flatten_list_of_1darrays, rotator
 
 
 class SignalInjector(object):
@@ -33,8 +33,13 @@ class SignalInjector(object):
         centered at the source positions in radian.
         If `mode` is `circle` this is the radius of the circle in radian.
         (default: `np.deg2rad(2)`)
+    random_state : seed, optional
+        Turn seed into a `np.random.RandomState` instance. See
+        `sklearn.utils.check_random_state`. (default: None)
     """
-    def __init__(self, gamma, mode="band", inj_width=np.deg2rad(2)):
+    def __init__(self, gamma, mode="band", inj_width=np.deg2rad(2),
+                 random_state=None):
+        # Public class members (settable only by constructor)
         if (gamma < 1.) or (gamma > 4.):
             raise ValueError("`gamma` in doubtful range, must be in [1, 4].")
         self._gamma = gamma
@@ -47,10 +52,22 @@ class SignalInjector(object):
             raise ValueError("Injection width must be in (0, pi].")
         self._inj_width = inj_width
 
-        # Private defaults
+        self._mc_arr = None
+        self._rndgen = check_random_state(random_state)
+
+        # Defaults for private class variables (later set ones get None)
+        self._exp_names = None
         self._srcs = None
         self._nsrcs = None
+
+        self._min_dec = None
+        self._max_dec = None
         self._sin_dec_range = np.array([-1., 1.])
+        self._omega = None
+
+        self._raw_fluence = None
+        self._sample_w = None
+
         self._SECINDAY = 24. * 60. * 60.
 
         # Debug flag. Set True and injection bands get calculated as in skylab
@@ -58,6 +75,7 @@ class SignalInjector(object):
 
         return
 
+    # No setters, use the `fit` method for that or create a new object0c
     @property
     def gamma(self):
         return self._gamma
@@ -70,7 +88,15 @@ class SignalInjector(object):
     def inj_width(self):
         return self._inj_width
 
-    def fit(self, srcs, MC):
+    @property
+    def mc_arr(self):
+        return self._mc_arr
+
+    @property
+    def rndgen(self):
+        return self._rndgen
+
+    def fit(self, srcs, MC, exp_names):
         """
         Fill injector with Monte Carlo events, preselecting events around the
         source positions.
@@ -96,18 +122,9 @@ class SignalInjector(object):
         MC : recarray or dict(enum, recarray)
             Either single structured array describing Monte Carlo events or a
             dictionary with integer keys `enum` mapped to record arrays.
-            `MC` must contain names:
+            `MC` must contain names given in `exp_names` and additonally:
 
-            - 'timeMJD': Per event times in MJD days.
-            - 'ra', float: Per event equatorial right-ascension, given in
-              radian, in :math:`[0, 2\pi]`.
-            - 'dec', float: Per event equatorial declination, given in
-              radians, in :math:`[-\pi/2, \pi/2]`.
-            - 'logE', float: Per event energy proxy, given in log10(1/GeV).
-            - 'sigma': Per event positional uncertainty, given in radians. It
-              is assumed, that a circle with radius sigma contains
-              approximatly :math:`1\sigma\approx 0.39` of probability of the
-              reconstrucion likelihood space.
+            - "trueE", float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
             - 'ow', float: Per event 'neutrino generator (NuGen)' OneWeight
@@ -123,13 +140,14 @@ class SignalInjector(object):
             if n not in srcs.dtype.names:
                 raise ValueError("`srcs` is missing name '{}'.".format(n))
 
-        MC_names = ["timeMJD", "ra", "dec", "logE", "sigma",
-                    "trueRa", "trueDec", "trueE", "ow"]
+        MC_names = exp_names + ("trueRa", "trueDec", "trueE", "ow")
         for n in MC_names:
             for key, mc_i in MC.items():
                 if n not in mc_i.dtype.names:
                     e = "MC sample '{}' is missing name '{}'.".format(n, key)
                     raise ValueError(e)
+
+        self._exp_names = exp_names
 
         # For new srcs set injection solid angle
         self._srcs = srcs
@@ -142,7 +160,7 @@ class SignalInjector(object):
         # src_idx: [ 0, 0, 1, 2, 2, 3, 4, 4, ..., 0, 2, 2, 2, 3, 4, 4, ...]
         # enum   : [ 0, 0, 0, 0, 0, 0, 0, 0, ..., 1, 1, 1, 1, 1, 1, 1, ...]
         dtype = [("ev_idx", np.int), ("src_idx", np.int), ("enum", np.int)]
-        self.mc_arr = np.empty(0, dtype=dtype)
+        self._mc_arr = np.empty(0, dtype=dtype)
         # self.MC: Store unique events selected for sampling per sample
         self.MC = dict()
 
@@ -195,7 +213,7 @@ class SignalInjector(object):
             # Repeat enum id for each sample
             mc_arr["enum"] = key * np.ones(n_tot, dtype=np.int)
 
-            self.mc_arr = np.append(self.mc_arr, mc_arr)
+            self._mc_arr = np.append(self.mc_arr, mc_arr)
 
             del mc_arr  # Only needed next loop again, but with different shape
 
@@ -213,7 +231,7 @@ class SignalInjector(object):
 
         return
 
-    def sample(self, mean_mu, poisson=True, random_state=None):
+    def sample(self, mean_mu, poisson=True):
         """
         Generator to get sampled events from MC for each source position.
 
@@ -234,16 +252,17 @@ class SignalInjector(object):
             Sampled_events for each loop iteration, either as simple array or
             as dictionary for each sample.
         """
-        rndgen = check_random_state(random_state)
+        if self.mc_arr is None:
+            raise ValueError("Injector has not been filled with MC data yet.")
 
-        src_ra = self.srcs["ra"]
-        src_dec = self.srcs["dec"]
-        src_t = self.srcs["timeMJD"]
-        src_dt = np.vstack((self.srcs["dt0"], self.srcs["dt1"])).T
+        src_ra = self._srcs["ra"]
+        src_dec = self._srcs["dec"]
+        src_t = self._srcs["t"]
+        src_dt = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
 
         while True:
             if poisson:
-                n = rndgen.poisson(mean_mu, size=1)
+                n = self.rndgen.poisson(mean_mu, size=1)
             else:
                 n = int(np.around(mean_mu))
 
@@ -253,34 +272,33 @@ class SignalInjector(object):
                 continue
 
             # Draw IDs from the whole pool of events
-            sam_idx = self.random.choice(self.mc_arr, size=n, p=self._norm_w)
-
-            # Get the actual events from the sampled IDs
+            sam_idx = self.rndgen.choice(self.mc_arr, size=n, p=self._sample_w)
             enums = np.unique(sam_idx["enum"])
 
             # If only one sample: return single recarray
             if len(enums) == 1 and enums[0] < 0:
                 sam_ev = np.copy(self.MC[enums[0]][sam_idx["ev_idx"]])
-                sam_ev = self._rot_and_strip(src_ra[sam_idx['src_idx']],
-                                             src_dec[sam_idx['src_idx']],
-                                             sam_ev)
-                sam_ev["timeMJD"] = self._sample_times(src_t, src_dt, rndgen)
+                src_idx = sam_idx['src_idx']
+                sam_ev = self._rot_and_strip(
+                    src_ra[src_idx], src_dec[src_idx], sam_ev)
+                sam_ev["timeMJD"] = self._sample_times(
+                    src_t[src_idx], src_dt[src_idx])
                 yield n, sam_ev
                 continue
 
             # Else return same dict structure as used in fit
             sam_ev = dict()
             for enum in enums:
-                # Filter events per enum
+                # Select events per sample
                 idx = sam_idx[sam_idx["enum"] == enum]["ev_idx"]
                 sam_ev_i = np.copy(self.MC[enum][idx])
                 # Broadcast corresponding sources for correct rotation
-                src_ind = sam_idx[sam_idx["enum"] == enum]["src_idx"]
-                sam_ev[enum] = self._rot_and_strip(src_ra[src_ind],
-                                                   src_dec[src_ind],
+                src_idx = sam_idx[sam_idx["enum"] == enum]["src_idx"]
+                sam_ev[enum] = self._rot_and_strip(src_ra[src_idx],
+                                                   src_dec[src_idx],
                                                    sam_ev_i)
-                sam_ev[enum]["timeMJD"] = self._sample_times(src_t, src_dt,
-                                                             rndgen)
+                sam_ev[enum]["timeMJD"] = self._sample_times(
+                    src_t[src_idx], src_dt[src_idx])
 
             yield n, sam_ev
 
@@ -385,7 +403,7 @@ class SignalInjector(object):
             assert len(self._omega) == self._nsrcs
         return
 
-    def _rot_and_strip(self, src_ras, src_decs, rec):
+    def _rot_and_strip(self, src_ras, src_decs, MC):
         """
         Rotate injected event positions to the sources and strip Monte Carlo
         information from the output array.
@@ -395,11 +413,11 @@ class SignalInjector(object):
 
         Parameters
         ----------
-        src_ras, src_decs : array-like, shape (len(rec))
+        src_ras, src_decs : array-like, shape (len(MC))
             Sources equatorial positions in right-ascension in :math:`[0, 2\pi]`
             and declination in :math:`[-\pi/2, \pi/2]`, both given in radians.
             These are the coordinates we rotate on per event in `ev`.
-        rec : record array
+        MC : record array
             See :py:meth:<SignalInjector.fit>, Parameters.
 
         Returns
@@ -407,20 +425,19 @@ class SignalInjector(object):
         ev : structured array
             Array with rotated value, true information is deleted
         """
-        raise NotImplementedError("Wrong rotator, fix that first")
-        rec["ra"], _dec = rotator(rec["trueRa"], rec["trueDec"],
-                                  src_ras, src_decs,
-                                  rec["ra"], rec["dec"])
+        MC["ra"], _dec = rotator(MC["trueRa"], MC["trueDec"],
+                                 src_ras, src_decs,
+                                 MC["ra"], MC["dec"])
 
-        rec["sinDec"] = np.sin(_dec)
-        if "dec" in rec.names:
-            rec["dec"] = _dec
+        MC["sinDec"] = np.sin(_dec)
+        if "dec" in MC.dtype.names:
+            MC["dec"] = _dec
 
-        # Remove Monte Carlo information from sampled events
-        MC_names = ["trueRa", "trueDec", "trueE", "ow"]
-        return drop_fields(rec, MC_names)
+        # Remove all names not in experimental data (= remove MC attributes)
+        drop_names = [n for n in MC.dtype.names if n not in self._exp_names]
+        return drop_fields(MC, drop_names)
 
-    def _sample_times(self, src_t, dt, rndgen):
+    def _sample_times(self, src_t, dt):
         """
         Sample times uniformly in on-time signal PDF region.
 
@@ -431,20 +448,16 @@ class SignalInjector(object):
         dt : array-like, shape (nevts, 2)
             Time window in seconds centered around `src_t` in which the signal
             time PDF is assumed to be uniform.
-        rndgen : `np.random.RandomState` instance
-            Random number generator instance.
 
         Returns
         -------
         times : array-like, shape (nevts)
             Sampled times for this trial.
         """
-        # Transform time window to MJD and check on correct shapes
-        src_t = np.atleast_1d(src_t)
         nevts = len(src_t)
-        # Proper braodcasting to process all srcs at once
-        src_t = src_t.reshape(nevts, 1)
-        dt = np.atleast_2d(dt).reshape(nevts, 2)
-        trange = src_t + dt / self._SECINDAY
 
-        return rndgen.uniform(trange[:, 0], trange[:, 1])
+        # Sample uniformly in [0, 1] and scale to time windows per source in MJD
+        r = self.rndgen.uniform(0, 1, size=nevts)
+        times_rel = r * np.diff(dt, axis=1).ravel() + dt[:, 0]
+
+        return src_t + times_rel / self._SECINDAY
