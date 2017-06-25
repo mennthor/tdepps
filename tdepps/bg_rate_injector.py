@@ -71,6 +71,7 @@ class BGRateInjector(object):
                                                           rate_func)
         """
         self._rate_func = rate_func
+        self.rndgen = random_state
 
         self._SECINDAY = 24. * 60. * 60.
         self._livetime = None
@@ -79,6 +80,14 @@ class BGRateInjector(object):
         self._best_estimator_integral = None
 
         return
+
+    @property
+    def rndgen(self):
+        return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
 
     @property
     def rate_func(self):
@@ -226,12 +235,12 @@ class BGRateInjector(object):
         Parameters
         ----------
         t, trange
-            See `BGRateInjector.sample`, Parameters
+            See :py:meth:`BGRateInjector.sample`, Parameters
 
         Returns
         -------
         t, trange
-            See `BGRateInjector.sample`, Parameters
+            See :py:meth:`BGRateInjector.sample`, Parameters
         """
         t = np.atleast_1d(t)
         trange = np.atleast_2d(trange)
@@ -267,7 +276,7 @@ class BGRateInjector(object):
 
 class RunlistBGRateInjector(BGRateInjector):
     @docs.dedent
-    def __init__(self, rate_func, runlist, filter_runs):
+    def __init__(self, rate_func, runlist, filter_runs, random_state=None):
         """
         Runlist Background Rate Injector
 
@@ -292,7 +301,7 @@ class RunlistBGRateInjector(BGRateInjector):
         -----
         .. [1] https://live.icecube.wisc.edu/snapshots/
         """
-        super(RunlistBGRateInjector, self).__init__(rate_func)
+        super(RunlistBGRateInjector, self).__init__(rate_func, random_state)
 
         # Create a goodrun list from the JSON snapshot
         runlist = os.path.abspath(runlist)
@@ -350,7 +359,7 @@ class RunlistBGRateInjector(BGRateInjector):
         Parameters
         ----------
         runlist, filter_runs
-            See `RunlistBGRateInjector`, Parameters
+            See :py:meth:`RunlistBGRateInjector`, Parameters
 
         Returns
         -------
@@ -397,9 +406,9 @@ class RunlistBGRateInjector(BGRateInjector):
         Parameters
         ----------
         T, remove_zero_runs
-            See `RunlistBGRateInjector.fit`, Parameters
+            See :py:meth:`RunlistBGRateInjector.fit`, Parameters
         goodrun_dict
-            See `RunlistBGRateInjector.create_goodrun_dict`, Returns
+            See :py:meth:`RunlistBGRateInjector.create_goodrun_dict`, Returns
 
         Returns
         -------
@@ -465,7 +474,7 @@ class RunlistBGRateInjector(BGRateInjector):
 
 
 class BinnedBGRateInjector(BGRateInjector):
-    def __init__(self, rate_func):
+    def __init__(self, rate_func, random_state=None):
         """
         Binned Background Rate Injector
 
@@ -475,7 +484,7 @@ class BinnedBGRateInjector(BGRateInjector):
         ----------
         %(BGRateInjector.init.parameters)s
         """
-        super(BinnedBGRateInjector, self).__init__(rate_func)
+        super(BinnedBGRateInjector, self).__init__(rate_func, random_state)
         return
 
     @docs.dedent
