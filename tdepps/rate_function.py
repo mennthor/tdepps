@@ -18,41 +18,48 @@ docs = docrep.DocstringProcessor()
 
 
 class RateFunction(object):
-    """
-    Rate Function Base Class
-
-    Base class for rate functions describing time dependent background rates.
-    Rate function must be interpretable as a PDF and must not be negative.
-
-    Classes must implement methods:
-
-    - `fun`
-    - `integral`
-    - `sample`
-    - `_get_default_seed`
-
-    Class object then provides public methods:
-
-    - `fun`
-    - `integral`
-    - `fit`
-    - `sample`
-
-    Parameters
-    ----------
-    random_state : seed, optional
-        Turn seed into a `np.random.RandomState` instance. See
-        `sklearn.utils.check_random_state`. (default: None)
-    """
     __metaclass__ = abc.ABCMeta
 
+    @docs.get_sectionsf("RateFunction.init", sections=["Parameters"])
+    @docs.dedent
     def __init__(self, random_state=None):
-        self._rndgen = check_random_state(random_state)
+        """
+        Rate Function Base Class
+
+        Base class for rate functions describing time dependent background
+        rates. Rate function must be interpretable as a PDF and must not be
+        negative.
+
+        Classes must implement methods:
+
+        - `fun`
+        - `integral`
+        - `sample`
+        - `_get_default_seed`
+
+        Class object then provides public methods:
+
+        - `fun`
+        - `integral`
+        - `fit`
+        - `sample`
+
+        Parameters
+        ----------
+        random_state : seed, optional
+            Turn seed into a `np.random.RandomState` instance. See
+            `sklearn.utils.check_random_state`. (default: None)
+        """
+        self.rndgen = random_state
         self._SECINDAY = 24. * 60. * 60.
 
     @property
     def rndgen(self):
         return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
 
     @docs.get_sectionsf("RateFunction.fun", sections=["Parameters", "Returns"])
     @docs.dedent
@@ -212,11 +219,11 @@ class RateFunction(object):
         args : tuple
             Fixed values `(t, rate, rate_std)` for the loss function:
 
-            - t, array-like: See :func:`RateFunction.fit`, Parameters
-            - rate, array-like, shape (len(t)): See :func:`RateFunction.fit`,
+            - t, array-like: See :py:meth:`RateFunction.fit`, Parameters
+            - rate, array-like, shape (len(t)): See :py:meth:`RateFunction.fit`,
               Parameters
-            - rate_std, array-like, shape(len(t)): See :func:`RateFunction.fit`,
-              Parameters
+            - rate_std, array-like, shape(len(t)): See
+              :py:meth:`RateFunction.fit`, Parameters
 
             The weights are :math:`w_i = 1/\text{rate_std}_i` which is
             equivalent to the weighted mean, when a constant is fitted.
@@ -258,38 +265,41 @@ class RateFunction(object):
 
 
 class SinusRateFunction(RateFunction):
-    """
-    Sinus Rate Function
+    @docs.dedent
+    def __init__(self, t=None, trange=None, random_state=None):
+        """
+        Sinus Rate Function
 
-    Describes time dependent background rate. Used function is a sinus with:
+        Describes time dependent background rate. Used function is a sinus with:
 
-    .. math:: f(t|a,b,c,d) = a \sin(b (t - c)) + d
+        .. math:: f(t|a,b,c,d) = a \sin(b (t - c)) + d
 
-    depending on 4 parameters:
+        depending on 4 parameters:
 
-    - a, float: Amplitude in Hz.
-    - b, float: Angular frequency, :math:`\omega = 2\pi/T` with period :math:`T`
-      given in 1/MJD.
-    - c, float: x-axis offset in MJD.
-    - d, float: y-axis offset in Hz
+        - a, float: Amplitude in Hz.
+        - b, float: Angular frequency, :math:`\omega = 2\pi/T` with period
+          :math:`T` given in 1/MJD.
+        - c, float: x-axis offset in MJD.
+        - d, float: y-axis offset in Hz
 
-    When `t, trange` where given at object creation the function bounds for
-    the rejection sampling step are precalculated in `fit` to save computation
-    time on subsequent calls of `sample`.
+        When `t, trange` where given at object creation the function bounds for
+        the rejection sampling step are precalculated in `fit` to save
+        computation time on subsequent calls of `sample`.
 
-    Parameters
-    ----------
-    t : array-like, shape (nsrcs)
-        MJD times of sources.
-    trange : array-like, shape(nsrcs, 2)
-        Time windows `[[t0, t1], ...]` in seconds around each time `t`.
-    """
-    def __init__(self, t=None, trange=None):
-        super(SinusRateFunction, self).__init__()
+        Parameters
+        ----------
+        t : array-like, shape (nsrcs)
+            MJD times of sources.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
+        %(RateFunction.init.parameters)s
+        """
+        super(SinusRateFunction, self).__init__(random_state)
 
-        self.t, self.trange = None, None
         if (t is not None) and (trange is not None):
-            self.t, self.trange = self._transform_trange_mjd(t, trange)
+            self._t, self._trange = self._transform_trange_mjd(t, trange)
+        else:
+            self._t, self._trange = None, None
         self._fmax = None
         return
 
@@ -315,12 +325,12 @@ class SinusRateFunction(RateFunction):
         bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, rate_std,
                                                      **kwargs)
 
-        if self.t is not None:
+        if self._t is not None:
             def negpdf(t):
                 return -1. * self.fun(t, bf_pars)
 
             _fmax = []
-            for bound in self.trange:
+            for bound in self._trange:
                 _fmax.append(-1. * func_min_in_interval(negpdf, bound))
             self._fmax = flatten_list_of_1darrays(_fmax)
 
@@ -362,7 +372,7 @@ class SinusRateFunction(RateFunction):
         a, b, c, d = pars
 
         # Transform time windows to MJD
-        t, dts = self._transform_trange_mjd(t, trange)
+        _, dts = self._transform_trange_mjd(t, trange)
         t0, t1 = dts[:, 0], dts[:, 1]
 
         # Split analytic expression for readability only
@@ -395,7 +405,7 @@ class SinusRateFunction(RateFunction):
             """Wrapper to have only one argument."""
             return self.fun(t, pars)
 
-        t, dts = self._transform_trange_mjd(t, trange)
+        _, dts = self._transform_trange_mjd(t, trange)
 
         # Samples times for all sources at once
         times = rejection_sampling(sample_fun, bounds=dts, n_samples=n_samples,
@@ -438,32 +448,34 @@ class SinusRateFunction(RateFunction):
 
 
 class Sinus1yrRateFunction(SinusRateFunction):
-    """
-    Sinus Rate Function fixing the period to 1 year.
+    @docs.dedent
+    def __init__(self, t=None, trange=None, random_state=None):
+        """
+        Sinus Rate Function fixing the period to 1 year.
 
-    Function describes time dependent background rate. Function is a sinus with
+        Function describes time dependent background rate with fixed period:
 
-    .. math:: f(t|a,c,d) = a \sin((2\pi/\mathrm{365.25}) (t - c)) + d
+        .. math:: f(t|a,c,d) = a \sin((2\pi/\mathrm{365.25}) (t - c)) + d
 
-    depending on 3 parameters:
+        depending on 3 parameters:
 
-    - a, float: Amplitude in Hz.
-    - c, float: x-axis offset in MJD.
-    - d, float: y-axis offset in Hz
+        - a, float: Amplitude in Hz.
+        - c, float: x-axis offset in MJD.
+        - d, float: y-axis offset in Hz
 
-    When `t, trange` where given at object creation the function bounds for
-    the rejection sampling step are precalculated in `fit` to save computation
-    time on subsequent calls of `sample`.
+        When `t, trange` where given at object creation the function bounds for
+        the rejection sampling step are precalculated in `fit` to save
+        computation time on subsequent calls of `sample`.
 
-    Parameters
-    ----------
-    t : array-like, shape (nsrcs)
-        MJD times of sources.
-    trange : array-like, shape(nsrcs, 2)
-        Time windows `[[t0, t1], ...]` in seconds around each time `t`.
-    """
-    def __init__(self, t=None, trange=None):
-        super(Sinus1yrRateFunction, self).__init__(t, trange)
+        Parameters
+        ----------
+        t : array-like, shape (nsrcs)
+            MJD times of sources.
+        trange : array-like, shape(nsrcs, 2)
+            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
+        %(RateFunction.init.parameters)s
+        """
+        super(Sinus1yrRateFunction, self).__init__(t, trange, random_state)
 
         self._b = 2 * np.pi / 365.25
         return
@@ -534,16 +546,67 @@ class Sinus1yrRateFunction(SinusRateFunction):
         return tuple(seed[i] for i in [0, 2, 3])
 
 
+class Sinus1yrConstRateFunction(Sinus1yrRateFunction):
+    @docs.dedent
+    def __init__(self, random_state=None):
+        """
+        Same as Sinus1yrRateFunction, but sampling uniform in each interval.
+
+        The difference to ConstantRateFunction is, that the number of events
+        to sample fluctuate with the actual positions of the time windows,
+        because the underlying function is a sinus and not a constant.
+
+        So the number of expected events is still following the seasonal
+        fluctuations, but in the time windows we sample uniformly (step
+        function like). Perfect for small time windows, avoiding rejection
+        sampling.
+
+        Parameters
+        ----------
+        %(RateFunction.init.parameters)s
+        """
+        super(Sinus1yrConstRateFunction, self).__init__(random_state)
+        return
+
+    @docs.dedent
+    def sample(self, t, trange, pars, n_samples):
+        """
+        %(RateFunction.sample.summary)s
+
+        Parameters
+        ----------
+        %(RateFunction.sample.parameters)s
+
+        Returns
+        -------
+        %(RateFunction.sample.returns)s
+        """
+        # Just sample uniformly in MJD time windows
+        _, dts = self._transform_trange_mjd(t, trange)
+
+        # Samples times for all sources at once
+        sample = []
+        for dt, nsam in zip(dts, n_samples):
+            sample.append(self._rndgen.uniform(dt[0], dt[1], size=nsam))
+
+        return sample
+
+
 class ConstantRateFunction(RateFunction):
-    """
-    Uses a constant rate in Hz at a given time in MJD.
+    @docs.dedent
+    def __init__(self, random_state=None):
+        """
+        Uses a constant rate in Hz at a given time in MJD.
 
-    Uses one parameter:
+        Uses one parameter:
 
-    - rate, float: Constant rate in Hz.
-    """
-    def __init__(self):
-        super(ConstantRateFunction, self).__init__()
+        - rate, float: Constant rate in Hz.
+
+        Parameters
+        ----------
+        %(RateFunction.init.parameters)s
+        """
+        super(ConstantRateFunction, self).__init__(random_state)
         return
 
     @docs.dedent
@@ -600,7 +663,7 @@ class ConstantRateFunction(RateFunction):
         %(RateFunction.sample.returns)s
         """
         # Just sample uniformly in MJD time windows
-        t, dts = self._transform_trange_mjd(t, trange)
+        _, dts = self._transform_trange_mjd(t, trange)
 
         # Samples times for all sources at once
         sample = []
