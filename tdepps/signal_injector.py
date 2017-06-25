@@ -53,7 +53,7 @@ class SignalInjector(object):
         self._inj_width = inj_width
 
         self._mc_arr = None
-        self._rndgen = check_random_state(random_state)
+        self.rndgen = random_state
 
         # Defaults for private class variables (later set ones get None)
         self._MC = None
@@ -96,6 +96,10 @@ class SignalInjector(object):
     @property
     def rndgen(self):
         return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
 
     def fit(self, srcs, MC, exp_names):
         """
