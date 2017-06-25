@@ -247,8 +247,39 @@ class GRBLLH(object):
         return
 
     @property
+    def spatial_pdf_args(self):
+        return self._spatial_pdf_args
+
+    @spatial_pdf_args.setter
+    def spatial_pdf_args(self, arg):
+        raise ValueError("`spatial_pdf_args` can't be set. Create new " +
+                         "object instead.")
+
+    @property
+    def energy_pdf_args(self):
+        return self._energy_pdf_args
+
+    @energy_pdf_args.setter
+    def energy_pdf_args(self, arg):
+        raise ValueError("`energy_pdf_args` can't be set. Create new " +
+                         "object instead.")
+
+    @property
+    def time_pdf_args(self):
+        return self._time_pdf_args
+
+    @time_pdf_args.setter
+    def time_pdf_args(self, arg):
+        raise ValueError("`time_pdf_args` can't be set. Create new " +
+                         "object instead.")
+
+    @property
     def llh_args(self):
         return self._llh_args
+
+    @llh_args.setter
+    def llh_args(self, arg):
+        raise ValueError("`llh_args` can't be set. Create new object instead.")
 
     def lnllh_ratio(self, X, ns, args):
         r"""
@@ -341,12 +372,12 @@ class GRBLLH(object):
         Parameters
         ----------
         X : record-array
-            See :func:`lnllh_ratio`, Parameters
+            See :py:meth:`lnllh_ratio`, Parameters
         ns0 : float
             Fitter seed for the fit parameter ns: number of signal events that
             we expect at the source locations.
         args : dict
-            See :func:`lnllh_ratio`, Parameters
+            See :py:meth:`lnllh_ratio`, Parameters
         bounds : array-like, shape (1, 2)
             Minimization bounds `[[min, max]]` for `ns`. Use None for one of
             `min` or `max` when there is no bound in that direction.
@@ -375,14 +406,14 @@ class GRBLLH(object):
             Parameters
             ----------
             ns : float
-                See :func:`lnllh_ratio`, Parameters
+                See :py:meth:`lnllh_ratio`, Parameters
 
             Returns
             -------
             lnllh : float
-                See :func:`lnllh_ratio`, Returns
+                See :py:meth:`lnllh_ratio`, Returns
             lnllh_grad : array-like
-                See :func:`lnllh_ratio`, Returns
+                See :py:meth:`lnllh_ratio`, Returns
             """
             lnllh, lnllh_grad = self._lnllh_ratio(ns, sob)
             return -1. * lnllh, -1. * lnllh_grad
@@ -432,7 +463,7 @@ class GRBLLH(object):
         Parameters
         ----------
         ns : float
-            See :func:`lnllh_ratio`, Parameters
+            See :py:meth:`lnllh_ratio`, Parameters
         sob : array-like, shape (nevts)
             Total signal over background ratio for each event, already reduced
             over all sources.
@@ -440,9 +471,9 @@ class GRBLLH(object):
         Returns
         -------
         lnllh : float
-            See :func:`lnllh_ratio`, Returns
+            See :py:meth:`lnllh_ratio`, Returns
         lnllh_grad : array-like
-            See :func:`lnllh_ratio`, Returns
+            See :py:meth:`lnllh_ratio`, Returns
         """
         # Teststatistic 2 * ln(LLH-ratio)
         x = ns * sob
@@ -516,9 +547,9 @@ class GRBLLH(object):
         Parameters
         ----------
         X : record-array
-            See :func:`lnllh_ratio`, Parameters
+            See :py:meth:`lnllh_ratio`, Parameters
         args : dict
-            See :func:`lnllh_ratio`, Parameters
+            See :py:meth:`lnllh_ratio`, Parameters
 
         Returns
         -------
