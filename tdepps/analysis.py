@@ -37,26 +37,32 @@ class TransientsAnalysis(object):
         amount of time, eg. a gamma ray burst (GRB).
     """
     def __init__(self, srcs, llh):
-        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
-        for n in required_names:
-            if n not in srcs.dtype.names:
-                raise ValueError("`srcs` is missing name '{}'.".format(n))
-
-        if not isinstance(llh, GRBLLH):
-            raise ValueError("`llh` must be an instance of " +
-                             "`tdepps.llh.GRBLLH`.")
-
-        self._srcs = srcs
-        self._llh = llh
+        self.srcs = srcs
+        self.llh = llh
         return
 
     @property
     def srcs(self):
         return self._srcs
 
+    @srcs.setter
+    def srcs(self, srcs):
+        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
+        for n in required_names:
+            if n not in srcs.dtype.names:
+                raise ValueError("`srcs` is missing name '{}'.".format(n))
+        self._srcs = srcs
+
     @property
     def llh(self):
         return self._llh
+
+    @llh.setter
+    def llh(self, llh):
+        if not isinstance(llh, GRBLLH):
+            raise ValueError("`llh` must be an instance of " +
+                             "`tdepps.llh.GRBLLH`.")
+        self._llh = llh
 
     def do_trials(self, n_trials, ns0, bg_inj, bg_rate_inj, signal_inj=None,
                   minimizer_opts=None):
@@ -134,7 +140,7 @@ class TransientsAnalysis(object):
 
         # Total injection time window in which the time PDF is defined and
         # nonzero.
-        trange = self.llh.time_pdf_def_range(src_t, src_dt)
+        trange = self._llh.time_pdf_def_range(src_t, src_dt)
         assert len(trange) == len(self._srcs)
         assert trange.shape == (len(self._srcs), 2)
 
