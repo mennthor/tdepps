@@ -17,53 +17,59 @@ docs = docrep.DocstringProcessor()
 
 
 class BGInjector(object):
-    """
-    Background Injector Base Class
-
-    Base class for generating background events with 3 features: declination,
-    logE proxy and directional reconstruction error sigma.
-
-    Classes must implement methods:
-
-    - `fun`
-    - `sample`
-
-    Class object then provides public methods:
-
-    - `fun`
-    - `sample`
-
-    Parameters
-    ----------
-    random_state : RandomState, optional
-        Turn seed into a `np.random.RandomState` instance. Method from
-        `sklearn.utils`. Can be None, int or RndState. (default: None)
-
-    Example
-    -------
-    >>> import tdepps.bg_injector as BGInj
-    >>> data_inj = BGInj.DataBGInjector()
-    >>>
-    >>> # Generate some test data
-    >>> n_evts, n_features = 100, 3
-    >>> X = np.random.uniform(0, 1, size=(n_evts, n_features))
-    >>> X = np.core.records.fromarrays(X.T, names=["logE", "dec", "sigma"])
-    >>>
-    >>> # Fit and sample from testdata
-    >>> data_inj.fit(X)
-    >>> data_sam = data_inj.sample(n_samples=1000)
-    """
     __metaclass__ = abc.ABCMeta
 
+    @docs.get_sectionsf("BGInjector.init", sections=["Parameters"])
+    @docs.dedent
     def __init__(self, random_state=None):
-        self._rndgen = check_random_state(random_state)
+        """
+        Background Injector Base Class
+
+        Base class for generating background events with 3 features:
+        declination, logE, and directional reconstruction error sigma.
+
+        Classes must implement methods:
+
+        - `fun`
+        - `sample`
+
+        Class object then provides public methods:
+
+        - `fun`
+        - `sample`
+
+        Parameters
+        ----------
+        random_state : RandomState, optional
+            Turn seed into a `np.random.RandomState` instance. Method from
+            `sklearn.utils`. Can be None, int or RndState. (default: None)
+
+        Example
+        -------
+        >>> import tdepps.bg_injector as BGInj
+        >>> data_inj = BGInj.DataBGInjector()
+        >>>
+        >>> # Generate some test data
+        >>> n_evts, n_features = 100, 3
+        >>> X = np.random.uniform(0, 1, size=(n_evts, n_features))
+        >>> X = np.core.records.fromarrays(X.T, names=["logE", "dec", "sigma"])
+        >>>
+        >>> # Fit and sample from testdata
+        >>> data_inj.fit(X)
+        >>> data_sam = data_inj.sample(n_samples=1000)
+        """
+        self.rndgen = random_state
 
         # self._X_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
-        self._X_names = ["dec", "logE", "sigma"]
+        self._X_names = ["logE", "dec", "sigma"]
 
     @property
     def rndgen(self):
         return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
 
     @docs.get_sectionsf("BGInjector.fit", sections=["Parameters", "Returns"])
     @docs.dedent
@@ -123,15 +129,14 @@ class BGInjector(object):
         Parameters
         ----------
         X
-            See `BGInjector.fit`, Parameters
+            Sees:py:meth:`BGInjector.fit`, Parameters
 
         Returns
         -------
         X
-            See `BGInjector.sample`, Returns
+            See :py:meth:`BGInjector.sample`, Returns
         """
-        nevts = len(X)
-        ra = self._rndgen.uniform(0, 2 * np.pi, size=nevts)
+        ra = self._rndgen.uniform(0, 2 * np.pi, size=len(X))
         sin_dec = np.sin(X["dec"])
 
         # Append ra, sin_dec fields to X output array
@@ -145,7 +150,7 @@ class BGInjector(object):
         Parameters
         ----------
         bounds
-            See `BGInjector.fit`, Parameters
+            See :py:meth:`BGInjector.fit`, Parameters
 
         Returns
         -------
@@ -175,12 +180,12 @@ class BGInjector(object):
         Parameters
         ----------
         X
-            See `fit`, Parameters
+            See :py:meth:`fit`, Parameters
 
         Raises
         ------
         ValueError
-            When `X` does not have all names in ["logE", "dec", "sigma"].
+            When `X` does not have :py:meth:names ["logE", "dec", "sigma"].
         """
         if X.dtype.names is None:
             valid = "['" + "', '".join(self._X_names) + "']"
@@ -195,36 +200,38 @@ class BGInjector(object):
 
 
 class KDEBGInjector(BGInjector):
-    """
-    Adaptive Bandwidth Kernel Density Background Injector.
+    @docs.dedent
+    def __init__(self, glob_bw="silverman", alpha=0.5, diag_cov=False,
+                 random_state=None):
+        """
+        Adaptive Bandwidth Kernel Density Background Injector.
 
-    Parameters are passed to the KDE class. Fitting of the model can take some
-    time (60min / 100k evts) when adaptive kernels are used.
+        Parameters are passed to the KDE class. Fitting of the model can take
+        some time when adaptive kernels are used.
 
-    Parameters
-    ----------
-    glob_bw : float or str
-        The global bandwidth of the kernel, must be a float > 0 or one of
-        ["silverman"|"scott"]. If alpha is not None, this is the bandwidth for
-        the first estimate KDE from which the local bandwidth is calculated.
-        If ["silverman"|"scott"] a rule of thumb is used to estimate the
-        bandwidth. (default: "silverman")
-    alpha : float or None
-        If None, only the global bandwidth is used. If 0 <= alpha <= 1, an
-        adaptive local kernel bandwith is used as described in. (default: 0.5)
-    diag_cov : bool
-        If True, only scale by variance, diagonal cov matrix. (default: False)
-    max_gb : float
-        Maximum gigabyte of RAM occupied in evaluating the KDE.
-    """
-    def __init__(self, glob_bw="silverman", alpha=0.5,
-                 diag_cov=False, max_gb=2.):
-        super(KDEBGInjector, self).__init__()
+        Parameters
+        ----------
+        glob_bw : float or str
+            The global bandwidth of the kernel, must be a float > 0 or one of
+            `['silverman'|'scott']`. If alpha is not None, this is the bandwidth
+            for the first estimate KDE from which the local bandwidth is
+            calculated. If `['silverman'|'scott']` a rule of thumb is used to
+            estimate the bandwidth. (default: 'silverman')
+        alpha : float or None
+            If None, only the global bandwidth is used. If `0 <= alpha <= 1`, an
+            adaptive local kernel bandwith is used as described in.
+            (default: 0.5)
+        diag_cov : bool
+            If True, only scale by variance, diagonal cov matrix.
+            (default: False)
+        %(BGInjector.init.parameters)s
+        """
+        super(KDEBGInjector, self).__init__(random_state)
 
         self._n_features = None
         # Create KDE model
         self._kde_model = KDE.GaussianKDE(glob_bw=glob_bw, alpha=alpha,
-                                          diag_cov=diag_cov, max_gb=max_gb)
+                                          diag_cov=diag_cov)
 
         return
 
@@ -301,16 +308,22 @@ class KDEBGInjector(BGInjector):
 
 
 class DataBGInjector(BGInjector):
-    """
-    Data Background Injector
+    @docs.dedent
+    def __init__(self, random_state=None):
+        """
+        Data Background Injector
 
-    Background Injector selecting random data events from the given sample.
-    """
-    def __init__(self):
-        super(DataBGInjector, self).__init__()
+        Background Injector selecting random data events from the given sample.
+
+        Parameters
+        ----------
+        %(BGInjector.init.parameters)s
+        """
+        super(DataBGInjector, self).__init__(random_state)
         self._n_features = None
         return
 
+    @docs.dedent
     def fit(self, X):
         """
         Build the injection model with the provided data. Here the model is
@@ -353,18 +366,23 @@ class DataBGInjector(BGInjector):
 
 
 class UniformBGInjector(BGInjector):
-    """
-    Uniform Background Injector
+    @docs.dedent
+    def __init__(self, random_state=None):
+        """
+        Uniform Background Injector
 
-    Background Injector creating uniform events on the whole sky.
-    Created features (in addition to right-ascension) are:
+        Background Injector creating uniform events on the whole sky.
+        Created features (in addition to right-ascension) are:
 
-    - logE from a gaussian with mean 3 and stddev 0.5
-    - Declination in radian uniformly distributed in sinDec
-    - Sigma in radian modeled as :math:`f(x) = 3^2 x exp(-3x)`
-    """
-    def __init__(self):
-        super(UniformBGInjector, self).__init__()
+        - logE from a gaussian with mean 3 and stddev 0.5
+        - Declination in radian uniformly distributed in sinDec
+        - Sigma in radian modeled as :math:`f(x) = 3^2 x exp(-3x)`
+
+        Parameters
+        ----------
+        %(BGInjector.init.parameters)s
+        """
+        super(UniformBGInjector, self).__init__(random_state)
 
         # Values "close" to real data
         self._logE_mean = 3.
@@ -424,12 +442,18 @@ class UniformBGInjector(BGInjector):
 
 
 class MRichmanBGInjector(BGInjector):
-    """
-    Injector binning up data space in [a x b x c] bins with equal statistics and
-    then sampling uniformly from those bins. Data must have 3 dimensions.
-    """
-    def __init__(self):
-        super(MRichmanBGInjector, self).__init__()
+    @docs.dedent
+    def __init__(self, random_state=None):
+        """
+        Injector binning up data space in `[a x b x c]` bins with equal
+        statistics and then sampling uniformly from those bins. Data must have 3
+        dimensions.
+
+        Parameters
+        ----------
+        %(BGInjector.init.parameters)s
+        """
+        super(MRichmanBGInjector, self).__init__(random_state)
         self._n_features = None
         return
 
