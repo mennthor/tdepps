@@ -11,6 +11,7 @@ import scipy.optimize as sco
 import scipy.interpolate as sci
 
 from .utils import fill_dict_defaults
+import tdepps.backend as backend
 
 
 class GRBLLH(object):
@@ -171,23 +172,21 @@ class GRBLLH(object):
                              "[sin_dec_bins, logE_bins].")
 
         sin_dec_bins = np.atleast_1d(self._energy_pdf_args["bins"][0])
-        if np.any(sin_dec_bins < -1) or np.any(sin_dec_bins > 1):
+        if np.any(sin_dec_bins < -1.) or np.any(sin_dec_bins > 1.):
             raise ValueError("sinDec declination bins for energy spline not " +
                              "in valid range [-1, 1].")
         sin_dec = np.sin(X["dec"])
-        if (np.any(sin_dec < sin_dec_bins[0]) or
-                np.any(sin_dec > sin_dec_bins[-1])):
+        if np.any((sin_dec < sin_dec_bins[0]) | (sin_dec > sin_dec_bins[-1])):
             raise ValueError("sinDec data events outside given bins. If this" +
                              "is intended, please remove them beforehand.")
         sin_dec = np.sin(MC["dec"])
-        if (np.any(sin_dec < sin_dec_bins[0]) or
-                np.any(sin_dec > sin_dec_bins[-1])):
+        if np.any((sin_dec < sin_dec_bins[0]) | (sin_dec > sin_dec_bins[-1])):
             raise ValueError("sinDec MC events outside given bins. If this" +
                              "is intended, please remove them beforehand.")
 
         ev_logE = X["logE"]
         logE_bins = np.atleast_1d(self._energy_pdf_args["bins"][1])
-        if np.any((ev_logE < logE_bins[0]) or (ev_logE > logE_bins[-1])):
+        if np.any(ev_logE < logE_bins[0]) or np.any(ev_logE > logE_bins[-1]):
             raise ValueError("logE MC events outside given bins. If this " +
                              "is intended, please remove them beforehand.")
 
@@ -532,8 +531,8 @@ class GRBLLH(object):
 
         # Total time window per source in seconds
         trange = np.empty_like(dt, dtype=np.float)
-        trange[:, 0] = dt[:, 0] - sig_t_clip.ravel()
-        trange[:, 1] = dt[:, 1] + sig_t_clip.ravel()
+        trange[:, 0] = dt[:, 0] - sig_t_clip
+        trange[:, 1] = dt[:, 1] + sig_t_clip
 
         return trange
 
@@ -624,8 +623,10 @@ class GRBLLH(object):
         ----------
         t : array-like
             Times given in MJD for which we want to evaluate the ratio.
-        src_t, dt
-            See `time_pdf_def_range`, Parameters
+        src_t : array-like, shape (nsrcs)
+            See :py:meth:`time_pdf_def_range`, Parameters
+        dt : array-like, shape (nsrcs, 2)
+            See :py:meth:`time_pdf_def_range`, Parameters
 
         Returns
         -------
@@ -637,46 +638,9 @@ class GRBLLH(object):
 
         # Setup input to proper shapes
         src_t, dt, sig_t, sig_t_clip = self._setup_time_windows(src_t, dt)
-        dt_len = np.diff(dt, axis=1)
 
-        # Create signal PDF
-        gaus_norm = np.sqrt(2 * np.pi) * sig_t
-
-        # Normalize times from data relative to src_t in seconds
-        # Stability: Multiply before subtracting avoids small number rounding(?)
-        _t = t * self._SECINDAY - src_t * self._SECINDAY
-
-        # Broadcast
-        dt0 = dt[:, [0]]
-        dt1 = dt[:, [1]]
-        # Split in PDF regions: gauss rising, uniform, gauss falling
-        gr = (_t < dt0) & (_t >= dt0 - sig_t_clip)
-        gf = (_t > dt1) & (_t <= dt1 + sig_t_clip)
-        uni = (_t >= dt0) & (_t <= dt1)
-
-        # Broadcast
-        nevts = len(t)
-        _dt0 = np.repeat(dt[:, [0]], axis=1, repeats=nevts)
-        _dt1 = np.repeat(dt[:, [1]], axis=1, repeats=nevts)
-        _sig_t = np.repeat(sig_t[:, None], axis=1, repeats=nevts)
-        _gaus_norm = np.repeat(gaus_norm[:, None], axis=1, repeats=nevts)
-        # Get pdf values in the masked regions
-        pdf = np.zeros_like(_t, dtype=np.float)
-        pdf[gr] = scs.norm.pdf(_t[gr], loc=_dt0[gr], scale=_sig_t[gr])
-        pdf[gf] = scs.norm.pdf(_t[gf], loc=_dt1[gf], scale=_sig_t[gf])
-        # Connect smoothly with the gaussians
-        pdf[uni] = 1. / _gaus_norm[uni]
-
-        # Normalize signal distribtuion: Prob in half gaussians + uniform part
-        dcdf = (scs.norm.cdf(nsig, loc=0, scale=1) -
-                scs.norm.cdf(-nsig, loc=0, scale=1))
-        norm = dcdf + dt_len / gaus_norm
-        pdf /= norm
-
-        # Calculate the ratio signal / background
-        bg_pdf = 1. / (dt_len + 2 * sig_t_clip)
-        pdf /= bg_pdf
-        return pdf
+        return backend.soverb_time(t, src_t, dt[:, 0], dt[:, 1],
+                                   sig_t, sig_t_clip, nsig)
 
     def _soverb_spatial(self, src_ra, src_dec, ev_ra, ev_sin_dec, ev_sig):
         """
@@ -733,9 +697,9 @@ class GRBLLH(object):
         Parameters
         ----------
         ev_sin_dec
-            See `GRBLLH._soverb_spatial`, Parameters
+            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
         ev_logE
-            See `lnllh_ratio`, Parameters: `X`
+            See :py:meth:`lnllh_ratio`, Parameters: `X`
 
         Returns
         -------
@@ -763,17 +727,22 @@ class GRBLLH(object):
 
         Parameters
         ----------
-        src_t, dt
-            See `time_pdf_def_range`, Parameters
+        src_t : array-like, (nsrcs)
+            See :py:meth:`time_pdf_def_range`, Parameters
+        dt : array-like, shape (nsrcs, 2)
+            See :py:meth:`time_pdf_def_range`, Parameters
 
         Returns
         -------
-        src_t, dt
-            See `time_pdf_def_range`, Parameters
+        src_t : array-like, (nsrcs)
+            See :py:meth:`time_pdf_def_range`, Parameters
+        dt : array-like, shape (nsrcs, 2)
+            See :py:meth:`time_pdf_def_range`, Parameters
         sig_t : array-like, shape (nsrcs)
             sigma of the gaussian edges of the time signal PDF.
         sig_t_clip : array-like, shape (nsrcs)
-            Total length nsig * sig_t of the gaussian edges of each time window.
+            Total length `time_pdf_args['nsig'] * sig_t` of the gaussian edges
+            of each time window.
         """
         nsig = self._time_pdf_args["nsig"]
         sigma_t_min = self._time_pdf_args["sigma_t_min"]
@@ -783,13 +752,10 @@ class GRBLLH(object):
         dt = np.atleast_2d(dt)
         assert dt.shape[0] == len(src_t)
         assert dt.shape[1] == 2
-        assert np.any(dt[:, 0] >= dt[:, 1])
-
-        # Each src in its own array for proper broadcasting
-        src_t = np.atleast_2d(src_t)[:, None]
+        assert np.all(dt[:, 0] < dt[:, 1])
 
         # Constrain sig_t to given min/max, regardless of uniform time window
-        dt_len = np.diff(dt, axis=1)
+        dt_len = np.diff(dt, axis=1).ravel()
         sig_t = np.clip(dt_len, sigma_t_min, sigma_t_max)
         sig_t_clip = nsig * sig_t
 
@@ -806,7 +772,7 @@ class GRBLLH(object):
         Parameters
         ----------
         ev_sin_dec
-            See `GRBLLH._soverb_spatial`, Parameters
+            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
 
         Returns
         -------
@@ -837,21 +803,31 @@ class GRBLLH(object):
 
         Parameters
         -----------
-        src_ra, src_dec, ev_ra, ev_sin_dec, ev_sig
-            See `GRBLLH._soverb_spatial`, Parameters
+        src_ra : array-like, shape (nsrcs)
+            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
+        src_dec : array-like, shape (nsrcs)
+            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
+        ev_ra : array-like, shape (nsrcs)
+            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
+        ev_sin_dec : array-like, shape (nsrcs)
+            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
+        ev_sig : array-like, shape (nsrcs)
+            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
 
         Returns
         --------
         S : array-like, shape (nsrcs, nevts)
             Spatial signal probability for each event and each source position.
         """
-        src_ra = np.atleast_2d(src_ra)[:, None]
-        src_dec = np.atleast_2d(src_dec)[:, None]
+        assert len(src_ra.shape) == 1
+        assert len(src_dec.shape) == 1
+        _src_ra = src_ra[:, None]
+        _src_dec = src_dec[:, None]
 
         # Dot product to get great circle distance for every evt to every src
-        cos_dist = (np.cos(src_ra - ev_ra) *
-                    np.cos(src_dec) * np.sqrt(1. - ev_sin_dec**2) +
-                    np.sin(src_dec) * ev_sin_dec)
+        cos_dist = (np.cos(_src_ra - ev_ra) *
+                    np.cos(_src_dec) * np.sqrt(1. - ev_sin_dec**2) +
+                    np.sin(_src_dec) * ev_sin_dec)
 
         # Handle possible floating precision errors
         cos_dist = np.clip(cos_dist, -1., 1.)
@@ -884,11 +860,11 @@ class GRBLLH(object):
         Parameters
         ----------
         ev_sin_dec
-            See `GRBLLH._soverb_spatial`, Parameters
+            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
         ev_logE
-            See `lnllh_ratio`, Parameters: `X`
+            See :py:meth:`lnllh_ratio`, Parameters: `X`
         mc_sin_dec, mc_logE, trueE, ow
-            See `GRBLLH`, Parameters: `MC`
+            See :py:meth:`GRBLLH`, Parameters: `MC`
 
         Returns
         -------
@@ -905,7 +881,7 @@ class GRBLLH(object):
         for b in bins:
             mids.append(0.5 * (b[:-1] + b[1:]))
 
-        assert np.any((ev_logE < bins[1][0]) or (ev_logE > bins[1][-1]))
+        assert np.all((ev_logE >= bins[1][0]) & (ev_logE <= bins[1][-1]))
 
         # Weight MC to power law *shape* only, because we normalize anyway to
         # get a PDF
@@ -1004,7 +980,7 @@ class GRBLLH(object):
         """
         k = self._spatial_pdf_args["k"]
 
-        assert np.any((sin_dec < bins[0]) | (sin_dec > bins[-1]))
+        assert np.all((sin_dec >= bins[0]) & (sin_dec <= bins[-1]))
 
         if mc is not None:
             # Weight MC to power law shape only, because we normalize anyway
