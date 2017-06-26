@@ -51,6 +51,21 @@ class TransientsAnalysis(object):
         for n in required_names:
             if n not in srcs.dtype.names:
                 raise ValueError("`srcs` is missing name '{}'.".format(n))
+
+        # Test mutual exclusiveness of the windows
+        # larger edge must be y than lower edge and vice versa to be exclusive
+        t, dt0, dt1 = srcs["t"], srcs["dt0"], srcs["dt1"]
+        exclusive = (((t + dt0)[:, None] >= t + dt1) |
+                     ((t + dt1)[:, None] <= t + dt0))
+        # Fix manually that time windows overlap with themselves of course
+        np.fill_diagonal(exclusive, True)
+        # If any entry is False, we have an overlapping window case
+        if np.any(exclusive is False):
+            window_ids = [[x, y] for x, y in zip(*np.where(~exclusive))]
+            raise ValueError("Overlapping time windows: {}.".format(", ".join(
+                ["[{:d}, {:d}]".format(*c) for c in window_ids])) +
+                "\nThis is not supported yet.")
+
         self._srcs = srcs
 
     @property
