@@ -592,8 +592,9 @@ class GRBLLH(object):
         # If mutliple srcs: sum over signal contribution from each src.
         # The single src case is automatically included due to broadcasting
         src_w = self.src_weights(src_dec, src_w_theo)
-        nb = nb[:, None]
-        sob = np.sum(sob * src_w / nb, axis=0)
+        # Background expecation is sum over all on-time windows, assumes non-
+        # overlapping windows.
+        sob = np.sum(sob * src_w, axis=0) / np.sum(nb)
 
         # Apply a SoB ratio cut, to save computation time on events that don't
         # contribute anyway. We have a relative and an absolute threshold
