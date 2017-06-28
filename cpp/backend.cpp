@@ -15,9 +15,18 @@ static const double sqrt2pi = std::sqrt(2. * pi);
 static const double secinday = 24. * 60. * 60.;
 
 
+// Actual C++ snippets. See docstrings at the bottom for argument info.
 namespace py = pybind11;
 
-// Actual C++ snippets. See docstrings at the bottom for argument info.
+
+template <typename T>
+inline T gaus_pdf_nonorm(T x, T mean, T sigma) {
+    // Returns value of the 1D Gaussian PDF w/o normalization term at x.
+    T x_ = x - mean;
+    return std::exp(-0.5 * x_ * x_ / (sigma * sigma));
+}
+
+
 template <typename T>
 py::array_t<T> pdf_spatial_signal(const py::array_t<T> src_ra,
                                   const py::array_t<T> src_dec,
@@ -33,17 +42,54 @@ py::array_t<T> pdf_spatial_signal(const py::array_t<T> src_ra,
     auto nevts = ev_ra.shape(0);
     auto nsrcs = src_ra.shape(0);
 
-    // Precompute src dec and
+    // Precompute sin(src_dec) and cos(src_dec)
+    std::vector<T> sin_src_dec(nsrcs);
+    std::vector<T> cos_src_dec(nsrcs);
+    for (unsigned j=0; j < nsrcs; ++j){
+        sin_src_dec[j] = std::sin(b_src_dec(j));
+        cos_src_dec[j] = std::cos(b_src_dec(j));
+    }
 
+    // Allocate output array: shape (nsrcs, nevts)
+    py::array_t<T> S({nsrcs, nevts});
+    auto b_S = S.template mutable_unchecked<2>();
+
+    // Compute cos(great circle dist) for every point to every src and with that
+    // the actual PDF value (kent or gaussian) at that distance
+    T cos_dist;
+    T kappa;
+    for (unsigned j = 0; j < nsrcs; ++j) {
+        for (unsigned i = 0; i < nevts; ++i) {
+            // Derivation: Calc vec(x)*vec(x) in spherical equatorial coords
+            cos_dist = std::cos(b_src_ra(j) - b_ev_ra(i)) *
+                       cos_src_dec[j] *
+                       std::sqrt(1. - b_ev_sin_dec(i) * b_ev_sin_dec(i)) +
+                       sin_src_dec[j] * b_ev_sin_dec(i);
+            // Handle possible rounding errors
+            cos_dist = std::max((T)-1., std::min((T)1., cos_dist));
+
+            if (kent) {
+            // Stabilized version for possibly large kappas
+            kappa = 1. / (b_ev_sig(i) * b_ev_sig(i));
+            b_S(j, i) = kappa / (2. * pi * (1. - std::exp(-2. * kappa))) *
+                        std::exp(kappa * (cos_dist - 1.));
+            }
+            else {
+                // TODO: Type correctly.
+                // T dist = std::acos(cos_dist);
+                // T ev_sig_2 = 2. * pi * b_ev_sig(i) * b_ev_sig(i);
+                // S(j, i) = std::exp(-dist * dist / ev_sig_2) / ev_sig_2;
+                // 2D gaussian PDF with great circle distance evt <-> src
+                // S(j, i) = gaus_pdf_nonorm(std::acos(cos_dist),
+                //                           0., b_ev_sig(i)) /
+                //           (2. * pi * b_ev_sig(i) * b_ev_sig(i));
+            }
+        }
+    }
+
+    return S;
 }
 
-
-template <typename T>
-inline T gaus_pdf_nonorm(T x, T mean, T sigma) {
-    // Returns value of the 1D Gaussian PDF w/o normalization term at x.
-    T x_ = x - mean;
-    return std::exp(-0.5 * x_ * x_ / (sigma * sigma));
-}
 
 template <typename T>
 py::array_t<T> soverb_time (const py::array_t<T>& t,
@@ -76,7 +122,7 @@ py::array_t<T> soverb_time (const py::array_t<T>& t,
     // Precompute signal PDF total norm: gaussian + uniform part
     std::vector<T> sig_pdf_norm(nsrcs);
     // CDF(sigma) - CDF(-sigma). https://en.wikipedia.org/wiki/Error_function
-    T dcdf = std::erf(nsig / sqrt2);
+    const T dcdf = std::erf(nsig / sqrt2);
     for (unsigned j = 0; j < nsrcs; ++j) {
         sig_pdf_norm[j] = 1. / (dcdf + (b_dt1(j) - b_dt0(j)) * gaus_norm[j]);
     }
@@ -132,6 +178,7 @@ PYBIND11_PLUGIN(backend) {
            :toctree: _generate
 
            soverb_time
+           pdf_spatial_signal
     )pbdoc");
 
     auto soverb_time_docstr = R"pbdoc(
@@ -175,6 +222,46 @@ PYBIND11_PLUGIN(backend) {
                         given time `t` and per source time `src_t`.
                   )pbdoc";
 
+    auto pdf_spatial_signal_docstr = R"pbdoc(
+                    Spatial distance PDF between source position(s) and event
+                    positions.
+
+                    Signal is assumed to cluster around source position(s).
+                    The PDF is a convolution of a delta function for the
+                    localized sources and a Kent (or gaussian) distribution with
+                    the events positional
+                    reconstruction error as width.
+
+                    If `spatial_pdf_args["kent"]` is True a Kent distribtuion is
+                    used, where kappa is chosen, so that the same amount of
+                    probability as in the 2D gaussian is inside a circle with
+                    radius `ev_sig` per event.
+
+                    Multiple source positions can be given, to use it in a
+                    stacked search.
+
+                    Parameters
+                    -----------
+                    src_ra, src_dec : array-like, shape (nsrcs)
+                        Source positions in equatorial right-ascension, [0, 2pi]
+                        and declination, [-pi/2, pi/2], given in radian.
+                    ev_ra, ev_sin_dec : array-like, shape (nevts)
+                        Event positions in equatorial right-ascension, [0, 2pi]
+                        in radian and sinus declination, [-1, 1].
+                    ev_sig : array-like, shape (nevts)
+                        Event positional reconstruction errors in radian
+                        (eg. Paraboloid).
+                    kent : bool
+                        If True, the signal PDF uses the Kent distribution,
+                        otherwise 2D gaussian PDF is used.
+
+                    Returns
+                    --------
+                    S : array-like, shape (nsrcs, nevts)
+                        Spatial signal probability for each event and each
+                        source position.
+                  )pbdoc";
+
     // Define the actual template types
     m.def("soverb_time", &soverb_time<double>, soverb_time_docstr,
           py::arg("t"), py::arg("src_t"), py::arg("dt0"), py::arg("dt1"),
@@ -182,6 +269,14 @@ PYBIND11_PLUGIN(backend) {
     m.def("soverb_time", &soverb_time<float>, "",
           py::arg("t"), py::arg("src_t"), py::arg("dt0"), py::arg("dt1"),
           py::arg("sig_t"), py::arg("sig_t_clip"), py::arg("nsig"));
+
+    m.def("pdf_spatial_signal", &pdf_spatial_signal<double>,
+          pdf_spatial_signal_docstr,
+          py::arg("src_ra"), py::arg("src_dec"), py::arg("ev_ra"),
+          py::arg("ev_sin_dec"), py::arg("ev_sig"),  py::arg("kent"));
+    m.def("pdf_spatial_signal", &pdf_spatial_signal<float>, "",
+          py::arg("src_ra"), py::arg("src_dec"), py::arg("ev_ra"),
+          py::arg("ev_sin_dec"), py::arg("ev_sig"),  py::arg("kent"));
 
 #ifdef VERSION_INFO
     m.attr("__version__") = py::str(VERSION_INFO);
