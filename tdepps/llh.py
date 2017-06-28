@@ -821,29 +821,10 @@ class GRBLLH(object):
         """
         assert len(src_ra.shape) == 1
         assert len(src_dec.shape) == 1
-        _src_ra = src_ra[:, None]
-        _src_dec = src_dec[:, None]
 
-        # Dot product to get great circle distance for every evt to every src
-        cos_dist = (np.cos(_src_ra - ev_ra) *
-                    np.cos(_src_dec) * np.sqrt(1. - ev_sin_dec**2) +
-                    np.sin(_src_dec) * ev_sin_dec)
-
-        # Handle possible floating precision errors
-        cos_dist = np.clip(cos_dist, -1., 1.)
-
-        if self._spatial_pdf_args["kent"]:
-            # Stabilized version for possibly large kappas
-            kappa = 1. / ev_sig**2
-            S = (kappa / (2. * np.pi * (1. - np.exp(-2. * kappa))) *
-                 np.exp(kappa * (cos_dist - 1.)))
-        else:
-            # Otherwise use standard symmetric 2D gaussian
-            dist = np.arccos(cos_dist)
-            ev_sig_2 = 2. * ev_sig**2
-            S = np.exp(-dist**2 / ev_sig_2) / (np.pi * ev_sig_2)
-
-        return S
+        return backend.pdf_spatial_signal(src_ra, src_dec,
+                                          ev_ra, ev_sin_dec, ev_sig,
+                                          self._spatial_pdf_args["kent"])
 
     def _create_sin_dec_logE_spline(self, ev_sin_dec, ev_logE,
                                     mc_sin_dec, mc_logE, trueE, ow):
