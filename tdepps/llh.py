@@ -481,7 +481,7 @@ class GRBLLH(object):
         TS = 2. * (-ns + np.sum(np.log1p(x)))
         # Gradient in ns (chain rule: ln(x + 1)' * x') -> list for minimizer
         ns_grad = 2. * (-1. + np.sum(sob / (x + 1.)))
-        return TS, [ns_grad]
+        return TS, np.array([ns_grad])
 
     # #########################################################################
     # Public accessible helper methods
