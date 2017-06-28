@@ -89,10 +89,12 @@ class GRBLLH(object):
         - "fillval", str, optional: What values to use, when the histogram has
           MC but no data in a bin. Then the gaps are filled, by assigning values
           to the histogram edges for low/high energies seprately and then
-          interpolating inside. Can be one of ["minmax"|"col"]. When "minmax"
-          the lowest/highest ratio values are used at the edges, when "col" the
-          next valid value in each colum from the top/bottom is used.
-          "col" is more conservative, "minmax" more optimistic. (default: "col")
+          interpolating inside. Can be one of ['minmax'|'col'|'col'].
+          When 'minmax' the lowest/highest ratio values are used at the edges.
+          When 'min' only the lowest ratio value is used at the edges. When
+          'col' the next valid value in each colum from the top/bottom is used.
+          Most conservative = 'min' < 'col' < 'minmax' = most optimistic).
+          (default: 'min')
         - "interpol_log", bool, optional: If True, gaps in the signal over
           background ratio histogram are interpolated linearly in ln. Otherwise
           the interpolation is in linear space. (default: False)
@@ -161,11 +163,11 @@ class GRBLLH(object):
 
         # Setup energy PDF args
         required_keys = ["bins"]
-        opt_keys = {"gamma": 2., "fillval": "col", "interpol_log": False}
+        opt_keys = {"gamma": 2., "fillval": "min", "interpol_log": False}
         self._energy_pdf_args = fill_dict_defaults(energy_pdf_args,
                                                    required_keys, opt_keys)
-        if self._energy_pdf_args["fillval"] not in ["minmax", "col"]:
-            raise ValueError("'fillval' must be one of ['minmax'|'col'].")
+        if self._energy_pdf_args["fillval"] not in ["minmax", "col", "min"]:
+            raise ValueError("'fillval' must be one of ['minmax'|'col'|'min'].")
         # Check if binning is OK
         if len(self._energy_pdf_args["bins"]) != 2:
             raise ValueError("Bins for energy hist must be of format " +
@@ -886,7 +888,7 @@ class GRBLLH(object):
         sob = np.ones_like(bg_h) - 1.
         mask = (bg_h > 0) & (mc_h > 0)
         sob[mask] = mc_h[mask] / bg_h[mask]
-        if fillval == "minmax":
+        if (fillval == "minmax") or (fillval == "min"):
             sob_min, sob_max = np.amin(sob[mask]), np.amax(sob[mask])
         # We may have gaps in the hist, where no data OR no MC is. Fill with
         # interpolated values in sin_dec slice.
@@ -903,8 +905,8 @@ class GRBLLH(object):
                 if fillval == "col":  # Fill with first valid ratio from bottom
                     low_first_valid_id = np.argmin(m)
                     sob[i, 0] = sob[i, low_first_valid_id]
-                elif fillval == "minmax":  # Fill with global min
-                    sob[i, 0] = sob_min
+                elif (fillval == "minmax") or (fillval == "min"):
+                    sob[i, 0] = sob_min  # Fill with global min
 
             # Repeat with turned around array for upper edge
             hig_first_invalid_id = np.argmax(m[::-1])
@@ -912,6 +914,8 @@ class GRBLLH(object):
                 if fillval == "col":  # Fill with first valid ratio from top
                     hig_first_valid_id = len(m) - 1 - np.argmin(m[::-1])
                     sob[i, -1] = sob[i, hig_first_valid_id]
+                elif fillval == "min":  # Fill aslo with global min
+                    sob[i, -1] = sob_min
                 elif fillval == "minmax":  # Fill with global max
                     sob[i, -1] = sob_max
 
