@@ -2,7 +2,6 @@
 #include <pybind11/numpy.h>
 #include <cmath>
 
-
 // Time critical function are coded in C++ here.
 // pybind11 allows us to just write snippets in C++ and integrate them easily
 // and intuitively in out python package.
@@ -75,14 +74,10 @@ py::array_t<T> pdf_spatial_signal(const py::array_t<T> src_ra,
                         std::exp(kappa * (cos_dist - 1.));
             }
             else {
-                // TODO: Type correctly.
-                // T dist = std::acos(cos_dist);
-                // T ev_sig_2 = 2. * pi * b_ev_sig(i) * b_ev_sig(i);
-                // S(j, i) = std::exp(-dist * dist / ev_sig_2) / ev_sig_2;
                 // 2D gaussian PDF with great circle distance evt <-> src
-                // S(j, i) = gaus_pdf_nonorm(std::acos(cos_dist),
-                //                           0., b_ev_sig(i)) /
-                //           (2. * pi * b_ev_sig(i) * b_ev_sig(i));
+                b_S(j, i) = gaus_pdf_nonorm(std::acos(cos_dist),
+                                            (T)0., b_ev_sig(i)) /
+                            (2. * pi * b_ev_sig(i) * b_ev_sig(i));
             }
         }
     }
