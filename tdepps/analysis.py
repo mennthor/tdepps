@@ -13,30 +13,30 @@ from tdepps.utils import fill_dict_defaults, flatten_list_of_1darrays
 
 
 class TransientsAnalysis(object):
-    """
-    Providing methods to do a transients analysis.
-
-    Parameters
-    ----------
-    srcs : recarray, shape (nsrcs)
-        Source properties, must have names:
-
-        - 'ra', float: Right-ascension coordinate of each source in radian in
-          intervall :math:`[0, 2\pi]`.
-        - 'dec', float: Declinatiom coordinate of each source in radian in
-          intervall :math:`[-\pi / 2, \pi / 2]`.
-        - 't', float: Time of the occurence of the source event in MJD days.
-        - 'dt0', 'dt1': float: Lower/upper border of the time search window in
-          seconds, centered around each source time `t`.
-        - 'w_theo', float: Theoretical source weight per source, eg. from a
-          known gamma flux.
-
-    llh : `tdepps.LLH.GRBLLH` instance
-        LLH function used to test the hypothesis, that signal neutrinos have
-        been measured accompaning a source event occuring only for a limited
-        amount of time, eg. a gamma ray burst (GRB).
-    """
     def __init__(self, srcs, llh):
+        """
+        Providing methods to do a transients analysis.
+
+        Parameters
+        ----------
+        srcs : recarray, shape (nsrcs)
+            Source properties, must have names:
+
+            - 'ra', float: Right-ascension coordinate of each source in radian
+              in intervall :math:`[0, 2\pi]`.
+            - 'dec', float: Declinatiom coordinate of each source in radian in
+              intervall :math:`[-\pi / 2, \pi / 2]`.
+            - 't', float: Time of the occurence of the source event in MJD days.
+            - 'dt0', 'dt1': float: Lower/upper border of the time search window
+              in seconds, centered around each source time `t`.
+            - 'w_theo', float: Theoretical source weight per source, eg. from a
+              known gamma flux.
+
+        llh : `tdepps.LLH.GRBLLH` instance
+            LLH function used to test the hypothesis, that signal neutrinos have
+            been measured accompaning a source event occuring only for a limited
+            amount of time, eg. a gamma ray burst (GRB).
+        """
         self.srcs = srcs
         self.llh = llh
         return
