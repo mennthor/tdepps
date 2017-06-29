@@ -914,7 +914,7 @@ class GRBLLH(object):
                 if fillval == "col":  # Fill with first valid ratio from top
                     hig_first_valid_id = len(m) - 1 - np.argmin(m[::-1])
                     sob[i, -1] = sob[i, hig_first_valid_id]
-                elif fillval == "min":  # Fill aslo with global min
+                elif fillval == "min":  # Fill also with global min
                     sob[i, -1] = sob_min
                 elif fillval == "minmax":  # Fill with global max
                     sob[i, -1] = sob_max
