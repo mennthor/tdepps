@@ -305,7 +305,7 @@ class SignalInjector(object):
                     src_ra[src_idx], src_dec[src_idx], sam_ev)
                 sam_ev["timeMJD"] = self._sample_times(
                     src_t[src_idx], src_dt[src_idx])
-                yield n, sam_ev
+                yield n, sam_ev, sam_idx
                 continue
 
             # Else return same dict structure as used in fit
@@ -322,7 +322,7 @@ class SignalInjector(object):
                 sam_ev[enum]["timeMJD"] = self._sample_times(
                     src_t[src_idx], src_dt[src_idx])
 
-            yield n, sam_ev
+            yield n, sam_ev, sam_idx
 
     def _set_sampling_weights(self):
         """
@@ -421,7 +421,6 @@ class SignalInjector(object):
             r = self._inj_width
             _omega = 2 * np.pi * (1. - np.cos(r))
             self._omega = np.ones(self._nsrcs, dtype=np.float) * _omega
-
             assert len(self._omega) == self._nsrcs
         return
 
