@@ -6,7 +6,6 @@ standard_library.install_aliases()                                              
 
 import math
 import numpy as np
-import scipy.stats as scs
 import scipy.optimize as sco
 import scipy.interpolate as sci
 
