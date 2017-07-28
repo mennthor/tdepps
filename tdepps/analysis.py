@@ -165,8 +165,6 @@ class TransientsAnalysis(object):
         assert nb.shape == (self._srcs.shape)
 
         # Create args and do trials
-        X_names = ["ra", "dec", "timeMJD", "logE", "sigma"]
-        dtype = [(n, np.float) for n in X_names]
         args = {"nb": nb, "srcs": self._srcs}
         nzeros = 0
         ns, TS = [], []
