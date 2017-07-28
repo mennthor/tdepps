@@ -6,7 +6,7 @@ from future import standard_library
 standard_library.install_aliases()                                              # noqa
 
 import numpy as np
-from numpy.lib.recfunctions import append_fields
+from numpy.lib.recfunctions import append_fields, stack_arrays
 
 from tdepps.llh import GRBLLH
 from tdepps.utils import fill_dict_defaults, flatten_list_of_1darrays
@@ -176,20 +176,25 @@ class TransientsAnalysis(object):
             times = flatten_list_of_1darrays(times)
             nevts = len(times)
 
-            # If we have no events, fit will be zero
+            if nevts > 0:
+                X = bg_inj.sample(nevts)
+                X = append_fields(X, "timeMJD", times, dtypes=np.float,
+                                  usemask=False)
+
+            if signal_inj is not None:
+                nsig, Xsig, _ = next(signal_inj)
+                nevts += nsig[0]
+            else:
+                Xsig = None
+
+            # If we have no events at all, fit will be zero
             if nevts == 0:
                 nzeros += 1
                 continue
 
-            if signal_inj is not None:
-                nsig, Xsig = next(signal_inj)
-
-            X = np.empty((nzeros,), dtype=dtype)
-
             # Else ask LLH what value we have
-            X = bg_inj.sample(nevts)
-            X = append_fields(X, "timeMJD", times, dtypes=np.float,
-                              usemask=False)
+            if Xsig is not None:
+                X = stack_arrays((X, Xsig), usemask=False)
 
             # Only store the best fit params and the TS value if nonzero
             _ns, _TS = self.llh.fit_lnllh_ratio(X, ns0, args, bounds,
