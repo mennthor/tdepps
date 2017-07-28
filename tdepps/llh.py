@@ -436,8 +436,8 @@ class GRBLLH(object):
             if ns <= 0:
                 return 0., 0.
             else:
-                TS = -ns + math.log(sob)
-            return ns, 2. * TS
+                TS = 2. * (-ns + math.log(sob))
+            return ns, TS
         elif nevts == 2:
             a = 1. / (sob[0] * sob[1])
             c = (sob[0] + sob[1]) * a
@@ -478,7 +478,7 @@ class GRBLLH(object):
         # Teststatistic 2 * ln(LLH-ratio)
         x = ns * sob
         TS = 2. * (-ns + np.sum(np.log1p(x)))
-        # Gradient in ns (chain rule: ln(x + 1)' * x') -> list for minimizer
+        # Gradient in ns (chain rule: ln(ns * a + 1)' = 1 / (ns * a + 1) * a)
         ns_grad = 2. * (-1. + np.sum(sob / (x + 1.)))
         return TS, np.array([ns_grad])
 
@@ -593,7 +593,7 @@ class GRBLLH(object):
         # If mutliple srcs: sum over signal contribution from each src.
         # The single src case is automatically included due to broadcasting
         src_w = self.src_weights(src_dec, src_w_theo)
-        # Background expecation is sum over all on-time windows, assumes non-
+        # Background expecation is sum over all on-time windows, assuming non-
         # overlapping windows.
         sob = np.sum(sob * src_w, axis=0) / np.sum(nb)
 
