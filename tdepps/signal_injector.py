@@ -289,7 +289,7 @@ class SignalInjector(object):
 
             # If n=0 (no events get sampled) return None
             if n < 1:
-                yield n, None
+                yield n, None, None
                 continue
 
             # Draw IDs from the whole pool of events
