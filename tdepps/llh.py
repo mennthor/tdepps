@@ -1020,3 +1020,19 @@ class GRBLLH(object):
             rep += "  - {:12s} : {}\n".format(key, val)
 
         return rep
+
+
+class MaxBurstGRBLLH(GRBLLH):
+    def __init__(self):
+        return
+
+    # TODO: Redefine the TS only here. Instead of stacking, evaluate single LLH
+    #       For every source seperately. The best fit TS is then max_i(TS_i).
+
+
+class MultiyearGRBLLH(GRBLLH):
+    def __init__(self):
+        return
+
+    # TODO: Collect multiple GRBLLHs and make a new LLH with split ns
+    #       and adapted fit_llh method.
