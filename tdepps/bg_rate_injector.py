@@ -276,7 +276,7 @@ class BGRateInjector(object):
 
 class RunlistBGRateInjector(BGRateInjector):
     @docs.dedent
-    def __init__(self, rate_func, runlist, filter_runs, random_state=None):
+    def __init__(self, rate_func, runlist, filter_runs=None, random_state=None):
         """
         Runlist Background Rate Injector
 
@@ -286,16 +286,29 @@ class RunlistBGRateInjector(BGRateInjector):
         Parameters
         ----------
         %(BGRateInjector.init.parameters)s
-        runlist : str
-            Path to a valid good run runlist snapshot from [1]_ in JSON format.
-            Must have keys 'latest_snapshot' and 'runs'.
-        filter_runs : function
+        runlist : dict
+            Dict made from a good run runlist snapshot from [1]_ in JSON format.
+            Must have key 'runs' at top level which has a list that lists all
+            runs as dictionaries::
+
+                {
+                  "runs":[
+                        { ...,
+                          "good_tstart": "YYYY-MM-DD HH:MM:SS",
+                          "good_tstop": "YYYY-MM-DD HH:MM:SS",
+                          "run": 123456,
+                          ... },
+                        {...}, ..., {...}
+                    ]
+                }
+
+            Each run dict must at least have keys 'good_tstart', 'good_tstop'
+            and 'run'. Times are given in iso formatted strings and run numbers
+            as integers as shown above.
+        filter_runs : function, optional
             Filter function to remove unwanted runs from the goodrun list.
             Called as `filter_runs(run)`. Function must operate on a single
-            dictionary argument, with keys:
-            ['good_i3', 'good_it', 'good_tstart', 'good_tstop', 'run', 'sha',
-             'reason_i3', 'reason_it', 'source_tstart', 'source_tstop',
-             'snapshot'].
+            run dictionary element. If None, every run is used. (default: None)
 
         Notes
         -----
@@ -305,6 +318,10 @@ class RunlistBGRateInjector(BGRateInjector):
 
         # Create a goodrun list from the JSON snapshot
         runlist = os.path.abspath(runlist)
+        if filter_runs is None:
+            def filter_runs(run):
+                return True
+
         self._goodrun_dict = self.create_goodrun_dict(runlist, filter_runs)
 
         return
@@ -367,14 +384,11 @@ class RunlistBGRateInjector(BGRateInjector):
             Dictionary with run attributes as keys. The values are stored in
             arrays in each key.
         """
-        with open(runlist, 'r') as jsonFile:
-            goodruns = json.load(jsonFile)
-
-        if not all([k in goodruns.keys() for k in ["latest_snapshot", "runs"]]):
-            raise ValueError("Runlist misses 'latest_snapshot' or 'runs'")
+        if "runs" not in runlist.keys():
+            raise ValueError("Runlist misses key 'runs' on top level")
 
         # This is a list of dicts (one dict per run)
-        goodrun_list = goodruns["runs"]
+        goodrun_list = runlist["runs"]
 
         # Filter to remove unwanted runs
         goodrun_list = list(filter(filter_runs, goodrun_list))
@@ -387,9 +401,9 @@ class RunlistBGRateInjector(BGRateInjector):
 
         # Add times to MJD floats
         goodrun_dict["good_start_mjd"] = astrotime(
-            goodrun_dict["good_tstart"]).mjd
+            goodrun_dict["good_tstart"], format="iso").mjd
         goodrun_dict["good_stop_mjd"] = astrotime(
-            goodrun_dict["good_tstop"]).mjd
+            goodrun_dict["good_tstop"], format="iso").mjd
 
         # Add runtimes in MJD days
         goodrun_dict["runtime_days"] = (goodrun_dict["good_stop_mjd"] -
