@@ -79,16 +79,16 @@ class GRBLLH(object):
         Arguments for the energy PDF ratio. Must contain keys:
 
         - "bins", array-like: Explicit bin edges of the sinus declination vs
-          logE histogram used to fit a 2D spline describing the energy PDF
-          ratio. Must be [sin_dec_bins, logE_bins] in ranges [-1, 1] for sinus
-          declination and [-inf, +inf] for logE.
+          logE histogram used to interpolate the energy PDF ratio. Must be
+          [sin_dec_bins, logE_bins] in ranges [-1, 1] for sinus declination and
+          [-inf, +inf] for logE.
         - "gamma", float, optional: Spectral index of the power law
           :math:`E^{-\gamma}` used to weight MC to an astrophisical flux.
           (default: 2.)
         - "fillval", str, optional: What values to use, when the histogram has
           MC but no data in a bin. Then the gaps are filled, by assigning values
           to the histogram edges for low/high energies seprately and then
-          interpolating inside. Can be one of ['minmax'|'col'|'col'].
+          interpolating inside. Can be one of ['minmax'|'min'|'col'].
           When 'minmax' the lowest/highest ratio values are used at the edges.
           When 'min' only the lowest ratio value is used at the edges. When
           'col' the next valid value in each colum from the top/bottom is used.
@@ -174,7 +174,7 @@ class GRBLLH(object):
 
         sin_dec_bins = np.atleast_1d(self._energy_pdf_args["bins"][0])
         if np.any(sin_dec_bins < -1.) or np.any(sin_dec_bins > 1.):
-            raise ValueError("sinDec declination bins for energy spline not " +
+            raise ValueError("sinDec declination bins for energy hist not " +
                              "in valid range [-1, 1].")
         sin_dec = np.sin(X["dec"])
         if np.any((sin_dec < sin_dec_bins[0]) | (sin_dec > sin_dec_bins[-1])):
@@ -233,7 +233,7 @@ class GRBLLH(object):
 
         # Create energy PDF from global data and MC
         mc_sin_dec = np.sin(MC["trueDec"])
-        self._energy_spl = self._create_sin_dec_logE_spline(
+        self._energy_interpol = self._create_sin_dec_logE_interpolator(
             ev_sin_dec, X["logE"],
             mc_sin_dec, MC["logE"], MC["trueE"], MC["ow"])
 
@@ -717,7 +717,7 @@ class GRBLLH(object):
 
         # scipy.interpolate.RegularGridInterpolator takes shape (nevts, ndim)
         pts = np.vstack((ev_sin_dec[valid], ev_logE[[valid]])).T
-        sob[valid] = np.exp(self._energy_spl(pts))
+        sob[valid] = np.exp(self._energy_interpol(pts))
 
         return sob
 
@@ -828,15 +828,13 @@ class GRBLLH(object):
                                           ev_ra, ev_sin_dec, ev_sig,
                                           self._spatial_pdf_args["kent"])
 
-    def _create_sin_dec_logE_spline(self, ev_sin_dec, ev_logE,
-                                    mc_sin_dec, mc_logE, trueE, ow):
+    def _create_sin_dec_logE_interpolator(self, ev_sin_dec, ev_logE,
+                                          mc_sin_dec, mc_logE, trueE, ow):
         """
-        Create a 2D interpolating spline describing the energy signal over
-        background ratio.
+        Create a 2D interpolatinon describing the energy signal over background
+        ratio.
 
-        The spline is fitted to the *natural logarithm* of the histogram, to
-        avoid ringing. Normalization is done by normalizing the hist, so it may
-        be slightly off, but that's tolerable.
+        The interpolation is done in the *natural logarithm* of the histogram.
 
         Fit parameters are controlled by the `self._energy_pdf_args` dict.
 
@@ -929,7 +927,7 @@ class GRBLLH(object):
                 fi = sci.interp1d(x, y, kind="linear")
                 sob[i] = fi(mids[1])
 
-        # # Now fit a 2D interpolating spline to the ratio
+        # Now fit a 2D interpolating spline to the ratio
         spl = sci.RegularGridInterpolator(mids, np.log(sob), method="linear",
                                           bounds_error=False, fill_value=None)
         return spl
