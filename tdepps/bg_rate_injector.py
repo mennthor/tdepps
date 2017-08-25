@@ -164,7 +164,7 @@ class BGRateInjector(object):
     def sample(self, t, trange, poisson=True):
         """
         Generate random samples from the fitted model for multiple source event
-        times and corrseponding time frames at once.
+        times and corresponding time frames at once.
 
         Sample size can be drawn from a poisson distribution each time, with
         expectation value determined by the time window, so each call might
@@ -316,8 +316,6 @@ class RunlistBGRateInjector(BGRateInjector):
         """
         super(RunlistBGRateInjector, self).__init__(rate_func, random_state)
 
-        # Create a goodrun list from the JSON snapshot
-        runlist = os.path.abspath(runlist)
         if filter_runs is None:
             def filter_runs(run):
                 return True
@@ -373,7 +371,9 @@ class RunlistBGRateInjector(BGRateInjector):
     def create_goodrun_dict(self, runlist, filter_runs):
         """
         Create a dict of lists from a runlist in JSON format.
-        Each entry in each list is one run.
+
+        Each entry in each list is one run. Also make sure that the lists are
+        sorted ascending by run number.
 
         Parameters
         ----------
@@ -398,8 +398,11 @@ class RunlistBGRateInjector(BGRateInjector):
         # Convert the run list of dicts to a dict of arrays for easier handling
         goodrun_dict = dict(zip(goodrun_list[0].keys(),
                                 zip(*[r.values() for r in goodrun_list])))
+
+        # Dicts are not necessarly sorted, so sort lists after run id
+        idx = np.argsort(goodrun_dict["run"])
         for k in goodrun_dict.keys():
-            goodrun_dict[k] = np.array(goodrun_dict[k])
+            goodrun_dict[k] = np.asarray(goodrun_dict[k])[idx]
 
         # Add times to MJD floats
         goodrun_dict["good_start_mjd"] = astrotime(
@@ -445,19 +448,28 @@ class RunlistBGRateInjector(BGRateInjector):
         run = goodrun_dict["run"]
 
         tot_evts = 0
+        tot_mask = np.zeros_like(T, dtype=bool)
         # Histogram time values in each run manually
         evts = np.zeros_like(run, dtype=int)
         for i, (start, stop) in enumerate(zip(start_mjd, stop_mjd)):
-            mask = (T >= start) & (T < stop)
+            mask = (T >= start) & (T <= stop)
             evts[i] = np.sum(mask)
             tot_evts += np.sum(mask)
+            tot_mask = tot_mask | mask
 
         # Crosscheck, if we got all events and didn't double count
         if not tot_evts == len(T):
-            print("Events selected : ", tot_evts)
-            print("Events in T     : ", len(T))
-            raise ValueError("Not all events in 'T' were sorted in bins. If " +
-                             "this is intended, please remove them beforehand.")
+            t_left = T[~tot_mask]
+            idx_left = np.where(np.isin(T, t_left))
+            err = ("Not all events in 'T' were sorted in bins. If this is " +
+                   "intended, please remove them beforehand.\n")
+            err += "  Events selected : {}\n".format(tot_evts)
+            err += "  Events in T     : {}\n".format(len(T))
+            err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
+                ["{}".format(ti) for ti in t_left]))
+            err += "  Indices:\n    {}".format(", ".join(
+                ["{}".format(i) for i in idx_left]))
+            raise ValueError(err)
 
         if remove_zero_runs:
             # Remove all zero event runs and update livetime
