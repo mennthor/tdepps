@@ -36,6 +36,34 @@ def flatten_list_of_1darrays(l):
     return np.array([el for arr in l for el in arr])
 
 
+def is_sorted(arr, order="ascending"):
+    """
+    Check if an 1D array is sorted.
+
+    https://stackoverflow.com/questions/3755136
+
+    Parameters
+    ----------
+    arr : array-like
+        1D array which supports sorting operations on it's elements.
+    order : string, optional
+        Sorting order to check, can be ['ascending'|'descending'].
+        (default: 'ascending')
+
+    Retruns
+    -------
+    sorted : bool
+        True, if the array is sorted on the given oder, False if not.
+    """
+    if order == "descending":
+        arr = arr[::-1]
+    # Test if arr is sorted in ascending order
+    for i, item in enumerate(arr[1:]):
+        if item < arr[i]:
+            return False
+    return True
+
+
 def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
     """
     Populate dictionary with data from a given dict `d`, and check if `d` has
