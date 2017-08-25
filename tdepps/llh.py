@@ -769,7 +769,7 @@ class GRBLLH(object):
 
         PDF is uniform in right-ascension and described by a spline fitted to
         data in sinus declination. Outside of the definiton range, the PDF is
-        set to zero.
+        set to zero. The PDF is normalized is over the whole sphere in ra, dec.
 
         Parameters
         ----------
