@@ -140,7 +140,7 @@ class RateFunction(object):
                         sections=["Parameters"])
     @docs.dedent
     @abc.abstractmethod
-    def _get_default_seed(self, t, trange, rate_std):
+    def _get_default_seed(self, t, trange, w):
         """
         Default seed values for the specifiv RateFunction fit.
 
@@ -150,12 +150,9 @@ class RateFunction(object):
             MJD times of experimental data.
         rate : array-like, shape (len(t))
             Rates at given times `t` in Hz.
-        rate_std : array-like, shape(len(t)), optional
-            Standard deviations for each datapoint. If None, all are set to 1.
-            If rate_std is a good description of the standard deviation, then
-            the fit statistics follows a :math:`\chi^2` distribution. But for a
-            binned fit this makes less sense, because low standard deviation
-            means low statistics, so better use unweighted. (default: None)
+        w : array-like, shape(len(t)), optional
+            Weights for least squares fit: :math:`\sum_i (w_i * (y_i - f_i))^2`.
+            (default: None)
 
         Returns
         -------
@@ -168,7 +165,7 @@ class RateFunction(object):
     @docs.get_sectionsf("RateFunction.fit",
                         sections=["Parameters", "Returns"])
     @docs.dedent
-    def fit(self, t, rate, p0=None, rate_std=None, **kwargs):
+    def fit(self, t, rate, p0=None, w=None, **kwargs):
         """
         Fits the function parameters to experimental data using a weighted
         least squares fit.
@@ -182,12 +179,9 @@ class RateFunction(object):
         p0 : tuple, optional
             Seed values for the fit parameters. If None, default ones are used,
             that may or may not work. (default: None)
-        rate_std : array-like, shape(len(t)), optional
-            Standard deviations for each datapoint. If None, all are set to 1.
-            If rate_std is a good description of the standard deviation, then
-            the fit statistics follows a :math:`\chi^2` distribution. But for a
-            binned fit this makes less sense, because low standard deviation
-            means low statistics, so better use unweighted. (default: None)
+        w : array-like, shape(len(t)), optional
+            Weights for least squares fit: :math:`\sum_i (w_i * (y_i - f_i))^2`.
+            (default: None)
         kwargs
             Other keywords are passed to `scipy.optimize.minimize`.
 
@@ -196,14 +190,14 @@ class RateFunction(object):
         bf_pars : array-like
             Values of the best fit parameters.
         """
-        if rate_std is None:
-            rate_std = np.ones_like(rate)
+        if w is None:
+            w = np.ones_like(rate)
 
         if p0 is None:
-            p0 = self._get_default_seed(t, rate, rate_std)
+            p0 = self._get_default_seed(t, rate, w)
 
-        # t, rate and rate_std are fixed
-        args = (t, rate, rate_std)
+        # t, rate and w are fixed
+        args = (t, rate, w)
         res = sco.minimize(fun=self._lstsq, x0=p0, args=args, **kwargs)
 
         return res.x
@@ -217,24 +211,20 @@ class RateFunction(object):
         pars : tuple
             Fitparameter for `self.fun` that gets fitted.
         args : tuple
-            Fixed values `(t, rate, rate_std)` for the loss function:
+            Fixed values `(t, rate, w)` for the loss function:
 
             - t, array-like: See :py:meth:`RateFunction.fit`, Parameters
             - rate, array-like, shape (len(t)): See :py:meth:`RateFunction.fit`,
               Parameters
-            - rate_std, array-like, shape(len(t)): See
-              :py:meth:`RateFunction.fit`, Parameters
-
-            The weights are :math:`w_i = 1/\text{rate_std}_i` which is
-            equivalent to the weighted mean, when a constant is fitted.
+            - w, array-like, shape(len(t)): See :py:meth:`RateFunction.fit`,
+              Parameters
 
         Returns
         -------
         loss : float
             The weighted least squares loss for the given `pars` and `args`.
         """
-        t, rate, rate_std = args
-        w = 1 / rate_std
+        t, rate, w = args
         fun = self.fun(t, pars)
         return np.sum((w * (rate - fun))**2)
 
@@ -304,7 +294,7 @@ class SinusRateFunction(RateFunction):
         return
 
     @docs.dedent
-    def fit(self, t, rate, p0=None, rate_std=None, **kwargs):
+    def fit(self, t, rate, p0=None, w=None, **kwargs):
         """
         %(RateFunction.fit.summary)s
 
@@ -322,8 +312,7 @@ class SinusRateFunction(RateFunction):
         """
         # After fitting, cache the maximum of the pdf to avoid recalculating
         # that in the rejection sampling step
-        bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, rate_std,
-                                                     **kwargs)
+        bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, w, **kwargs)
 
         if self._t is not None:
             def negpdf(t):
@@ -414,7 +403,7 @@ class SinusRateFunction(RateFunction):
         return times
 
     @docs.dedent
-    def _get_default_seed(self, t, rate, rate_std):
+    def _get_default_seed(self, t, rate, w):
         """
         %(RateFunction._get_default_seed.summary)s
 
@@ -438,12 +427,12 @@ class SinusRateFunction(RateFunction):
             - a0 : :math:`(\max(\text{rate}) + \min(\text{rate})) / 2`
             - b0 : :math:`2\pi / 365`
             - c0 : :math:`\min(t)`
-            - d0 : `np.average(rate, weights=rate_std**2)`
+            - d0 : `np.average(rate, weights=w)`
         """
         a0 = 0.5 * (np.amax(rate) - np.amin(rate))
         b0 = 2. * np.pi / 365.
         c0 = np.amin(t)
-        d0 = np.average(rate, weights=rate_std**2)
+        d0 = np.average(rate, weights=w)
         return (a0, b0, c0, d0)
 
 
@@ -518,7 +507,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
         pars = (a, self._b, c, d)  # Just inject the fixed par in the super func
         return super(Sinus1yrRateFunction, self).integral(t, trange, pars)
 
-    def _get_default_seed(self, t, rate, rate_std):
+    def _get_default_seed(self, t, rate, w):
         """
         %(RateFunction._get_default_seed.summary)s
 
@@ -540,8 +529,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
             See :class:`Sinus1yrRateFunction._get_default_seed`, Returns.
             Here `b` is fixed, so only `(a0, c0, d0)` are returned.
         """
-        seed = super(Sinus1yrRateFunction, self)._get_default_seed(t, rate,
-                                                                   rate_std)
+        seed = super(Sinus1yrRateFunction, self)._get_default_seed(t, rate, w)
         # Drop b0 seed, as it's fixed to 1yr here
         return tuple(seed[i] for i in [0, 2, 3])
 
@@ -673,7 +661,7 @@ class ConstantRateFunction(RateFunction):
         return sample
 
     @docs.dedent
-    def _get_default_seed(self, t, rate, rate_std):
+    def _get_default_seed(self, t, rate, w):
         """
         %(RateFunction._get_default_seed.summary)s
 
