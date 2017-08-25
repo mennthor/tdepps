@@ -357,11 +357,13 @@ class RunlistBGRateInjector(BGRateInjector):
         h = self._create_runtime_hist(T, self._goodrun_dict, remove_zero_runs)
 
         rate = h["rate"]
-        rate_std = h["rate_std"]
+        # Use relativ poisson error as LSQ weights, but ignore empty bins
+        w = np.zeros_like(rate)
+        m = (rate > 0)
+        w[m] = rate[m] / np.sqrt(rate[m])
         binmids = 0.5 * (h["start_mjd"] + h["stop_mjd"])
 
-        resx = self._rate_func.fit(binmids, rate, p0=x0, rate_std=rate_std,
-                                   **kwargs)
+        resx = self._rate_func.fit(binmids, rate, p0=x0, w=w, **kwargs)
 
         # Set wrappers for functions with best fit pars plugged in and livetime
         # class variables as promised
@@ -502,7 +504,7 @@ class BinnedBGRateInjector(BGRateInjector):
         return
 
     @docs.dedent
-    def fit(self, tbins, rate, rate_std=None, x0=None, **kwargs):
+    def fit(self, tbins, rate, w=None, x0=None, **kwargs):
         """
         %(BGRateInjector.fit.summary)s
 
@@ -518,12 +520,9 @@ class BinnedBGRateInjector(BGRateInjector):
             second column is stop MJD for each run.
         rate : array-like, shape (nruns)
             Rates at given times `t` in Hz.
-        rate_std : array-like, shape(nruns), optional
-            Standard deviations for each datapoint. If None, all are set to 1.
-            If rate_std is a good description of the standard deviation, then
-            the fit statistics follows a :math:`\chi^2` distribution. But for a
-            binned fit this makes less sense, because low standard deviation
-            means low statistics, so better use unweighted. (default: None)
+        w : array-like, shape(nruns), optional
+            Weights for least squares fit: :math:`\sum_i (w_i * (y_i - f_i))^2`.
+            (default: None)
         x0 : array-like, optional
             Seed values for the fit function as described above. If None,
             defaults from `RateFunction` are used. (default: None)
@@ -542,8 +541,7 @@ class BinnedBGRateInjector(BGRateInjector):
         start_mjd = tbins[:, 0]
         stop_mjd = tbins[:, 1]
         binmids = 0.5 * (start_mjd + stop_mjd)
-        resx = self._rate_func.fit(binmids, rate, p0=x0, rate_std=rate_std,
-                                   **kwargs)
+        resx = self._rate_func.fit(binmids, rate, p0=x0, w=w, **kwargs)
 
         # Set wrappers for functions with best fit pars plugged in and livetime
         # class variables as promised
