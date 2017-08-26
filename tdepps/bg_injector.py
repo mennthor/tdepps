@@ -82,7 +82,7 @@ class BGInjector(object):
         ----------
         X : record-array
             Experimental data from which background-like event are generated.
-            dtypes are ["name", type]. Here X must have names:
+            Here X must have names:
 
             - "dec": Per event declination, [-pi/2, pi/2], coordinates in
               equatorial coordinates, given in radians.
@@ -474,10 +474,16 @@ class MRichmanBGInjector(BGInjector):
 
             (default: 10)
 
-        minmax : bool, optional
-            If True, use global min/max for outermost bin edges. Else use the
-            min/max bounds in current data bin. Can be used for a global
-            bounding box. (default: False)
+        minmax : bool or array-like, optional
+            Defines the outermost bin edges for the 2nd and 3rd feature:
+
+                - If False, use the min/max values in the current 1st (2nd)
+                  feature bin.
+                - If True, use the global min/max values per feature.
+                - If array-like: Use the given edges as global min/max values
+                  per feature. Must then have shape (3, 2).
+
+            (default: False)
 
         Returns
         -------
@@ -485,7 +491,7 @@ class MRichmanBGInjector(BGInjector):
             The bin borders for the first dimension.
         ax1_bins : array-like, shape (nbins[0], nbins[1] + 1)
             The bin borders for the second dimension.
-        ax2_bins : array-like, shape (nbins[0], nbins[1] nbins[2] + 1)
+        ax2_bins : array-like, shape (nbins[0], nbins[1], nbins[2] + 1)
             The bin borders for the third dimension.
         """
         def bin_equal_stats(data, nbins, minmax=None):
@@ -537,6 +543,10 @@ class MRichmanBGInjector(BGInjector):
         # Get bounding box, we sample the maximum distance in each direction
         if minmax is True:
             minmax = np.vstack((np.amin(X, axis=0), np.amax(X, axis=0))).T
+        elif type(minmax) == np.ndarray:
+            if minmax.shape != (self._n_features, 2):
+                raise ValueError("'minmax' must have shape (3, 2)" +
+                                 " if edges are given explicitely.")
         else:
             minmax = self._n_features * [None]
 
