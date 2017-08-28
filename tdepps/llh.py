@@ -9,7 +9,7 @@ import numpy as np
 import scipy.optimize as sco
 import scipy.interpolate as sci
 
-from .utils import fill_dict_defaults
+from .utils import fill_dict_defaults, power_law_flux_per_type
 import tdepps.backend as backend
 
 
@@ -59,10 +59,10 @@ class GRBLLH(object):
         contain the same names as `X` and additionaly the MC truths:
 
         - "trueE", float: True event energy in GeV.
-        - "ow", float: Per event "neutrino generator (NuGen)" OneWeight [2]_,
-          already divided by `nevts * nfiles` known from SimProd.
-          Units are "GeV sr cm^2". Final event weights are obtained by
-          multiplying with desired flux.
+        - "ow", float: Per event 'neutrino generator' OneWeight [2]_,
+          so it is already divided by `nevts * nfiles * ptype`.
+          Units are 'GeV sr cm^2'. Final event weights are obtained by
+          multiplying with desired flux per particle type.
 
     spatial_pdf_args : dict
         Arguments for the spatial signal and background PDF. Must contain keys:
@@ -866,7 +866,7 @@ class GRBLLH(object):
 
         # Weight MC to power law *shape* only, because we normalize anyway to
         # get a PDF
-        mc_w = ow * trueE**(-gamma)
+        mc_w = ow * power_law_flux_per_type(trueE, gamma)
 
         # Make 2D hist from data and from MC, using the same binning
         mc_h, _, _ = np.histogram2d(mc_sin_dec, mc_logE, bins=bins,
@@ -949,8 +949,8 @@ class GRBLLH(object):
             create the spline on simulation data. Must then have keys:
 
             - "trueE", array: True energy in GeV from MC simulation.
-            - "ow", array: Neutrino generator oneweights, already divided by the
-              number of generated events.
+            - "ow", array: Per event 'neutrino generator' OneWeight already
+              divided by `nevts * nfiles * ptype`.
 
             (default: None)
 
@@ -959,7 +959,6 @@ class GRBLLH(object):
         sin_dec_spl : scipy.interpolate.InterpolatingSpline
             Spline object interpolating the created histogram. Must be evaluated
             with sin(dec) and exponentiated to give the correct PDF values.
-
         """
         k = self._spatial_pdf_args["k"]
 
@@ -968,7 +967,7 @@ class GRBLLH(object):
         if mc is not None:
             # Weight MC to power law shape only, because we normalize anyway
             gamma = self._energy_pdf_args["gamma"]
-            weights = mc["ow"] * mc["trueE"]**(-gamma)
+            weights = mc["ow"] * power_law_flux_per_type(mc["trueE"], gamma)
         else:
             weights = np.ones_like(sin_dec)
 
