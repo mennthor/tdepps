@@ -60,7 +60,7 @@ class GRBLLH(object):
 
         - "trueE", float: True event energy in GeV.
         - "ow", float: Per event 'neutrino generator' OneWeight [2]_,
-          so it is already divided by `nevts * nfiles * ptype`.
+          so it is already divided by `nevts * nfiles * type_weight`.
           Units are 'GeV sr cm^2'. Final event weights are obtained by
           multiplying with desired flux per particle type.
 
@@ -950,7 +950,7 @@ class GRBLLH(object):
 
             - "trueE", array: True energy in GeV from MC simulation.
             - "ow", array: Per event 'neutrino generator' OneWeight already
-              divided by `nevts * nfiles * ptype`.
+              divided by `nevts * nfiles * type_weight`.
 
             (default: None)
 
