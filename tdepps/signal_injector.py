@@ -103,12 +103,14 @@ class SignalInjector(object):
 
     def nevts_to_fluence(self, n, per_source=False):
         """
-        Convert a given number of events to the corresponding fluence in
-        [GeV^-1 cm^-2 sr^-1].
+        Convert a given number of events to the corresponding fluence
+        normalization :math:`F_0` in units [GeV^-1 cm^-2 sr^-1].
 
-        The connection between fluence F and number of events n is:
+        The connection between :math:`F_0` and the number of events n is:
 
-        .. math: n = F \cdot
+        .. math: n = F_0 \sum_i \hat{w}_i
+
+        where the sum over the weights gives the fluence of the injected events.
 
         Parameters
         ----------
@@ -122,7 +124,7 @@ class SignalInjector(object):
         -------
         fluence : float or array-like
             If `per_source` is true the total fluence for all sources, otherwise
-            the fluence per source.
+            the fluence per source. Fluence is in unit [GeV^-1 cm^-2].
         """
         fluence = n / self._raw_fluence
         if per_source:
@@ -379,7 +381,7 @@ class SignalInjector(object):
 
         We then get the number of expected events n as
 
-        .. math: n = \sum_i w_i = F_0 \hat{w}_i
+        .. math: n = \sum_i w_i = F_0 \sum_i \hat{w}_i
 
         where the free to choose normalization F_0 is explicetly written in the
         last step. See :py:meth:`nevts_to_fluence` which calculates the fluence
