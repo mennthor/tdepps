@@ -101,6 +101,37 @@ class SignalInjector(object):
     def rndgen(self, random_state):
         self._rndgen = check_random_state(random_state)
 
+    def nevts_to_fluence(self, n, per_source=False):
+        """
+        Convert a given number of events to the corresponding fluence in
+        [GeV^-1 cm^-2 sr^-1].
+
+        The connection between fluence F and number of events n is:
+
+        .. math: n = F \cdot
+
+        Parameters
+        ----------
+        n : float
+            Number of events.
+        per_source : bool, optional
+            If True, return the fluence per source, which is the total fluence
+            weighted by the intrinsic weights per source. (default: False)
+
+        Returns
+        -------
+        fluence : float or array-like
+            If `per_source` is true the total fluence for all sources, otherwise
+            the fluence per source.
+        """
+        fluence = n / self._raw_fluence
+        if per_source:
+            w_theo = self._srcs["w_theo"]
+            w_theo /= np.sum(w_theo)
+            return w_theo * fluence
+        else:
+            return fluence
+
     def fit(self, srcs, MC, exp_names):
         """
         Fill injector with Monte Carlo events, preselecting events around the
