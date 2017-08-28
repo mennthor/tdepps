@@ -4,7 +4,7 @@ import numpy as np
 from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
 
-from .utils import flatten_list_of_1darrays, rotator
+from .utils import flatten_list_of_1darrays, rotator, power_law_flux_per_type
 
 
 class SignalInjector(object):
@@ -132,10 +132,10 @@ class SignalInjector(object):
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
-            - 'ow', float: Per event 'neutrino generator (NuGen)' OneWeight
-              [2]_, already divided by `nevts * nfiles` known from SimProd.
+            - 'ow', float: Per event 'neutrino generator' OneWeight [2]_,
+              so it is already divided by `nevts * nfiles * ptype`.
               Units are 'GeV sr cm^2'. Final event weights are obtained by
-              multiplying with desired flux.
+              multiplying with desired flux per particle type.
 
         exp_names : tuple of strings
             All names in the experimental data record array used for other
@@ -367,7 +367,8 @@ class SignalInjector(object):
         w = []
         for enum, mc_i in self._MC.items():  # Select again per sample
             idx = self._mc_arr[self._mc_arr["enum"] == enum]["ev_idx"]
-            w.append((mc_i["ow"][idx] * mc_i["trueE"][idx]**(-self._gamma)))
+            flux = power_law_flux_per_type(mc_i["trueE"][idx], self._gamma)
+            w.append(mc_i["ow"][idx] * flux)
 
         w = flatten_list_of_1darrays(w)
         assert len(w) == len(self._mc_arr)
