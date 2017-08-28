@@ -164,7 +164,7 @@ class SignalInjector(object):
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
             - 'ow', float: Per event 'neutrino generator' OneWeight [2]_,
-              so it is already divided by `nevts * nfiles * ptype`.
+              so it is already divided by `nevts * nfiles * type_weight`.
               Units are 'GeV sr cm^2'. Final event weights are obtained by
               multiplying with desired flux per particle type.
 
@@ -359,32 +359,31 @@ class SignalInjector(object):
         """
         Setup per event sampling weights from the oneweights.
 
-        Physics weights per event (in Hz) are the ratio of expected fluence
-        to the generated fluence per event:
+        Physics weights are calculated for a simple unbroken power law fluence:
+
+        .. math: dF/dE = F_0 (E / GeV)^{-\gamma}
+
+        with the normalization :math:`F_0` at 1 GeV with units [GeV^-1 cm^-2].
+
+        Because we inject only from a fraction of the sky per GRB the per event
+        physics weight are calculated using:
 
         .. math:
 
-          w_i &= \frac{dF_i / (\text{GeV cm}^2\text{ s sr})}
-                      {dF^0_i / (\text{GeV cm}^2\text{ sr})} \\
-              &= \frac{\text{ow}_i}{N_\text{gen}} \cdot \Phi
-                 \frac{E_i^{-\gamma}}{\Omega_\text{inj}}
+           w_i = \left(\text{OneWeight} \right.\frac{dF}{dE}\right|_{E_i}\right)
+                 \times \frac{1}{\Omega_i}
 
-        because OneWeight :math:`ow` is defined as the inverse generating flux
-        times the nugen specific interaction probability. :math:`\Phi` is the
-        fluence normalization in (GeV cm^2) we search for by injecting events to
-        pure background and see how the TS transfroms.
+        Where :math:`\Omega_i` is the injected solid angle for the GRB the event
+        is injected at and OneWeight is the NuGen one weight per type already
+        divided by `nfiles * nevents * type_weight`
 
-        Detector acceptance weights are automatically accounted for in the
-        Monte Carlo sample. It simply has more events in regions with higher
-        acceptance.
+        We then get the number of expected events n as
 
-        Also different acceptances in different samples are already taken care
-        of with the OneWeight factorm which is already divided by the number of
-        generated events per sample. So if the acceptance was lower the
-        simulation just threw away more events resulting in lower OneWeights.
+        .. math: n = \sum_i w_i = F_0 \hat{w}_i
 
-        So we only include the theoretical weights here manually by multiplying
-        the events belonging to each source with the sources theoretical weight.
+        where the free to choose normalization F_0 is explicetly written in the
+        last step. See :py:meth:`nevts_to_fluence` which calculates the fluence
+        from a given number of events from that relation.
         """
         w_theo = self._srcs["w_theo"]
         w_theo /= np.sum(w_theo)
