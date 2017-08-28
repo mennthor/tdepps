@@ -13,6 +13,26 @@ import numpy as np
 import scipy.optimize as sco
 
 
+def power_law_flux_per_type(self, trueE, gamma):
+    """
+    Returns the unbroken power law flux per particle type (nu, anti-nu),
+    without a normalization.
+
+    Parameters
+    ----------
+    trueE : array-like
+        True particle energy in GeV.
+    gamma : float
+        Positive power law index.
+
+    Returns
+    -------
+    flux : array-like
+        Per particle flux :math:`\phi = 0.5 * E^{-\gamma}`
+    """
+    return 0.5 * trueE**(-self._gamma)
+
+
 def flatten_list_of_1darrays(l):
     """
     Flattens a list of 1d ndarrays with different lenghts to a single 1D array.
