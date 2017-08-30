@@ -231,6 +231,11 @@ class SignalInjector(object):
         self._nsrcs = len(srcs)
         self._set_solid_angle()
 
+        # Check if sin_dec_range is OK with the used source positions
+        if (np.any(np.sin(srcs["dec"]) < self._sin_dec_range[0]) |
+                np.any(np.sin(srcs["dec"]) > self._sin_dec_range[1])):
+            raise ValueError("Source position(s) outside dec range.")
+
         # Store selected event ids in mc_arr to sample from a single array
         # ev_idx: event ID per sam., src_idx: src ID per sam., enum: sample ID
         # ev_idx : [ 1, 5,11,47,58,66,70,93, ..., 0, 4, 7,12,24,71,86, ...]
