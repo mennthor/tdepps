@@ -1,5 +1,10 @@
 # coding: utf-8
 
+from __future__ import division, print_function, absolute_import
+from builtins import dict, int
+from future import standard_library
+standard_library.install_aliases()
+
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
@@ -198,7 +203,7 @@ class SignalInjector(object):
         for n in MC_names:
             for key, mc_i in MC.items():
                 if n not in mc_i.dtype.names:
-                    e = "MC sample '{}' is missing name '{}'.".format(n, key)
+                    e = "MC sample '{}' is missing name '{}'.".format(key, n)
                     raise ValueError(e)
 
         self._exp_names = exp_names
