@@ -38,12 +38,17 @@ class SignalInjector(object):
         centered at the source positions in radian.
         If ``mode`` is ``circle`` this is the radius of the circle in radian.
         (default: ``np.deg2rad(2)``)
+    sin_dec_range : array-like, shape (2), optional
+        Boundaries for which injected events are discarded, when their rotated
+        coordinates are outside this bounds. Is useful, when a zenith cut is
+        used and the PDFs are not defined on the whole sky.
+        (default: ``[-1, 1]``)
     random_state : seed, optional
         Turn seed into a ``np.random.RandomState`` instance. See
         ``sklearn.utils.check_random_state``. (default: None)
     """
     def __init__(self, gamma, mode="band", inj_width=np.deg2rad(2),
-                 random_state=None):
+                 sin_dec_range=[-1., 1.], random_state=None):
         # Public class members (settable only by constructor)
         if (gamma < 1.) or (gamma > 4.):
             raise ValueError("`gamma` in doubtful range, must be in [1, 4].")
@@ -56,6 +61,10 @@ class SignalInjector(object):
         if (inj_width <= 0.) or (inj_width > np.pi):
             raise ValueError("Injection width must be in (0, pi].")
         self._inj_width = inj_width
+
+        if (sin_dec_range[0] < -1.) or (sin_dec_range[1] > 1.):
+            raise ValueError("`sin_dec_range` must be range [a, b] in [-1, 1].")
+        self._sin_dec_range = sin_dec_range
 
         self._mc_arr = None
         self.rndgen = random_state
@@ -93,6 +102,10 @@ class SignalInjector(object):
     @property
     def inj_width(self):
         return self._inj_width
+
+    @property
+    def sin_dec_range(self):
+        return self._sin_dec_range
 
     @property
     def mc_arr(self):
@@ -500,6 +513,11 @@ class SignalInjector(object):
         MC["sinDec"] = np.sin(_dec)
         if "dec" in MC.dtype.names:
             MC["dec"] = _dec
+
+        # Remove events that got rotated outside the sin_dec_range
+        m = ((MC["sinDec"] < self._sin_dec_range[0]) |
+             (MC["sinDec"] > self._sin_dec_range[1]))
+        MC = MC[m]
 
         # Remove all names not in experimental data (= remove MC attributes)
         drop_names = [n for n in MC.dtype.names if n not in self._exp_names]
