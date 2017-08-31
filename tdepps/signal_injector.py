@@ -77,7 +77,7 @@ class SignalInjector(object):
 
         self._min_dec = None
         self._max_dec = None
-        self._sin_dec_range = np.array([-1., 1.])
+        self._sin_dec_range = np.atleast_1d(sin_dec_range)
         self._omega = None
 
         self._raw_flux = None
@@ -234,7 +234,7 @@ class SignalInjector(object):
         # Check if sin_dec_range is OK with the used source positions
         if (np.any(np.sin(srcs["dec"]) < self._sin_dec_range[0]) |
                 np.any(np.sin(srcs["dec"]) > self._sin_dec_range[1])):
-            raise ValueError("Source position(s) outside dec range.")
+            raise ValueError("Source position(s) outside `sin_dec_range`.")
 
         # Store selected event ids in mc_arr to sample from a single array
         # ev_idx: event ID per sam., src_idx: src ID per sam., enum: sample ID
@@ -342,11 +342,10 @@ class SignalInjector(object):
         src_t = self._srcs["t"]
         src_dt = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
 
+        n = int(np.around(mean_mu))
         while True:
             if poisson:
                 n = self._rndgen.poisson(mean_mu, size=1)
-            else:
-                n = int(np.around(mean_mu))
 
             # If n=0 (no events get sampled) return None
             if n < 1:
@@ -362,11 +361,11 @@ class SignalInjector(object):
             if len(enums) == 1 and enums[0] < 0:
                 sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
                 src_idx = sam_idx['src_idx']
-                sam_ev = self._rot_and_strip(
+                sam_ev, m = self._rot_and_strip(
                     src_ra[src_idx], src_dec[src_idx], sam_ev)
                 sam_ev["timeMJD"] = self._sample_times(
-                    src_t[src_idx], src_dt[src_idx])
-                yield n, sam_ev, sam_idx
+                    src_t[src_idx], src_dt[src_idx])[m]
+                yield n, sam_ev, sam_idx[m]
                 continue
 
             # Else return same dict structure as used in fit
@@ -377,13 +376,12 @@ class SignalInjector(object):
                 sam_ev_i = np.copy(self._MC[enum][idx])
                 # Broadcast corresponding sources for correct rotation
                 src_idx = sam_idx[sam_idx["enum"] == enum]["src_idx"]
-                sam_ev[enum] = self._rot_and_strip(src_ra[src_idx],
-                                                   src_dec[src_idx],
-                                                   sam_ev_i)
+                sam_ev[enum], m = self._rot_and_strip(
+                    src_ra[src_idx], src_dec[src_idx], sam_ev_i)
                 sam_ev[enum]["timeMJD"] = self._sample_times(
-                    src_t[src_idx], src_dt[src_idx])
+                    src_t[src_idx], src_dt[src_idx])[m]
 
-            yield n, sam_ev, sam_idx
+            yield n, sam_ev, sam_idx[m]
 
     def _set_sampling_weights(self):
         """
@@ -510,6 +508,10 @@ class SignalInjector(object):
         --------
         ev : structured array
             Array with rotated values, true MC information is deleted
+        m : array-like
+            Boolean mask, ``False`` for events that got rotated outside the
+            ``sin_dec_range`` and are thus filtered out. Must be applied to the
+            sampled times.
         """
         MC["ra"], _dec = rotator(MC["trueRa"], MC["trueDec"],
                                  src_ras, src_decs,
@@ -520,13 +522,13 @@ class SignalInjector(object):
             MC["dec"] = _dec
 
         # Remove events that got rotated outside the sin_dec_range
-        m = ((MC["sinDec"] < self._sin_dec_range[0]) |
-             (MC["sinDec"] > self._sin_dec_range[1]))
+        m = ((MC["sinDec"] >= self._sin_dec_range[0]) &
+             (MC["sinDec"] <= self._sin_dec_range[1]))
         MC = MC[m]
 
         # Remove all names not in experimental data (= remove MC attributes)
         drop_names = [n for n in MC.dtype.names if n not in self._exp_names]
-        return drop_fields(MC, drop_names)
+        return drop_fields(MC, drop_names), m
 
     def _sample_times(self, src_t, dt):
         """
