@@ -429,10 +429,11 @@ class SignalInjector(object):
         for enum, mc_i in self._MC.items():  # Select again per sample
             idx = self._mc_arr[self._mc_arr["enum"] == enum]["ev_idx"]
             flux = power_law_flux_per_type(mc_i["trueE"][idx], self._gamma)
-            w.append(w_theo[idx] * mc_i["ow"][idx] * flux)
+            w.append(mc_i["ow"][idx] * flux)
 
         # Finalize by dividing with per event injection solid angle
         w = flatten_list_of_1darrays(w)
+        w *= w_theo
         w /= omega
         assert len(w) == len(self._mc_arr)
 
