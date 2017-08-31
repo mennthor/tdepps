@@ -126,9 +126,10 @@ class SignalInjector(object):
 
         The connection between :math:`F_0` and the number of events ``mu`` is:
 
-        .. math:: \mu = F_0 \sum_i \hat{w}_i = \sum_i w_i
+        .. math:: F_0 = \mu / \sum_i \hat{w}_i
 
-        where the sum over the weights :math:`w_i` gives the number of events.
+        where :math:`F_0 \sum_i \hat{w}_i` would gives the number of events. The
+        weights :math:`w_i` are calculated in :py:meth:`_set_sampling_weights`.
 
         Parameters
         ----------
@@ -151,6 +152,18 @@ class SignalInjector(object):
             return flux * w_theo
         else:
             return flux
+
+    def flux2mu(self, flux):
+        """
+        Calculates the number of events ``mu`` corresponding to a given particle
+        flux for the current setup:
+
+        .. math:: \mu = F_0 \sum_i \hat{w}_i
+
+        where :math:`F_0 \sum_i \hat{w}_i` would gives the number of events. The
+        weights :math:`w_i` are calculated in :py:meth:`_set_sampling_weights`.
+        """
+        return flux * self._raw_flux
 
     def fit(self, srcs, MC, exp_names):
         """
@@ -401,12 +414,13 @@ class SignalInjector(object):
 
         .. math::
 
-          w_i = \frac{[\text{ow}]_i}{\Omega_i} \times
-                \left.\frac{dF}{dE}\right|_{E_i} \times w_\text{src}
+          w_i = [\text{ow}]_i \times \left.\frac{dF}{dE}\right|_{E_i} \times
+                \frac{w_\text{src}}{\Omega_\text{src}}
 
-        where :math:`\Omega_i` is the injected solid angle for the GRB the event
-        is injected at and OneWeight is the NuGen one weight per type already
-        divided by ``nfiles * nevents * type_weight``.
+        where ``Omega_src``/``w_src`` is the injected solid angle/intrinsic
+        weight for the GRB the event :math:`i` is injected at and ``ow`` is the
+        NuGen OneWeight per type already divided by
+        ``nfiles * nevents * type_weight``.
 
         We then get the number of expected events n as
 
