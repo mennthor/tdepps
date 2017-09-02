@@ -107,22 +107,7 @@ setup(
     long_description="",
     ext_modules=ext_modules,
     install_requires=["numpy", "scipy", "scikit-learn", "pybind11>=1.7",
-                      "future"],
+                      "future", "tqdm", "docrep"],
     cmdclass={"build_ext": BuildExt},
     zip_safe=False,
 )
-
-
-
-from setuptools import setup
-
-setup(name='tdepps',
-      version='0.1',
-      description='Time Dependent Point Source Analysis',
-      author='Thorben Menne',
-      author_email='thorben.menne@tu-dortmund.de',
-      url='github.com/mennthor/tdepps',
-      packages=['tdepps'],
-      install_requires=['numpy', 'scipy', 'scikit-learn', 'docrep'],
-      )
-
