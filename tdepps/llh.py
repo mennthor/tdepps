@@ -994,27 +994,38 @@ class GRBLLH(object):
         rep = "GRBLLH object\n"
         rep += "-------------\n\n"
 
+        def shorten(val, cut=20):
+            """Shorten lengthy arguments for print"""
+            try:
+                length = len(val)
+            except TypeError:
+                length = 1
+            if length > cut:
+                val = ("{}".format(val[:int(cut / 2)]).replace("]", "") +
+                       " ... {}".format(val[-int(cut / 2):]).replace("[", ""))
+            return val
+
         rep += "Spatial PDF settings:\n"
         for key, val in self._spatial_pdf_args.items():
-            rep += "  - {:12s} : {}\n".format(key, val)
+            rep += "  - {:12s} : {}\n".format(key, shorten(val))
 
         rep += "\n"
 
         rep += "Time PDF settings:\n"
         for key, val in self._time_pdf_args.items():
-            rep += "  - {:12s} : {}\n".format(key, val)
+            rep += "  - {:12s} : {}\n".format(key, shorten(val))
 
         rep += "\n"
 
         rep += "Energy PDF settings:\n"
         for key, val in self._energy_pdf_args.items():
-            rep += "  - {:12s} : {}\n".format(key, val)
+            rep += "  - {:12s} : {}\n".format(key, shorten(val))
 
         rep += "\n"
 
         rep += "LLH settings:\n"
         for key, val in self._llh_args.items():
-            rep += "  - {:12s} : {}\n".format(key, val)
+            rep += "  - {:12s} : {}\n".format(key, shorten(val))
 
         return rep
 
