@@ -9,8 +9,7 @@ import numpy as np
 import scipy.optimize as sco
 from sklearn.utils import check_random_state
 
-from .utils import (rejection_sampling, func_min_in_interval,
-                    flatten_list_of_1darrays)
+from .utils import rejection_sampling, func_min_in_interval
 
 import abc     # Abstract Base Class
 import docrep  # Reuse docstrings
@@ -321,7 +320,7 @@ class SinusRateFunction(RateFunction):
             _fmax = []
             for bound in self._trange:
                 _fmax.append(-1. * func_min_in_interval(negpdf, bound))
-            self._fmax = flatten_list_of_1darrays(_fmax)
+            self._fmax = np.concatenate(_fmax, axis=0)
 
         return bf_pars
 

@@ -34,29 +34,6 @@ def power_law_flux_per_type(trueE, gamma):
     return 0.5 * trueE**(-gamma)
 
 
-def flatten_list_of_1darrays(l):
-    """
-    Flattens a list of 1d ndarrays with different lenghts to a single 1D array.
-
-    Parameters
-    ----------
-    l : list of 1d arrays
-        Arrays can have different lenghts but must be 1d.
-
-    Returns
-    -------
-    arr : array-like
-        1d output array. Length is the combined length of all arrays in list.
-
-    Example
-    -------
-    >>> l = [np.array([1, 2]), np.array([]), np.array([3]), np.array([])]
-    >>> arr = flatten_list_of_1darrays(l)
-    array([1, 2, 3])
-    """
-    return np.array([el for arr in l for el in arr])
-
-
 def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
     """
     Populate dictionary with data from a given dict `d`, and check if `d` has

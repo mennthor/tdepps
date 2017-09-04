@@ -9,7 +9,7 @@ import numpy as np
 from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
 
-from .utils import flatten_list_of_1darrays, rotator, power_law_flux_per_type
+from .utils import rotator, power_law_flux_per_type
 
 
 class SignalInjector(object):
@@ -446,7 +446,7 @@ class SignalInjector(object):
             w.append(mc_i["ow"][idx] * flux)
 
         # Finalize by dividing with per event injection solid angle
-        w = flatten_list_of_1darrays(w)
+        w = np.concatenate(w, axis=0)
         w *= w_theo
         w /= omega
         assert len(w) == len(self._mc_arr)
