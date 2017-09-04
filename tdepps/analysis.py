@@ -81,7 +81,7 @@ class TransientsAnalysis(object):
         self._llh = llh
 
     def do_trials(self, n_trials, ns0, bg_inj, bg_rate_inj, signal_inj=None,
-                  minimizer_opts=None, verb=True):
+                  minimizer_opts=None, verb=False):
         """
         Do pseudo experiment trials using only background-like events from the
         given event injectors.
