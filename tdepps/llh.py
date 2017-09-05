@@ -81,7 +81,7 @@ class GRBLLH(object):
         - "bins", array-like: Explicit bin edges of the sinus declination vs
           logE histogram used to interpolate the energy PDF ratio. Must be
           [sin_dec_bins, logE_bins] in ranges [-1, 1] for sinus declination and
-          [-inf, +inf] for logE.
+          [-inf, +inf] for logE (logspace bins).
         - "gamma", float, optional: Spectral index of the power law
           :math:`E^{-\gamma}` used to weight MC to an astrophisical flux.
           (default: 2.)
@@ -1000,7 +1000,7 @@ class GRBLLH(object):
         rep = "GRBLLH object\n"
         rep += "-------------\n\n"
 
-        def shorten(val, cut=20):
+        def shorten(val, cut=10):
             """Shorten lengthy arguments for print"""
             try:
                 length = len(val)
