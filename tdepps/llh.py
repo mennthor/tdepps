@@ -85,6 +85,8 @@ class GRBLLH(object):
         - "gamma", float, optional: Spectral index of the power law
           :math:`E^{-\gamma}` used to weight MC to an astrophisical flux.
           (default: 2.)
+        - "mc_bg_weights", array-like or None: If not ``None`` also use MC for
+          the BG histogram weighted to the given weights. If ``None``, use data.
         - "fillval", str, optional: What values to use, when the histogram has
           MC but no data in a bin. Then the gaps are filled, by assigning values
           to the histogram edges for low/high energies seprately and then
@@ -133,6 +135,7 @@ class GRBLLH(object):
     def __init__(self, X, MC, spatial_pdf_args, energy_pdf_args,
                  time_pdf_args=None, llh_args=None):
         # Check if data, MC have all needed names
+        #  X Doesn't need logE if MC BG weights are given, but leave it for now.
         X_names = ["sinDec", "logE"]
         for n in X_names:
             if n not in X.dtype.names:
@@ -154,15 +157,16 @@ class GRBLLH(object):
         bins = np.atleast_1d(self._spatial_pdf_args["bins"])
         if np.any(bins < -1) or np.any(bins > 1):
             raise ValueError("Bins for BG spline not in valid range [-1, 1].")
-        sin_dec = np.sin(X["dec"])
-        if np.any(sin_dec < bins[0]) or np.any(sin_dec > bins[-1]):
+        if np.any(X["sinDec"] < bins[0]) or np.any(X["sinDec"] > bins[-1]):
             raise ValueError("sinDec data events outside given bins. If this" +
                              "is intended, please remove them beforehand.")
         self._spatial_pdf_args["bins"] = bins
 
         # Setup energy PDF args
         required_keys = ["bins"]
-        opt_keys = {"gamma": 2., "fillval": "min", "interpol_log": False}
+        opt_keys = {"gamma": 2., "mc_bg_weights": None, "fillval": "minmax_col",
+                    "interpol_log": False, "smooth_sigma": [[0., 0.], [0., 0.]],
+                    "logE_asc": True}
         self._energy_pdf_args = fill_dict_defaults(energy_pdf_args,
                                                    required_keys, opt_keys)
         if self._energy_pdf_args["fillval"] not in ["minmax", "col", "min"]:
@@ -171,25 +175,44 @@ class GRBLLH(object):
         if len(self._energy_pdf_args["bins"]) != 2:
             raise ValueError("Bins for energy hist must be of format " +
                              "[sin_dec_bins, logE_bins].")
-
         sin_dec_bins = np.atleast_1d(self._energy_pdf_args["bins"][0])
+        logE_bins = np.atleast_1d(self._energy_pdf_args["bins"][1])
         if np.any(sin_dec_bins < -1.) or np.any(sin_dec_bins > 1.):
             raise ValueError("sinDec declination bins for energy hist not " +
                              "in valid range [-1, 1].")
-        sin_dec = np.sin(X["dec"])
-        if np.any((sin_dec < sin_dec_bins[0]) | (sin_dec > sin_dec_bins[-1])):
-            raise ValueError("sinDec data events outside given bins. If this" +
-                             "is intended, please remove them beforehand.")
-        sin_dec = np.sin(MC["dec"])
-        if np.any((sin_dec < sin_dec_bins[0]) | (sin_dec > sin_dec_bins[-1])):
-            raise ValueError("sinDec MC events outside given bins. If this" +
-                             "is intended, please remove them beforehand.")
+        self._energy_pdf_args["bins"] = [sin_dec_bins, logE_bins]
 
-        ev_logE = X["logE"]
-        logE_bins = np.atleast_1d(self._energy_pdf_args["bins"][1])
-        if np.any(ev_logE < logE_bins[0]) or np.any(ev_logE > logE_bins[-1]):
-            raise ValueError("logE MC events outside given bins. If this " +
-                             "is intended, please remove them beforehand.")
+        mc_bg_w = self._energy_pdf_args["mc_bg_weights"]
+        if mc_bg_w is None:  # Check both data and MC
+            for sd, name in zip([X["sinDec"], MC["sinDec"]], ["data", "MC"]):
+                if np.any((sd < sin_dec_bins[0]) | (sd > sin_dec_bins[-1])):
+                    raise ValueError("sinDec " + name + " events outside " +
+                                     "given bins for energy hist. If this is " +
+                                     "intended, please remove them beforehand.")
+            for logE, name in zip([X["logE"], MC["logE"]], ["data", "MC"]):
+                if np.any((logE < logE_bins[0]) | (logE > logE_bins[-1])):
+                    raise ValueError("logE " + name + " events outside " +
+                                     "given bins for energy hist. If this is " +
+                                     "intended, please remove them beforehand.")
+            sin_dec_bg, logE_bg, w_bg = X["sinDec"], X["logE"], np.ones(len(X))
+        else:  # Only need to check MC, building 2D hist on MC only
+            if len(mc_bg_w) != len(MC):
+                raise ValueError("Length of MC BG weights and MC must match.")
+            if np.any((MC["sinDec"] < sin_dec_bins[0]) |
+                      (MC["sinDec"] > sin_dec_bins[-1])):
+                raise ValueError("sinDec MC events outside given bins for " +
+                                 "energy hist. If this is intended, please " +
+                                 "remove them beforehand.")
+            if np.any((MC["logE"] < logE_bins[0]) |
+                      (MC["logE"] > logE_bins[-1])):
+                raise ValueError("logE MC events outside given bins for " +
+                                 "energy hist. If this is intended, please " +
+                                 "remove them beforehand.")
+            sin_dec_bg, logE_bg, w_bg = MC["sinDec"], MC["logE"], mc_bg_w
+
+        sin_dec_sig, logE_sig = MC["sinDec"], MC["logE"]
+        w_sig = MC["ow"] * power_law_flux_per_type(
+            MC["trueE"], self._energy_pdf_args["gamma"])
 
         self._energy_pdf_args["bins"][0] = sin_dec_bins
         self._energy_pdf_args["bins"][1] = logE_bins
@@ -222,27 +245,21 @@ class GRBLLH(object):
             raise ValueError("'sob_abs_eps' must be >= 0.")
 
         # Setup common variables
-        self._energy_pdf_args["bins"] = [sin_dec_bins, logE_bins]
         self._SECINDAY = 24. * 60. * 60.
 
-        # Create background spline used in the spatial PDF from global data
-        ev_sin_dec = X["sinDec"]
-        ev_bins = self._spatial_pdf_args["bins"]
+        # Create background spline used in the spatial PDF from data
         self._spatial_bg_spl = self._create_sin_dec_spline(
-            sin_dec=ev_sin_dec, bins=ev_bins, mc=None)
+            sin_dec=X["sinDec"], bins=self._spatial_pdf_args["bins"],
+            weights=np.ones(len(X)))
 
         # Create energy PDF from global data and MC
-        mc_sin_dec = np.sin(MC["trueDec"])
         self._energy_interpol = self._create_sin_dec_logE_interpolator(
-            ev_sin_dec, X["logE"],
-            mc_sin_dec, MC["logE"], MC["trueE"], MC["ow"])
+            sin_dec_bg, logE_bg, w_bg, sin_dec_sig, logE_sig, w_sig)
 
         # Create sin_dec signal spline for the src detector weights from MC
-        mc_sin_dec = np.sin(MC["dec"])
-        mc_bins = self._energy_pdf_args["bins"][0]
-        mc_dict = {"trueE": MC["trueE"], "ow": MC["ow"]}
         self._spatial_signal_spl = self._create_sin_dec_spline(
-            sin_dec=mc_sin_dec, bins=mc_bins, mc=mc_dict)
+            sin_dec=MC["sinDec"], bins=self._energy_pdf_args["bins"][0],
+            weights=w_sig)
 
         return
 
@@ -828,32 +845,35 @@ class GRBLLH(object):
                                           ev_ra, ev_sin_dec, ev_sig,
                                           self._spatial_pdf_args["kent"])
 
-    def _create_sin_dec_logE_interpolator(self, ev_sin_dec, ev_logE,
-                                          mc_sin_dec, mc_logE, trueE, ow):
+    def _create_sin_dec_logE_interpolator(self, sin_dec_bg, logE_bg, w_bg,
+                                          sin_dec_sig, logE_sig, w_sig):
         """
-        Create a 2D interpolatinon describing the energy signal over background
-        ratio.
+        Create a 2D interpolatinon for a PDF ratio in sin(dec), energy proxy.
 
         The interpolation is done in the *natural logarithm* of the histogram.
-
         Fit parameters are controlled by the `self._energy_pdf_args` dict.
 
         Parameters
         ----------
-        ev_sin_dec
-            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
-        ev_logE
-            See :py:meth:`lnllh_ratio`, Parameters: `X`
-        mc_sin_dec, mc_logE, trueE, ow
-            See :py:meth:`GRBLLH`, Parameters: `MC`
+        sin_dec_bg, logE_bg : array-like
+            ``sin_dec_bg``: see :py:meth:`GRBLLH._soverb_spatial`, Parameters.
+            ``logE_bg``: see :py:meth:`lnllh_ratio`, Parameters: `X`.
+            Coordinates per event used to construct the BG histogram.
+        w_bg : array-like, shape (len(sind_dec_bg))
+            Per event weights to use in construction of the BG histogram.
+        sin_dec_sig, logE_sig : array-like
+            ``sin_dec_sig``: see :py:meth:`GRBLLH._soverb_spatial`, Parameters.
+            ``logE_sig``: see :py:meth:`lnllh_ratio`, Parameters: `X`.
+            Coordinates per event used to construct the signal histogram.
+        w_sig : array-like, shape (len(sind_dec_bg))
+            Per event weights to use in construction of the BG histogram.
 
         Returns
         -------
-        _sin_dec_logE_spline : scipy.interpolate.RegularGridInterpolator
-            2D Spline object interpolating the histogram. Must be evaluated with
-            sin(dec) and logE to give the correct ratio values.
+        _sin_dec_logE_interpol : scipy.interpolate.RegularGridInterpolator
+            2D interpolator for the histogram. Must be evaluated with sin(dec)
+            and logE to return the correct ratio values.
         """
-        gamma = self._energy_pdf_args["gamma"]
         fillval = self._energy_pdf_args["fillval"]
 
         # Create binmids to fit spline to bin centers
@@ -862,11 +882,11 @@ class GRBLLH(object):
         for b in bins:
             mids.append(0.5 * (b[:-1] + b[1:]))
 
-        assert np.all((ev_logE >= bins[1][0]) & (ev_logE <= bins[1][-1]))
-
-        # Weight MC to power law *shape* only, because we normalize anyway to
-        # get a PDF
-        mc_w = ow * power_law_flux_per_type(trueE, gamma)
+        # Make 2D histograms for BG / signal using the same binning
+        bg_h, _, _ = np.histogram2d(sin_dec_bg, logE_bg, bins=bins,
+                                    weights=w_bg, normed=True)
+        sig_h, _, _ = np.histogram2d(sin_dec_sig, logE_sig, bins=bins,
+                                     weights=w_sig, normed=True)
 
         # Make 2D hist from data and from MC, using the same binning
         mc_h, _, _ = np.histogram2d(mc_sin_dec, mc_logE, bins=bins,
@@ -932,7 +952,7 @@ class GRBLLH(object):
                                           bounds_error=False, fill_value=None)
         return spl
 
-    def _create_sin_dec_spline(self, sin_dec, bins, mc=None):
+    def _create_sin_dec_spline(self, sin_dec, bins, weights):
         """
         Fit an interpolating spline to a histogram of sin(dec).
 
@@ -944,15 +964,8 @@ class GRBLLH(object):
             Equatorial sinus declination coordinates in [-1, 1].
         bins : array-like, shape (nbins + 1)
             Explicit bin edges to use in the sin_dec histogram.
-        mc : dict, optional
-            If dict, then it hold additional monte carlo information used to
-            create the spline on simulation data. Must then have keys:
-
-            - "trueE", array: True energy in GeV from MC simulation.
-            - "ow", array: Per event 'neutrino generator' OneWeight already
-              divided by `nevts * nfiles * type_weight`.
-
-            (default: None)
+        weights : array-like, shape (nevts)
+            Weights used in histogram creation.
 
         Returns
         -------
@@ -963,13 +976,6 @@ class GRBLLH(object):
         k = self._spatial_pdf_args["k"]
 
         assert np.all((sin_dec >= bins[0]) & (sin_dec <= bins[-1]))
-
-        if mc is not None:
-            # Weight MC to power law shape only, because we normalize anyway
-            gamma = self._energy_pdf_args["gamma"]
-            weights = mc["ow"] * power_law_flux_per_type(mc["trueE"], gamma)
-        else:
-            weights = np.ones_like(sin_dec)
 
         # Make normalised hist to fit the spline to x, y pairs
         hist, bins = np.histogram(sin_dec, bins=bins, weights=weights,
