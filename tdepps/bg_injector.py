@@ -3,7 +3,7 @@
 from __future__ import print_function, division, absolute_import
 from builtins import range
 from future import standard_library
-standard_library.install_aliases()                                              # noqa
+standard_library.install_aliases()
 
 import numpy as np
 from numpy.lib.recfunctions import drop_fields, append_fields
@@ -417,7 +417,7 @@ class UniformBGInjector(BGInjector):
 
         Notes
         -----
-        .. [1] # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html # noqa
+        .. [1] # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html
         """
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:

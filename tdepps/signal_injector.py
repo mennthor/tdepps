@@ -215,7 +215,7 @@ class SignalInjector(object):
 
         Notes
         -----
-        .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight # noqa: 501
+        .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
         if not isinstance(MC, dict):  # Work consitently with dicts
             MC = {-1: MC}

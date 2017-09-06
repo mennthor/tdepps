@@ -2,7 +2,7 @@
 
 from __future__ import print_function, division, absolute_import
 from future import standard_library
-standard_library.install_aliases()                                              # noqa
+standard_library.install_aliases()
 
 import math
 import numpy as np
@@ -143,7 +143,7 @@ class GRBLLH(object):
     -----
     .. [1] Barlow, "Statistics - A Guide to the Use of Statistical Methods in
            the Physical Sciences". Chap. 5.4, p. 90. Wiley (1989)
-    .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight # noqa: 501
+    .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
     .. [3] https://en.wikipedia.org/wiki/Kent_distribution
     """
     def __init__(self, X, MC, spatial_pdf_args, energy_pdf_args,
@@ -424,8 +424,8 @@ class GRBLLH(object):
             Minimization bounds `[[min, max]]` for `ns`. Use None for one of
             `min` or `max` when there is no bound in that direction.
         minimizer_opts : dict
-            Options passed to `scipy.optimize.minimize` [4] using the "L-BFGS-B"
-            algorithm.
+            Options passed to `scipy.optimize.minimize` [4]_ using the
+            "L-BFGS-B" algorithm.
 
 
 
@@ -438,7 +438,7 @@ class GRBLLH(object):
 
         Notes
         -----
-        .. [4] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466 # noqa
+        .. [4] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466
         """
         def _neglnllh(ns):
             """

@@ -3,7 +3,7 @@
 from __future__ import print_function, division, absolute_import
 from builtins import dict, open, filter, zip
 from future import standard_library
-standard_library.install_aliases()                                              # noqa
+standard_library.install_aliases()
 
 import os
 import json
