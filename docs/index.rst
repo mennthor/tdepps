@@ -6,7 +6,7 @@
 Documentation for tdepps package
 ================================
 
-Pure python package to do time dependent point source analysis.
+Python package with small C++ pybind11 backend to do time dependent point source analysis.
 
 .. toctree::
    :maxdepth: 2
