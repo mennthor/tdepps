@@ -249,6 +249,9 @@ class KDEBGInjector(BGInjector):
         Parameters
         ----------
         %(BGInjector.fit.parameters)s
+            If ``None`` the KDE model is checked, if it already is fitted and
+            usable. This can be used to use an already existing KDE model for
+            injection.
         bounds : None or array-like, shape (n_features, 2)
             Boundary conditions for each dimension. If None, [-np.inf, +np.inf]
             is used in each dimension. (default: None)
@@ -257,16 +260,21 @@ class KDEBGInjector(BGInjector):
         -------
         %(BGInjector.fit.returns)s
         """
-        X = self._check_X_names(X)
-        self._n_features = len(X.dtype.names)
-
         # TODO: Use advanced bounds via mirror method in KDE class.
         # Currently bounds are used to resample events that fall outside
-        self._bounds = self._check_bounds(bounds)
+        if X is not None:
+            X = self._check_X_names(X)
+            self._n_features = len(X.dtype.names)
+            self._bounds = self._check_bounds(bounds)
+            # Turn record-array in normal 2D array for more general KDE class
+            X = np.vstack((X[n] for n in self._X_names)).T
+            self._kde_model.fit(X)
+        elif self._kde_model._std_X is not None:
+            self._n_features = self._kde_model._std_X.shape[1]
+            self._bounds = self._check_bounds(bounds)
+        else:
+            raise ValueError("No new data to fit and KDE model is not fitted.")
 
-        # Turn record-array in normal 2D array for more general KDE class
-        X = np.vstack((X[n] for n in self._X_names)).T
-        self._kde_model.fit(X)
         return
 
     @docs.dedent
@@ -304,7 +312,7 @@ class KDEBGInjector(BGInjector):
             X.append(gen[accepted])
 
         # Combine and convert to record-array with added ra and sinDec fields
-        return self._add_ra_sin_dec(np.concatenate(X).T)
+        return self._add_ra_sin_dec(np.concatenate(X))
 
 
 class DataBGInjector(BGInjector):
