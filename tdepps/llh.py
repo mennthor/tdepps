@@ -2,14 +2,15 @@
 
 from __future__ import print_function, division, absolute_import
 from future import standard_library
-standard_library.install_aliases()                                              # noqa
+standard_library.install_aliases()
 
 import math
 import numpy as np
 import scipy.optimize as sco
 import scipy.interpolate as sci
+from scipy.ndimage.filters import gaussian_filter
 
-from .utils import fill_dict_defaults
+from .utils import fill_dict_defaults, power_law_flux_per_type
 import tdepps.backend as backend
 
 
@@ -59,10 +60,10 @@ class GRBLLH(object):
         contain the same names as `X` and additionaly the MC truths:
 
         - "trueE", float: True event energy in GeV.
-        - "ow", float: Per event "neutrino generator (NuGen)" OneWeight [2]_,
-          already divided by `nevts * nfiles` known from SimProd.
-          Units are "GeV sr cm^2". Final event weights are obtained by
-          multiplying with desired flux.
+        - "ow", float: Per event 'neutrino generator' OneWeight [2]_,
+          so it is already divided by `nevts * nfiles * type_weight`.
+          Units are 'GeV sr cm^2'. Final event weights are obtained by
+          multiplying with desired flux per particle type.
 
     spatial_pdf_args : dict
         Arguments for the spatial signal and background PDF. Must contain keys:
@@ -79,24 +80,39 @@ class GRBLLH(object):
         Arguments for the energy PDF ratio. Must contain keys:
 
         - "bins", array-like: Explicit bin edges of the sinus declination vs
-          logE histogram used to fit a 2D spline describing the energy PDF
-          ratio. Must be [sin_dec_bins, logE_bins] in ranges [-1, 1] for sinus
-          declination and [-inf, +inf] for logE.
+          logE histogram used to interpolate the energy PDF ratio. Must be
+          [sin_dec_bins, logE_bins] in ranges [-1, 1] for sinus declination and
+          [-inf, +inf] for logE (logspace bins).
         - "gamma", float, optional: Spectral index of the power law
           :math:`E^{-\gamma}` used to weight MC to an astrophisical flux.
           (default: 2.)
+        - "mc_bg_weights", array-like or None: If not ``None`` also use MC for
+          the BG histogram weighted to the given weights. If ``None``, use data.
         - "fillval", str, optional: What values to use, when the histogram has
           MC but no data in a bin. Then the gaps are filled, by assigning values
-          to the histogram edges for low/high energies seprately and then
-          interpolating inside. Can be one of ['minmax'|'col'|'col'].
-          When 'minmax' the lowest/highest ratio values are used at the edges.
-          When 'min' only the lowest ratio value is used at the edges. When
-          'col' the next valid value in each colum from the top/bottom is used.
-          Most conservative = 'min' < 'col' < 'minmax' = most optimistic).
-          (default: 'min')
-        - "interpol_log", bool, optional: If True, gaps in the signal over
-          background ratio histogram are interpolated linearly in ln. Otherwise
-          the interpolation is in linear space. (default: False)
+          to the histogram edges in each sinDec slice for low/high energies
+          seprately and then interpolating inside. Can be one of
+          ['minmax'|'minmax_col'|'min'|'col']:
+
+          + 'minmax': Use the lowest/highest global ratio values at the edges.
+          + 'col': Next valid value in each colum from the top/bottom is used.
+          + 'minmax_col': Like 'minmax' but use min/max value per bin.
+          + 'min': Only the lowest global ratio value is used at all edges.
+
+          Listed in order optimistic -> conservative. (default: 'minmax_col')
+        - "interpol_log", bool, optional: If ``True``, gaps in the signal over
+          background ratio histogram are interpolated linearly in log. Otherwise
+          the interpolation is in linear space. (default: ``False``)
+        - "smooth_sigma": ``[[sin_dec_bg, logE_bg], [sin_dec_sig, logE_sig]]``.
+          Standard deviations for a 2D gaussian smoothing kernel applied to the
+          BG and signal histograms in *normal space* before taking the ratio.
+          Units are array indices of the corresponding bins arrays.
+        - "logE_asc", bool, optional: If ``True`` assume that in each
+          ``sin_dec`` bin the energy distribution must be monotonically
+          increasing and correct if it is not. This may be justified by the
+          shape of the flux PDFs, you should always check the resulting PDF.
+          Note: If ``True``, using 'min' in 'fillval' makes no sense so an error
+          is thrown. (default: ``False``)
 
     time_pdf_args : dict, optional
         Arguments for the time PDF ratio. Must contain keys:
@@ -127,12 +143,13 @@ class GRBLLH(object):
     -----
     .. [1] Barlow, "Statistics - A Guide to the Use of Statistical Methods in
            the Physical Sciences". Chap. 5.4, p. 90. Wiley (1989)
-    .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight # noqa: 501
+    .. [2] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
     .. [3] https://en.wikipedia.org/wiki/Kent_distribution
     """
     def __init__(self, X, MC, spatial_pdf_args, energy_pdf_args,
                  time_pdf_args=None, llh_args=None):
         # Check if data, MC have all needed names
+        #  X Doesn't need logE if MC BG weights are given, but leave it for now.
         X_names = ["sinDec", "logE"]
         for n in X_names:
             if n not in X.dtype.names:
@@ -154,42 +171,73 @@ class GRBLLH(object):
         bins = np.atleast_1d(self._spatial_pdf_args["bins"])
         if np.any(bins < -1) or np.any(bins > 1):
             raise ValueError("Bins for BG spline not in valid range [-1, 1].")
-        sin_dec = np.sin(X["dec"])
-        if np.any(sin_dec < bins[0]) or np.any(sin_dec > bins[-1]):
+        if np.any(X["sinDec"] < bins[0]) or np.any(X["sinDec"] > bins[-1]):
             raise ValueError("sinDec data events outside given bins. If this" +
                              "is intended, please remove them beforehand.")
         self._spatial_pdf_args["bins"] = bins
 
         # Setup energy PDF args
         required_keys = ["bins"]
-        opt_keys = {"gamma": 2., "fillval": "min", "interpol_log": False}
+        opt_keys = {"gamma": 2., "mc_bg_weights": None, "fillval": "minmax_col",
+                    "interpol_log": False, "smooth_sigma": [[0., 0.], [0., 0.]],
+                    "logE_asc": True}
         self._energy_pdf_args = fill_dict_defaults(energy_pdf_args,
                                                    required_keys, opt_keys)
-        if self._energy_pdf_args["fillval"] not in ["minmax", "col", "min"]:
-            raise ValueError("'fillval' must be one of ['minmax'|'col'|'min'].")
+        if (self._energy_pdf_args["fillval"] not in
+                ["minmax", "col", "minmax_col", "min"]):
+            raise ValueError("'fillval' must be one of " +
+                             "['minmax'|'col'|'minmax_col'|'min'].")
+        if ((self._energy_pdf_args["fillval"] == "min") and
+                (self._energy_pdf_args["logE_asc"])):
+            raise ValueError("'fillval'='min' makes no sense when 'logE_asc' " +
+                             "is True.")
+        sig = np.asarray(self._energy_pdf_args["smooth_sigma"])
+        if len(sig) != 2 or sig.shape != (2, 2):
+            raise ValueError("`smooth_sigma` must be [[sin_dec_bg, logE_bg]" +
+                             ", [sin_dec_sig, logE_sig]].")
+        self._energy_pdf_args["smooth_sigma"] = sig
         # Check if binning is OK
         if len(self._energy_pdf_args["bins"]) != 2:
             raise ValueError("Bins for energy hist must be of format " +
                              "[sin_dec_bins, logE_bins].")
-
         sin_dec_bins = np.atleast_1d(self._energy_pdf_args["bins"][0])
-        if np.any(sin_dec_bins < -1.) or np.any(sin_dec_bins > 1.):
-            raise ValueError("sinDec declination bins for energy spline not " +
-                             "in valid range [-1, 1].")
-        sin_dec = np.sin(X["dec"])
-        if np.any((sin_dec < sin_dec_bins[0]) | (sin_dec > sin_dec_bins[-1])):
-            raise ValueError("sinDec data events outside given bins. If this" +
-                             "is intended, please remove them beforehand.")
-        sin_dec = np.sin(MC["dec"])
-        if np.any((sin_dec < sin_dec_bins[0]) | (sin_dec > sin_dec_bins[-1])):
-            raise ValueError("sinDec MC events outside given bins. If this" +
-                             "is intended, please remove them beforehand.")
-
-        ev_logE = X["logE"]
         logE_bins = np.atleast_1d(self._energy_pdf_args["bins"][1])
-        if np.any(ev_logE < logE_bins[0]) or np.any(ev_logE > logE_bins[-1]):
-            raise ValueError("logE MC events outside given bins. If this " +
-                             "is intended, please remove them beforehand.")
+        if np.any(sin_dec_bins < -1.) or np.any(sin_dec_bins > 1.):
+            raise ValueError("sinDec declination bins for energy hist not " +
+                             "in valid range [-1, 1].")
+        self._energy_pdf_args["bins"] = [sin_dec_bins, logE_bins]
+
+        mc_bg_w = self._energy_pdf_args["mc_bg_weights"]
+        if mc_bg_w is None:  # Check both data and MC
+            for sd, name in zip([X["sinDec"], MC["sinDec"]], ["data", "MC"]):
+                if np.any((sd < sin_dec_bins[0]) | (sd > sin_dec_bins[-1])):
+                    raise ValueError("sinDec " + name + " events outside " +
+                                     "given bins for energy hist. If this is " +
+                                     "intended, please remove them beforehand.")
+            for logE, name in zip([X["logE"], MC["logE"]], ["data", "MC"]):
+                if np.any((logE < logE_bins[0]) | (logE > logE_bins[-1])):
+                    raise ValueError("logE " + name + " events outside " +
+                                     "given bins for energy hist. If this is " +
+                                     "intended, please remove them beforehand.")
+            sin_dec_bg, logE_bg, w_bg = X["sinDec"], X["logE"], np.ones(len(X))
+        else:  # Only need to check MC, building 2D hist on MC only
+            if len(mc_bg_w) != len(MC):
+                raise ValueError("Length of MC BG weights and MC must match.")
+            if np.any((MC["sinDec"] < sin_dec_bins[0]) |
+                      (MC["sinDec"] > sin_dec_bins[-1])):
+                raise ValueError("sinDec MC events outside given bins for " +
+                                 "energy hist. If this is intended, please " +
+                                 "remove them beforehand.")
+            if np.any((MC["logE"] < logE_bins[0]) |
+                      (MC["logE"] > logE_bins[-1])):
+                raise ValueError("logE MC events outside given bins for " +
+                                 "energy hist. If this is intended, please " +
+                                 "remove them beforehand.")
+            sin_dec_bg, logE_bg, w_bg = MC["sinDec"], MC["logE"], mc_bg_w
+
+        sin_dec_sig, logE_sig = MC["sinDec"], MC["logE"]
+        w_sig = MC["ow"] * power_law_flux_per_type(
+            MC["trueE"], self._energy_pdf_args["gamma"])
 
         self._energy_pdf_args["bins"][0] = sin_dec_bins
         self._energy_pdf_args["bins"][1] = logE_bins
@@ -222,27 +270,21 @@ class GRBLLH(object):
             raise ValueError("'sob_abs_eps' must be >= 0.")
 
         # Setup common variables
-        self._energy_pdf_args["bins"] = [sin_dec_bins, logE_bins]
         self._SECINDAY = 24. * 60. * 60.
 
-        # Create background spline used in the spatial PDF from global data
-        ev_sin_dec = X["sinDec"]
-        ev_bins = self._spatial_pdf_args["bins"]
+        # Create background spline used in the spatial PDF from data
         self._spatial_bg_spl = self._create_sin_dec_spline(
-            sin_dec=ev_sin_dec, bins=ev_bins, mc=None)
+            sin_dec=X["sinDec"], bins=self._spatial_pdf_args["bins"],
+            weights=np.ones(len(X)))
 
         # Create energy PDF from global data and MC
-        mc_sin_dec = np.sin(MC["trueDec"])
-        self._energy_spl = self._create_sin_dec_logE_spline(
-            ev_sin_dec, X["logE"],
-            mc_sin_dec, MC["logE"], MC["trueE"], MC["ow"])
+        self._energy_interpol = self._create_sin_dec_logE_interpolator(
+            sin_dec_bg, logE_bg, w_bg, sin_dec_sig, logE_sig, w_sig)
 
         # Create sin_dec signal spline for the src detector weights from MC
-        mc_sin_dec = np.sin(MC["dec"])
-        mc_bins = self._energy_pdf_args["bins"][0]
-        mc_dict = {"trueE": MC["trueE"], "ow": MC["ow"]}
         self._spatial_signal_spl = self._create_sin_dec_spline(
-            sin_dec=mc_sin_dec, bins=mc_bins, mc=mc_dict)
+            sin_dec=MC["sinDec"], bins=self._energy_pdf_args["bins"][0],
+            weights=w_sig)
 
         return
 
@@ -382,8 +424,8 @@ class GRBLLH(object):
             Minimization bounds `[[min, max]]` for `ns`. Use None for one of
             `min` or `max` when there is no bound in that direction.
         minimizer_opts : dict
-            Options passed to `scipy.optimize.minimize` [4] using the "L-BFGS-B"
-            algorithm.
+            Options passed to `scipy.optimize.minimize` [4]_ using the
+            "L-BFGS-B" algorithm.
 
 
 
@@ -396,7 +438,7 @@ class GRBLLH(object):
 
         Notes
         -----
-        .. [4] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466 # noqa
+        .. [4] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466
         """
         def _neglnllh(ns):
             """
@@ -717,7 +759,7 @@ class GRBLLH(object):
 
         # scipy.interpolate.RegularGridInterpolator takes shape (nevts, ndim)
         pts = np.vstack((ev_sin_dec[valid], ev_logE[[valid]])).T
-        sob[valid] = np.exp(self._energy_spl(pts))
+        sob[valid] = np.exp(self._energy_interpol(pts))
 
         return sob
 
@@ -769,7 +811,7 @@ class GRBLLH(object):
 
         PDF is uniform in right-ascension and described by a spline fitted to
         data in sinus declination. Outside of the definiton range, the PDF is
-        set to zero.
+        set to zero. The PDF is normalized is over the whole sphere in ra, dec.
 
         Parameters
         ----------
@@ -828,34 +870,35 @@ class GRBLLH(object):
                                           ev_ra, ev_sin_dec, ev_sig,
                                           self._spatial_pdf_args["kent"])
 
-    def _create_sin_dec_logE_spline(self, ev_sin_dec, ev_logE,
-                                    mc_sin_dec, mc_logE, trueE, ow):
+    def _create_sin_dec_logE_interpolator(self, sin_dec_bg, logE_bg, w_bg,
+                                          sin_dec_sig, logE_sig, w_sig):
         """
-        Create a 2D interpolating spline describing the energy signal over
-        background ratio.
+        Create a 2D interpolatinon for a PDF ratio in sin(dec), energy proxy.
 
-        The spline is fitted to the *natural logarithm* of the histogram, to
-        avoid ringing. Normalization is done by normalizing the hist, so it may
-        be slightly off, but that's tolerable.
-
+        The interpolation is done in the *natural logarithm* of the histogram.
         Fit parameters are controlled by the `self._energy_pdf_args` dict.
 
         Parameters
         ----------
-        ev_sin_dec
-            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
-        ev_logE
-            See :py:meth:`lnllh_ratio`, Parameters: `X`
-        mc_sin_dec, mc_logE, trueE, ow
-            See :py:meth:`GRBLLH`, Parameters: `MC`
+        sin_dec_bg, logE_bg : array-like
+            ``sin_dec_bg``: see :py:meth:`GRBLLH._soverb_spatial`, Parameters.
+            ``logE_bg``: see :py:meth:`lnllh_ratio`, Parameters: `X`.
+            Coordinates per event used to construct the BG histogram.
+        w_bg : array-like, shape (len(sind_dec_bg))
+            Per event weights to use in construction of the BG histogram.
+        sin_dec_sig, logE_sig : array-like
+            ``sin_dec_sig``: see :py:meth:`GRBLLH._soverb_spatial`, Parameters.
+            ``logE_sig``: see :py:meth:`lnllh_ratio`, Parameters: `X`.
+            Coordinates per event used to construct the signal histogram.
+        w_sig : array-like, shape (len(sind_dec_bg))
+            Per event weights to use in construction of the BG histogram.
 
         Returns
         -------
-        _sin_dec_logE_spline : scipy.interpolate.RegularGridInterpolator
-            2D Spline object interpolating the histogram. Must be evaluated with
-            sin(dec) and logE to give the correct ratio values.
+        _sin_dec_logE_interpol : scipy.interpolate.RegularGridInterpolator
+            2D interpolator for the histogram. Must be evaluated with sin(dec)
+            and logE to return the correct ratio values.
         """
-        gamma = self._energy_pdf_args["gamma"]
         fillval = self._energy_pdf_args["fillval"]
 
         # Create binmids to fit spline to bin centers
@@ -864,17 +907,22 @@ class GRBLLH(object):
         for b in bins:
             mids.append(0.5 * (b[:-1] + b[1:]))
 
-        assert np.all((ev_logE >= bins[1][0]) & (ev_logE <= bins[1][-1]))
+        # Make 2D histograms for BG / signal using the same binning
+        bg_h, _, _ = np.histogram2d(sin_dec_bg, logE_bg, bins=bins,
+                                    weights=w_bg, normed=True)
+        sig_h, _, _ = np.histogram2d(sin_dec_sig, logE_sig, bins=bins,
+                                     weights=w_sig, normed=True)
 
-        # Weight MC to power law *shape* only, because we normalize anyway to
-        # get a PDF
-        mc_w = ow * trueE**(-gamma)
+        # Smooth each hist and renormalize
+        [sigma_bg, sigma_sig] = self._energy_pdf_args["smooth_sigma"]
+        bg_h = gaussian_filter(bg_h, sigma_bg)
+        sig_h = gaussian_filter(sig_h, sigma_sig)
 
-        # Make 2D hist from data and from MC, using the same binning
-        mc_h, _, _ = np.histogram2d(mc_sin_dec, mc_logE, bins=bins,
-                                    weights=mc_w, normed=True)
-
-        bg_h, _, _ = np.histogram2d(ev_sin_dec, ev_logE, bins=bins, normed=True)
+        dA = np.diff(bins[0])[:, None] * np.diff(bins[1])[None, :]
+        bg_h = bg_h / (np.sum(bg_h) * dA)
+        sig_h = sig_h / (np.sum(sig_h) * dA)
+        assert np.isclose(np.sum(bg_h * dA), 1.)
+        assert np.isclose(np.sum(sig_h * dA), 1.)
 
         # Check that all 1D sin_dec bins are populated
         _sin_dec_h = np.sum(bg_h, axis=1)
@@ -885,16 +933,35 @@ class GRBLLH(object):
 
         # Fill all values where data has non-empty bins
         sob = np.ones_like(bg_h) - 1.
-        mask = (bg_h > 0) & (mc_h > 0)
-        sob[mask] = mc_h[mask] / bg_h[mask]
-        if (fillval == "minmax") or (fillval == "min"):
+        mask = (bg_h > 0) & (sig_h > 0)
+        sob[mask] = sig_h[mask] / bg_h[mask]
+        if fillval in ["minmax", "min"]:
             sob_min, sob_max = np.amin(sob[mask]), np.amax(sob[mask])
         # We may have gaps in the hist, where no data OR no MC is. Fill with
         # interpolated values in sin_dec slice.
         # In each sin_dec slice assign values to bins with no data or no MC.
         for i in np.arange(len(bins[0]) - 1):
+            # Assumption: sob is rising monotonically in the energy dimension.
+            # So we go from top to bottom and rescale all violating bins.
+            if self._energy_pdf_args["logE_asc"]:
+                sob_m = sob[i] > 0
+                masked_sob = sob[i][sob_m]
+                for j in range(len(masked_sob) - 1, 0, -1):
+                    if masked_sob[j] < masked_sob[j - 1]:
+                        masked_sob[j - 1] = masked_sob[j]
+                        # # Use mean in linspace if next to next is smaller
+                        # if (j > 2) and (masked_sob[j - 2] < masked_sob[j]):
+                        #     masked_sob[j - 1] = 0.5 * (masked_sob[j] +
+                        #                              masked_sob[j - 2])
+                        # else:  # Else just put it on the same value
+                        #     masked_sob[j - 1] = masked_sob[j]
+                sob[i][sob_m] = masked_sob
+
             # Get invalid points in sin_dec slice
-            m = (bg_h[i] <= 0) | (mc_h[i] <= 0)
+            m = sob[i] <= 0
+
+            if fillval in ["minmax_col"]:  # min/max per slice instead of global
+                sob_min, sob_max = np.amin(sob[i][~m]), np.amax(sob[i][~m])
 
             # Only fill missing logE border values, rest is interpolated
             # Lower edge: argmax stops at first True, argmin at first False
@@ -904,8 +971,8 @@ class GRBLLH(object):
                 if fillval == "col":  # Fill with first valid ratio from bottom
                     low_first_valid_id = np.argmin(m)
                     sob[i, 0] = sob[i, low_first_valid_id]
-                elif (fillval == "minmax") or (fillval == "min"):
-                    sob[i, 0] = sob_min  # Fill with global min
+                elif fillval in ["minmax", "minmax_col", "min"]:
+                    sob[i, 0] = sob_min  # Fill with global | per bin min
 
             # Repeat with turned around array for upper edge
             hig_first_invalid_id = np.argmax(m[::-1])
@@ -915,13 +982,13 @@ class GRBLLH(object):
                     sob[i, -1] = sob[i, hig_first_valid_id]
                 elif fillval == "min":  # Fill also with global min
                     sob[i, -1] = sob_min
-                elif fillval == "minmax":  # Fill with global max
+                elif fillval in ["minmax", "minmax_col"]:  # glob. | per bin max
                     sob[i, -1] = sob_max
 
             # Interpolate in each slice over missing entries
-            m = sob[i] > 0
-            x = mids[1][m]
-            y = sob[i, m]
+            sob_m = sob[i] > 0
+            x = mids[1][sob_m]
+            y = sob[i, sob_m]
             if self._energy_pdf_args["interpol_log"]:
                 fi = sci.interp1d(x, np.log(y), kind="linear")
                 sob[i] = np.exp(fi(mids[1]))
@@ -929,12 +996,12 @@ class GRBLLH(object):
                 fi = sci.interp1d(x, y, kind="linear")
                 sob[i] = fi(mids[1])
 
-        # # Now fit a 2D interpolating spline to the ratio
+        # Now fit a 2D interpolating spline to the ratio
         spl = sci.RegularGridInterpolator(mids, np.log(sob), method="linear",
                                           bounds_error=False, fill_value=None)
         return spl
 
-    def _create_sin_dec_spline(self, sin_dec, bins, mc=None):
+    def _create_sin_dec_spline(self, sin_dec, bins, weights):
         """
         Fit an interpolating spline to a histogram of sin(dec).
 
@@ -946,33 +1013,18 @@ class GRBLLH(object):
             Equatorial sinus declination coordinates in [-1, 1].
         bins : array-like, shape (nbins + 1)
             Explicit bin edges to use in the sin_dec histogram.
-        mc : dict, optional
-            If dict, then it hold additional monte carlo information used to
-            create the spline on simulation data. Must then have keys:
-
-            - "trueE", array: True energy in GeV from MC simulation.
-            - "ow", array: Neutrino generator oneweights, already divided by the
-              number of generated events.
-
-            (default: None)
+        weights : array-like, shape (nevts)
+            Weights used in histogram creation.
 
         Returns
         -------
         sin_dec_spl : scipy.interpolate.InterpolatingSpline
             Spline object interpolating the created histogram. Must be evaluated
             with sin(dec) and exponentiated to give the correct PDF values.
-
         """
         k = self._spatial_pdf_args["k"]
 
         assert np.all((sin_dec >= bins[0]) & (sin_dec <= bins[-1]))
-
-        if mc is not None:
-            # Weight MC to power law shape only, because we normalize anyway
-            gamma = self._energy_pdf_args["gamma"]
-            weights = mc["ow"] * mc["trueE"]**(-gamma)
-        else:
-            weights = np.ones_like(sin_dec)
 
         # Make normalised hist to fit the spline to x, y pairs
         hist, bins = np.histogram(sin_dec, bins=bins, weights=weights,
@@ -997,26 +1049,53 @@ class GRBLLH(object):
         rep = "GRBLLH object\n"
         rep += "-------------\n\n"
 
+        def shorten(val, cut=10):
+            """Shorten lengthy arguments for print"""
+            try:
+                length = len(val)
+            except TypeError:
+                length = 1
+            if length > cut:
+                val = ("{}".format(val[:int(cut / 2)]).replace("]", "") +
+                       " ... {}".format(val[-int(cut / 2):]).replace("[", ""))
+            return val
+
         rep += "Spatial PDF settings:\n"
         for key, val in self._spatial_pdf_args.items():
-            rep += "  - {:12s} : {}\n".format(key, val)
+            rep += "  - {:12s} : {}\n".format(key, shorten(val))
 
         rep += "\n"
 
         rep += "Time PDF settings:\n"
         for key, val in self._time_pdf_args.items():
-            rep += "  - {:12s} : {}\n".format(key, val)
+            rep += "  - {:12s} : {}\n".format(key, shorten(val))
 
         rep += "\n"
 
         rep += "Energy PDF settings:\n"
         for key, val in self._energy_pdf_args.items():
-            rep += "  - {:12s} : {}\n".format(key, val)
+            rep += "  - {:12s} : {}\n".format(key, shorten(val))
 
         rep += "\n"
 
         rep += "LLH settings:\n"
         for key, val in self._llh_args.items():
-            rep += "  - {:12s} : {}\n".format(key, val)
+            rep += "  - {:12s} : {}\n".format(key, shorten(val))
 
         return rep
+
+
+class MaxBurstGRBLLH(GRBLLH):
+    def __init__(self):
+        return
+
+    # TODO: Redefine the TS only here. Instead of stacking, evaluate single LLH
+    #       For every source seperately. The best fit TS is then max_i(TS_i).
+
+
+class MultiyearGRBLLH(GRBLLH):
+    def __init__(self):
+        return
+
+    # TODO: Collect multiple GRBLLHs and make a new LLH with split ns
+    #       and adapted fit_llh method.

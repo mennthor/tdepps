@@ -1,10 +1,15 @@
 # coding: utf-8
 
+from __future__ import division, print_function, absolute_import
+from builtins import dict, int
+from future import standard_library
+standard_library.install_aliases()
+
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
 
-from .utils import flatten_list_of_1darrays, rotator
+from .utils import rotator, power_law_flux_per_type
 
 
 class SignalInjector(object):
@@ -20,25 +25,30 @@ class SignalInjector(object):
         Index of an unbroken power law :math:`E^{-\gamma}` which is used to
         describe the energy flux of signal events.
     mode : string, optional
-        One of `['circle'|'band']`. Selects MC events to inject based
+        One of ``['circle'|'band']``. Selects MC events to inject based
         on their true location:
 
-        - 'circle' : Select `MC` events in circle around a source.
-        - 'band' : Select `MC` events in a declination band around a source.
+        - 'circle' : Select ``MC`` events in circle around a source.
+        - 'band' : Select ``MC`` events in a declination band around a source.
 
         (default: 'band')
 
     inj_width : float, optinal
-        If `mode` is 'band', this is half the width of the declination band
+        If ``mode`` is 'band', this is half the width of the declination band
         centered at the source positions in radian.
-        If `mode` is `circle` this is the radius of the circle in radian.
-        (default: `np.deg2rad(2)`)
+        If ``mode`` is ``circle`` this is the radius of the circle in radian.
+        (default: ``np.deg2rad(2)``)
+    sin_dec_range : array-like, shape (2), optional
+        Boundaries for which injected events are discarded, when their rotated
+        coordinates are outside this bounds. Is useful, when a zenith cut is
+        used and the PDFs are not defined on the whole sky.
+        (default: ``[-1, 1]``)
     random_state : seed, optional
-        Turn seed into a `np.random.RandomState` instance. See
-        `sklearn.utils.check_random_state`. (default: None)
+        Turn seed into a ``np.random.RandomState`` instance. See
+        ``sklearn.utils.check_random_state``. (default: None)
     """
     def __init__(self, gamma, mode="band", inj_width=np.deg2rad(2),
-                 random_state=None):
+                 sin_dec_range=[-1., 1.], random_state=None):
         # Public class members (settable only by constructor)
         if (gamma < 1.) or (gamma > 4.):
             raise ValueError("`gamma` in doubtful range, must be in [1, 4].")
@@ -52,6 +62,10 @@ class SignalInjector(object):
             raise ValueError("Injection width must be in (0, pi].")
         self._inj_width = inj_width
 
+        if (sin_dec_range[0] < -1.) or (sin_dec_range[1] > 1.):
+            raise ValueError("`sin_dec_range` must be range [a, b] in [-1, 1].")
+        self._sin_dec_range = sin_dec_range
+
         self._mc_arr = None
         self.rndgen = random_state
 
@@ -63,10 +77,10 @@ class SignalInjector(object):
 
         self._min_dec = None
         self._max_dec = None
-        self._sin_dec_range = np.array([-1., 1.])
+        self._sin_dec_range = np.atleast_1d(sin_dec_range)
         self._omega = None
 
-        self._raw_fluence = None
+        self._raw_flux = None
         self._sample_w = None
 
         self._SECINDAY = 24. * 60. * 60.
@@ -90,6 +104,10 @@ class SignalInjector(object):
         return self._inj_width
 
     @property
+    def sin_dec_range(self):
+        return self._sin_dec_range
+
+    @property
     def mc_arr(self):
         return self._mc_arr
 
@@ -100,6 +118,52 @@ class SignalInjector(object):
     @rndgen.setter
     def rndgen(self, random_state):
         self._rndgen = check_random_state(random_state)
+
+    def mu2flux(self, mu, per_source=False):
+        """
+        Convert a given number of events ``mu`` to a corresponding particle
+        flux normalization :math:`F_0` in units [GeV^-1 cm^-2].
+
+        The connection between :math:`F_0` and the number of events ``mu`` is:
+
+        .. math:: F_0 = \mu / \sum_i \hat{w}_i
+
+        where :math:`F_0 \sum_i \hat{w}_i` would gives the number of events. The
+        weights :math:`w_i` are calculated in :py:meth:`_set_sampling_weights`.
+
+        Parameters
+        ----------
+        mu : float
+            Expectation for number of events.
+        per_source : bool, optional
+            If True, return the flux per source, which is the total flux
+            weighted by the intrinsic weights per source. (default: False)
+
+        Returns
+        -------
+        flux : float or array-like
+            If ``per_source`` is ``True``, return the total flux for all
+            sources, otherwise the flux per source. Flux is in unit
+            [GeV^-1 cm^-2].
+        """
+        flux = mu / self._raw_flux
+        if per_source:
+            w_theo = self._srcs["w_theo"] / np.sum(self._srcs["w_theo"])
+            return flux * w_theo
+        else:
+            return flux
+
+    def flux2mu(self, flux):
+        """
+        Calculates the number of events ``mu`` corresponding to a given particle
+        flux for the current setup:
+
+        .. math:: \mu = F_0 \sum_i \hat{w}_i
+
+        where :math:`F_0 \sum_i \hat{w}_i` would gives the number of events. The
+        weights :math:`w_i` are calculated in :py:meth:`_set_sampling_weights`.
+        """
+        return flux * self._raw_flux
 
     def fit(self, srcs, MC, exp_names):
         """
@@ -120,7 +184,7 @@ class SignalInjector(object):
             - 't', float: Time of the occurence of the source event in MJD
               days.
             - 'dt0', 'dt1': float: Lower/upper border of the time search
-              window in seconds, centered around each source time `t`.
+              window in seconds, centered around each source time ``t``.
             - 'w_theo', float: Theoretical source weight per source, eg. from
               a known gamma flux.
 
@@ -132,21 +196,26 @@ class SignalInjector(object):
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
-            - 'ow', float: Per event 'neutrino generator (NuGen)' OneWeight
-              [2]_, already divided by `nevts * nfiles` known from SimProd.
-              Units are 'GeV sr cm^2'. Final event weights are obtained by
-              multiplying with desired flux.
+            - 'ow', float: Per event 'neutrino generator' OneWeight [1]_,
+              so it is already divided by ``nevts * nfiles * type_weight``.
+              Units are ``[GeV sr cm^2]``. Final event weights are obtained by
+              multiplying with desired flux per particle type.
 
         exp_names : tuple of strings
             All names in the experimental data record array used for other
-            classes. Must match with the MC record names. `exp_names` is
+            classes. Must match with the MC record names. ``exp_names`` is
             required to have at least the names:
 
             - 'ra': Per event right-ascension coordinate in :math:`[0, 2\pi]`.
-            - 'sinDec': Per event sinus declination, in `[-1, 1]`.
-            - 'logE': Per event energy proxy, given in log10(1/GeV).
+            - 'sinDec': Per event sinus declination, in :math`[-1, 1]`.
+            - 'logE': Per event energy proxy, given in
+              :math`\log_{10}(1/\text{GeV})`.
             - 'sigma': Per event positional uncertainty, given in radians.
             - 'timeMJD': Per event times in MJD days.
+
+        Notes
+        -----
+        .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
         if not isinstance(MC, dict):  # Work consitently with dicts
             MC = {-1: MC}
@@ -165,7 +234,7 @@ class SignalInjector(object):
         for n in MC_names:
             for key, mc_i in MC.items():
                 if n not in mc_i.dtype.names:
-                    e = "MC sample '{}' is missing name '{}'.".format(n, key)
+                    e = "MC sample '{}' is missing name '{}'.".format(key, n)
                     raise ValueError(e)
 
         self._exp_names = exp_names
@@ -174,6 +243,11 @@ class SignalInjector(object):
         self._srcs = srcs
         self._nsrcs = len(srcs)
         self._set_solid_angle()
+
+        # Check if sin_dec_range is OK with the used source positions
+        if (np.any(np.sin(srcs["dec"]) < self._sin_dec_range[0]) |
+                np.any(np.sin(srcs["dec"]) > self._sin_dec_range[1])):
+            raise ValueError("Source position(s) outside `sin_dec_range`.")
 
         # Store selected event ids in mc_arr to sample from a single array
         # ev_idx: event ID per sam., src_idx: src ID per sam., enum: sample ID
@@ -262,7 +336,7 @@ class SignalInjector(object):
             Expectation value of number of events to sample.
         poisson : bool, optional
             If True, sample the actual number of events from a poisson
-            distribution with expectation `mu`. Otherwise the number of events
+            distribution with expectation ``mu``. Otherwise the number of events
             is constant in each trial. (default: True)
 
         Returns
@@ -281,11 +355,10 @@ class SignalInjector(object):
         src_t = self._srcs["t"]
         src_dt = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
 
+        n = int(np.around(mean_mu))
         while True:
             if poisson:
                 n = self._rndgen.poisson(mean_mu, size=1)
-            else:
-                n = int(np.around(mean_mu))
 
             # If n=0 (no events get sampled) return None
             if n < 1:
@@ -301,11 +374,11 @@ class SignalInjector(object):
             if len(enums) == 1 and enums[0] < 0:
                 sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
                 src_idx = sam_idx['src_idx']
-                sam_ev = self._rot_and_strip(
+                sam_ev, m = self._rot_and_strip(
                     src_ra[src_idx], src_dec[src_idx], sam_ev)
                 sam_ev["timeMJD"] = self._sample_times(
-                    src_t[src_idx], src_dt[src_idx])
-                yield n, sam_ev, sam_idx
+                    src_t[src_idx], src_dt[src_idx])[m]
+                yield n, sam_ev, sam_idx[m]
                 continue
 
             # Else return same dict structure as used in fit
@@ -316,67 +389,71 @@ class SignalInjector(object):
                 sam_ev_i = np.copy(self._MC[enum][idx])
                 # Broadcast corresponding sources for correct rotation
                 src_idx = sam_idx[sam_idx["enum"] == enum]["src_idx"]
-                sam_ev[enum] = self._rot_and_strip(src_ra[src_idx],
-                                                   src_dec[src_idx],
-                                                   sam_ev_i)
+                sam_ev[enum], m = self._rot_and_strip(
+                    src_ra[src_idx], src_dec[src_idx], sam_ev_i)
                 sam_ev[enum]["timeMJD"] = self._sample_times(
-                    src_t[src_idx], src_dt[src_idx])
+                    src_t[src_idx], src_dt[src_idx])[m]
 
-            yield n, sam_ev, sam_idx
+            yield n, sam_ev, sam_idx[m]
 
     def _set_sampling_weights(self):
         """
-        Setup per event sampling weights from the oneweights.
+        Setup per event sampling weights from the OneWeights.
 
-        Physics weights per event (in Hz) are the ratio of expected fluence
-        to the generated fluence per event:
+        Physics weights are calculated for a simple unbroken power law particle
+        flux (per particle type) differential in energy and detection area:
 
-        .. math:
+        .. math:: dN/(dE dA) = F_0 (E / GeV)^{-\gamma}
 
-          w_i &= \frac{dF_i / (\text{GeV cm}^2\text{ s sr})}
-                      {dF^0_i / (\text{GeV cm}^2\text{ sr})} \\
-              &= \frac{\text{ow}_i}{N_\text{gen}} \cdot \Phi
-                 \frac{E_i^{-\gamma}}{\Omega_\text{inj}}
+        with the normalization :math:`F_0` at 1 GeV in units ``[GeV^-1 cm^-2]``.
+        The flux is not differential in time because for GRBs we time integrate.
 
-        because OneWeight :math:`ow` is defined as the inverse generating flux
-        times the nugen specific interaction probability. :math:`\Phi` is the
-        fluence normalization in (GeV cm^2) we search for by injecting events to
-        pure background and see how the TS transfroms.
+        Because we inject only from a fraction of the sky from the diffuse MC
+        per GRB (band or circle) the per event physics weight are calculated
+        using:
 
-        Detector acceptance weights are automatically accounted for in the
-        Monte Carlo sample. It simply has more events in regions with higher
-        acceptance.
+        .. math::
 
-        Also different acceptances in different samples are already taken care
-        of with the OneWeight factorm which is already divided by the number of
-        generated events per sample. So if the acceptance was lower the
-        simulation just threw away more events resulting in lower OneWeights.
+          w_i = [\text{ow}]_i \times \left.\frac{dF}{dE}\right|_{E_i} \times
+                \frac{w_\text{src}}{\Omega_\text{src}}
 
-        So we only include the theoretical weights here manually by multiplying
-        the events belonging to each source with the sources theoretical weight.
+        where ``Omega_src``/``w_src`` is the injected solid angle/intrinsic
+        weight for the GRB the event :math:`i` is injected at and ``ow`` is the
+        NuGen OneWeight per type already divided by
+        ``nfiles * nevents * type_weight``.
+
+        We then get the number of expected events n as
+
+        .. math:: n = \sum_i w_i = F_0 \sum_i \hat{w}_i
+
+        where the free to choose normalization :math:`F_0` is explicitly written
+        in the last step. See :py:meth:`mu2flux` which calculates the
+        fluence from a given number of events from that relation.
         """
+        src_idx = self._mc_arr["src_idx"]
         w_theo = self._srcs["w_theo"]
-        w_theo /= np.sum(w_theo)
-        assert np.allclose(np.sum(w_theo), 1.)
 
         # Broadcast src dependent weight parts to each evt
-        omega = (self._omega / w_theo)[self._mc_arr["src_idx"]]
-        assert len(omega) == len(self._mc_arr)
+        omega = self._omega[src_idx]
+        w_theo = (w_theo / np.sum(w_theo))[src_idx]
+        assert len(omega) == len(w_theo) == len(self._mc_arr)
 
         # Calculate physical weights for E^-gamma fluence for all events
         w = []
         for enum, mc_i in self._MC.items():  # Select again per sample
             idx = self._mc_arr[self._mc_arr["enum"] == enum]["ev_idx"]
-            w.append((mc_i["ow"][idx] * mc_i["trueE"][idx]**(-self._gamma)))
+            flux = power_law_flux_per_type(mc_i["trueE"][idx], self._gamma)
+            w.append(mc_i["ow"][idx] * flux)
 
-        w = flatten_list_of_1darrays(w)
-        assert len(w) == len(self._mc_arr)
         # Finalize by dividing with per event injection solid angle
+        w = np.concatenate(w, axis=0)
+        w *= w_theo
         w /= omega
+        assert len(w) == len(self._mc_arr)
 
         # Total injected fluence and normalized sampling weights
-        self._raw_fluence = np.sum(w)
-        self._sample_w = w / self._raw_fluence
+        self._raw_flux = np.sum(w)
+        self._sample_w = w / self._raw_flux
         assert np.allclose(np.sum(self._sample_w), 1.)
 
         return
@@ -391,8 +468,9 @@ class SignalInjector(object):
 
         Sets up private class varaibles:
 
-        - _omega, array-like: Solid angle in radians of each injection region.
-        - _min_dec, _max_dec, array-like: Upper/lower bounds for each
+        - ``_omega``, array-like: Solid angle in radians of each injection
+          region.
+        - ``_min_dec``, ``_max_dec``, array-like: Upper/lower bounds for each
           declination band in radians (only if `self._mode` is 'band').
         """
         assert self._mode in ["band", "circle"]
@@ -437,14 +515,18 @@ class SignalInjector(object):
         src_ras, src_decs : array-like, shape (len(MC))
             Sources equatorial positions in right-ascension in :math:`[0, 2\pi]`
             and declination in :math:`[-\pi/2, \pi/2]`, both given in radians.
-            These are the coordinates we rotate on per event in `ev`.
+            These are the coordinates we rotate on per event in ``MC``.
         MC : record array
             See :py:meth:<SignalInjector.fit>, Parameters.
 
         Returns
         --------
         ev : structured array
-            Array with rotated value, true information is deleted
+            Array with rotated values, true MC information is deleted
+        m : array-like
+            Boolean mask, ``False`` for events that got rotated outside the
+            ``sin_dec_range`` and are thus filtered out. Must be applied to the
+            sampled times.
         """
         MC["ra"], _dec = rotator(MC["trueRa"], MC["trueDec"],
                                  src_ras, src_decs,
@@ -454,9 +536,14 @@ class SignalInjector(object):
         if "dec" in MC.dtype.names:
             MC["dec"] = _dec
 
+        # Remove events that got rotated outside the sin_dec_range
+        m = ((MC["sinDec"] >= self._sin_dec_range[0]) &
+             (MC["sinDec"] <= self._sin_dec_range[1]))
+        MC = MC[m]
+
         # Remove all names not in experimental data (= remove MC attributes)
         drop_names = [n for n in MC.dtype.names if n not in self._exp_names]
-        return drop_fields(MC, drop_names)
+        return drop_fields(MC, drop_names), m
 
     def _sample_times(self, src_t, dt):
         """
@@ -467,7 +554,7 @@ class SignalInjector(object):
         src_t : array-like (nevts)
             Source time in MJD per event.
         dt : array-like, shape (nevts, 2)
-            Time window in seconds centered around `src_t` in which the signal
+            Time window in seconds centered around ``src_t`` in which the signal
             time PDF is assumed to be uniform.
 
         Returns

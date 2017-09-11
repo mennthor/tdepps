@@ -3,13 +3,14 @@
 from __future__ import print_function, division, absolute_import
 from builtins import range, int
 from future import standard_library
-standard_library.install_aliases()                                              # noqa
+standard_library.install_aliases()
 
 import numpy as np
 from numpy.lib.recfunctions import append_fields, stack_arrays
+from tqdm import tqdm
 
 from tdepps.llh import GRBLLH
-from tdepps.utils import fill_dict_defaults, flatten_list_of_1darrays
+from tdepps.utils import fill_dict_defaults
 
 
 class TransientsAnalysis(object):
@@ -80,7 +81,7 @@ class TransientsAnalysis(object):
         self._llh = llh
 
     def do_trials(self, n_trials, ns0, bg_inj, bg_rate_inj, signal_inj=None,
-                  minimizer_opts=None):
+                  minimizer_opts=None, verb=False):
         """
         Do pseudo experiment trials using only background-like events from the
         given event injectors.
@@ -168,10 +169,14 @@ class TransientsAnalysis(object):
         args = {"nb": nb, "srcs": self._srcs}
         nzeros = 0
         ns, TS = [], []
-        for i in range(n_trials):
+        if verb:
+            trial_iter = tqdm(range(n_trials))
+        else:
+            trial_iter = range(n_trials)
+        for i in trial_iter:
             # Inject events from given injectors
             times = bg_rate_inj.sample(src_t, trange, poisson=True)
-            times = flatten_list_of_1darrays(times)
+            times = np.concatenate(times, axis=0)
             nevts = len(times)
 
             if nevts > 0:

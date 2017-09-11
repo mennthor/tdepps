@@ -3,7 +3,7 @@
 from __future__ import print_function, division, absolute_import
 from builtins import range
 from future import standard_library
-standard_library.install_aliases()                                              # noqa
+standard_library.install_aliases()
 
 import numpy as np
 from numpy.lib.recfunctions import drop_fields, append_fields
@@ -59,8 +59,6 @@ class BGInjector(object):
         >>> data_sam = data_inj.sample(n_samples=1000)
         """
         self.rndgen = random_state
-
-        # self._X_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
         self._X_names = ["logE", "dec", "sigma"]
 
     @property
@@ -82,7 +80,7 @@ class BGInjector(object):
         ----------
         X : record-array
             Experimental data from which background-like event are generated.
-            dtypes are ["name", type]. Here X must have names:
+            Here X must have names:
 
             - "dec": Per event declination, [-pi/2, pi/2], coordinates in
               equatorial coordinates, given in radians.
@@ -136,12 +134,20 @@ class BGInjector(object):
         X
             See :py:meth:`BGInjector.sample`, Returns
         """
-        ra = self._rndgen.uniform(0, 2 * np.pi, size=len(X))
-        sin_dec = np.sin(X["dec"])
+        n_samples = len(X)
+        names = self._X_names + ["ra", "sinDec"]
+        dtype = [(n, f) for n, f in zip(names, len(names) * [np.float])]
+        out = np.empty((n_samples,), dtype=dtype)
 
-        # Append ra, sin_dec fields to X output array
-        return append_fields(X, ["ra", "sinDec"], [ra, sin_dec],
-                             dtypes=np.float, usemask=False)
+        if n_samples > 0:
+            out[self._X_names[0]] = X[:, 0].T
+            out[self._X_names[1]] = X[:, 1].T
+            out[self._X_names[2]] = X[:, 2].T
+
+            out["ra"] = self._rndgen.uniform(0, 2 * np.pi, size=n_samples)
+            out["sinDec"] = np.sin(X[:, 1].T)
+
+        return out
 
     def _check_bounds(self, bounds):
         """
@@ -284,9 +290,7 @@ class KDEBGInjector(BGInjector):
 
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
-            X = np.empty((0, ),
-                         dtype=[(n, np.float) for n in self._X_names])
-            return self._add_ra_sin_dec(X)
+            return self._add_ra_sin_dec(np.empty((0, len(self._X_names))))
 
         # Check which samples are in bounds, redraw those that are not
         X = []
@@ -299,12 +303,8 @@ class KDEBGInjector(BGInjector):
             # Append accepted to final sample
             X.append(gen[accepted])
 
-        # Combine and convert to record-array
-        X = np.concatenate(X)
-        X = np.core.records.fromarrays(X.T, names=self._X_names,
-                                       formats=self._n_features * ["float64"])
-
-        return self._add_ra_sin_dec(X)
+        # Combine and convert to record-array with added ra and sinDec fields
+        return self._add_ra_sin_dec(np.concatenate(X).T)
 
 
 class DataBGInjector(BGInjector):
@@ -333,7 +333,8 @@ class DataBGInjector(BGInjector):
         ----------
         %(BGInjector.fit.parameters)s
         """
-        self.X = self._check_X_names(X)
+        X = self._check_X_names(X)
+        self.X = np.vstack((X[n] for n in self._X_names)).T
         self._n_features = len(X.dtype.names)
         return
 
@@ -355,14 +356,11 @@ class DataBGInjector(BGInjector):
 
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
-            X = np.empty((0, ),
-                         dtype=[(n, np.float) for n in self._X_names])
-            return self._add_ra_sin_dec(X)
+            return self._add_ra_sin_dec(np.empty((0, len(self._X_names))))
 
         # Choose uniformly from given data
-        X = self._rndgen.choice(self.X, size=n_samples)
-
-        return self._add_ra_sin_dec(X)
+        idx = self._rndgen.randint(len(self.X), size=n_samples)
+        return self._add_ra_sin_dec(self.X[idx])
 
 
 class UniformBGInjector(BGInjector):
@@ -417,7 +415,7 @@ class UniformBGInjector(BGInjector):
 
         Notes
         -----
-        .. [1] # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html # noqa
+        .. [1] # From pythia8: home.thep.lu.se/~torbjorn/doxygen/Basics_8h_source.html
         """
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
@@ -429,16 +427,16 @@ class UniformBGInjector(BGInjector):
                      dtype=[(n, np.float) for n in self._X_names])
 
         # Sample logE from gaussian, sinDec uniformly, sigma from x*exp(-x)
-        X["logE"] = self._rndgen.normal(self._logE_mean, self._logE_sigma,
-                                        size=n_samples)
+        logE = self._rndgen.normal(self._logE_mean, self._logE_sigma,
+                                   size=n_samples)
 
-        X["dec"] = (np.arccos(self._rndgen.uniform(-1, 1, size=n_samples)) -
-                    np.pi / 2.)
+        dec = (np.arccos(self._rndgen.uniform(-1, 1, size=n_samples)) -
+               np.pi / 2.)
 
         u1, u2 = self._rndgen.uniform(size=(2, n_samples))
-        X["sigma"] = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
+        sigma = np.deg2rad(-np.log(u1 * u2) / self._sigma_scale)
 
-        return self._add_ra_sin_dec(X)
+        return self._add_ra_sin_dec(np.vstack((logE, dec, sigma)).T)
 
 
 class MRichmanBGInjector(BGInjector):
@@ -474,10 +472,16 @@ class MRichmanBGInjector(BGInjector):
 
             (default: 10)
 
-        minmax : bool, optional
-            If True, use global min/max for outermost bin edges. Else use the
-            min/max bounds in current data bin. Can be used for a global
-            bounding box. (default: False)
+        minmax : bool or array-like, optional
+            Defines the outermost bin edges for the 2nd and 3rd feature:
+
+                - If False, use the min/max values in the current 1st (2nd)
+                  feature bin.
+                - If True, use the global min/max values per feature.
+                - If array-like: Use the given edges as global min/max values
+                  per feature. Must then have shape (3, 2).
+
+            (default: False)
 
         Returns
         -------
@@ -485,7 +489,7 @@ class MRichmanBGInjector(BGInjector):
             The bin borders for the first dimension.
         ax1_bins : array-like, shape (nbins[0], nbins[1] + 1)
             The bin borders for the second dimension.
-        ax2_bins : array-like, shape (nbins[0], nbins[1] nbins[2] + 1)
+        ax2_bins : array-like, shape (nbins[0], nbins[1], nbins[2] + 1)
             The bin borders for the third dimension.
         """
         def bin_equal_stats(data, nbins, minmax=None):
@@ -537,6 +541,10 @@ class MRichmanBGInjector(BGInjector):
         # Get bounding box, we sample the maximum distance in each direction
         if minmax is True:
             minmax = np.vstack((np.amin(X, axis=0), np.amax(X, axis=0))).T
+        elif type(minmax) == np.ndarray:
+            if minmax.shape != (self._n_features, 2):
+                raise ValueError("'minmax' must have shape (3, 2)" +
+                                 " if edges are given explicitely.")
         else:
             minmax = self._n_features * [None]
 
@@ -624,8 +632,4 @@ class MRichmanBGInjector(BGInjector):
         ax2_pts = ax2_edges[:, 0] + r[:, 2] * np.diff(ax2_edges, axis=1).T
 
         # Combine and convert to record-array
-        X = np.vstack((ax0_pts, ax1_pts, ax2_pts))
-        X = np.core.records.fromarrays(X, names=self._X_names,
-                                       formats=self._n_features * ["float64"])
-
-        return self._add_ra_sin_dec(X)
+        return self._add_ra_sin_dec(np.vstack((ax0_pts, ax1_pts, ax2_pts)).T)
