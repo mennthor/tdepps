@@ -487,7 +487,8 @@ class MRichmanBGInjector(BGInjector):
                   feature bin.
                 - If True, use the global min/max values per feature.
                 - If array-like: Use the given edges as global min/max values
-                  per feature. Must then have shape (3, 2).
+                  per feature. Must then have shape (3, 2):
+                  ``[[min1, max1], [min2, max2], [min3, max3]]``.
 
             (default: False)
 
@@ -532,6 +533,8 @@ class MRichmanBGInjector(BGInjector):
 
         # Turn record-array in normal 2D array as it is easier to handle here
         X = self._check_X_names(X)
+        # We need to do this in sinDec, otherwise the borders have to many evts
+        X["dec"] = np.sin(X["dec"])
         X = np.vstack((X[n] for n in self._X_names)).T
 
         self._n_features = X.shape[1]
@@ -553,6 +556,8 @@ class MRichmanBGInjector(BGInjector):
             if minmax.shape != (self._n_features, 2):
                 raise ValueError("'minmax' must have shape (3, 2)" +
                                  " if edges are given explicitely.")
+            # Also adapt to sinDec
+            minmax[1] = np.sin(minmax[1])
         else:
             minmax = self._n_features * [None]
 
@@ -638,6 +643,9 @@ class MRichmanBGInjector(BGInjector):
         ax0_pts = ax0_edges[:, 0] + r[:, 0] * np.diff(ax0_edges, axis=1).T
         ax1_pts = ax1_edges[:, 0] + r[:, 1] * np.diff(ax1_edges, axis=1).T
         ax2_pts = ax2_edges[:, 0] + r[:, 2] * np.diff(ax2_edges, axis=1).T
+
+        # Backtransform to dec
+        ax1_pts = np.arcsin(ax1_pts)
 
         # Combine and convert to record-array
         return self._add_ra_sin_dec(np.vstack((ax0_pts, ax1_pts, ax2_pts)).T)
