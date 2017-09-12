@@ -28,16 +28,22 @@ class SignalInjector(object):
         One of ``['circle'|'band']``. Selects MC events to inject based
         on their true location:
 
-        - 'circle' : Select ``MC`` events in circle around a source.
-        - 'band' : Select ``MC`` events in a declination band around a source.
+        - 'circle': Select ``MC`` events in circle around each source.
+        - 'band': Select ``MC`` events in a declination band around each source.
 
         (default: 'band')
 
     inj_width : float, optinal
-        If ``mode`` is 'band', this is half the width of the declination band
-        centered at the source positions in radian.
-        If ``mode`` is ``circle`` this is the radius of the circle in radian.
+        Angular size of the regions from which MC events are injected, in
+        radians.
+
+        - If ``mode`` is ``'band'``, this is half the width of the declination
+          band centered at the source positions in radian.
+        - If ``mode`` is ``'circle'`` this is the radius of the circular
+          selection region in radian.
+
         (default: ``np.deg2rad(2)``)
+
     sin_dec_range : array-like, shape (2), optional
         Boundaries for which injected events are discarded, when their rotated
         coordinates are outside this bounds. Is useful, when a zenith cut is
@@ -190,8 +196,8 @@ class SignalInjector(object):
 
         MC : recarray or dict(enum, recarray)
             Either single structured array describing Monte Carlo events or a
-            dictionary with integer keys `enum` mapped to record arrays.
-            `MC` must contain names given in `exp_names` and additonally:
+            dictionary with integer keys ``enum`` mapped to record arrays.
+            ``MC`` must contain names given in ``exp_names`` and additonally:
 
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
