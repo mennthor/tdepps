@@ -226,7 +226,7 @@ class SignalInjector(object):
         if not isinstance(MC, dict):  # Work consitently with dicts
             MC = {-1: MC}
         else:
-            if not np.all([type(k) == int for k in MC.keys()]):
+            if not np.all([isinstance(k, int) for k in MC.keys()]):
                 raise ValueError("MC has non-integer keys.")
 
         required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
