@@ -392,9 +392,11 @@ class SignalInjector(object):
 
             # Else return same dict structure as used in fit
             sam_ev = dict()
+            idx_m = np.zeros_like(sam_idx, dtype=bool)
             for enum in enums:
                 # Select events per sample
-                idx = sam_idx[sam_idx["enum"] == enum]["ev_idx"]
+                enum_m = sam_idx["enum"] == enum
+                idx = sam_idx[enum_m]["ev_idx"]
                 sam_ev_i = np.copy(self._MC[enum][idx])
                 # Broadcast corresponding sources for correct rotation
                 src_idx = sam_idx[sam_idx["enum"] == enum]["src_idx"]
@@ -402,8 +404,12 @@ class SignalInjector(object):
                     src_ra[src_idx], src_dec[src_idx], sam_ev_i)
                 sam_ev[enum]["timeMJD"] = self._sample_times(
                     src_t[src_idx], src_dt[src_idx])[m]
+                # Build up the mask for the returned indices 'sam_idx'
+                _idx_m = np.zeros_like(m)
+                _idx_m[m] = True
+                idx_m[enum_m] = _idx_m
 
-            yield n, sam_ev, sam_idx[m]
+            yield n, sam_ev, sam_idx[idx_m]
 
     def _set_sampling_weights(self):
         """
@@ -518,6 +524,7 @@ class SignalInjector(object):
 
         The rotation angles to move the true directions to the sources are used
         to rotate the measured positions by the same amount.
+        Events rotated outside ``sin_dec_range`` are removed.
 
         Parameters
         ----------
@@ -532,7 +539,7 @@ class SignalInjector(object):
         --------
         ev : structured array
             Array with rotated values, true MC information is deleted
-        m : array-like
+        m : array-like, shape (len(MC))
             Boolean mask, ``False`` for events that got rotated outside the
             ``sin_dec_range`` and are thus filtered out. Must be applied to the
             sampled times.
