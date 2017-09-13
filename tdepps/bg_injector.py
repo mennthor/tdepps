@@ -552,7 +552,7 @@ class MRichmanBGInjector(BGInjector):
         # Get bounding box, we sample the maximum distance in each direction
         if minmax is True:
             minmax = np.vstack((np.amin(X, axis=0), np.amax(X, axis=0))).T
-        elif type(minmax) == np.ndarray:
+        elif isinstance(minmax, np.ndarray):
             if minmax.shape != (self._n_features, 2):
                 raise ValueError("'minmax' must have shape (3, 2)" +
                                  " if edges are given explicitely.")
