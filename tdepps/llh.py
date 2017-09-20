@@ -1085,17 +1085,123 @@ class GRBLLH(object):
         return rep
 
 
-class MaxBurstGRBLLH(GRBLLH):
+class MultiyearGRBLLH(object):
     def __init__(self):
+        self._names = []
+        self._llhs = []
         return
 
+    @property
+    def names(self):
+        return self._names
+
+    @property
+    def llhs(self):
+        return self._llh
+
+    def add_sample(self, name, llh):
+        """
+        Add a LLH object to consider.
+
+        Parameters
+        ----------
+        name : str
+            Name of the LLH object. Should be connected to the dataset used.
+        llh : tdepps.llh.GRBLLH
+            LLH object holding all the PDF information for the sample.
+        """
+        if not isinstance(llh, GRBLLH):
+            raise ValueError("`llh` object must be of type GRBLLH.")
+
+        if name in self._names:
+            raise KeyError("Name '{}' has already been added. ".format(name) +
+                           "Choose a different name.")
+
+        self._names.append(name)
+        self._llhs.append(llh)
+        return
+
+    def lnllh_ratio(self, X, ns, args):
+        r"""
+        Calculate the lnllh ratio for the multi year case.
+
+        The total LLH is the sum of all single LLHs operating on disjunct data
+        sets each. ``ns`` gets split up over the data sets to regard detection
+        efficiency per year.
+
+        Parameters
+        ----------
+        X : dict of record-arrays
+            Fixed data set each LLH depends on, given as a dict. Each value must
+            be a record array as used in the single LLH class.
+        ns : float
+            Number of signal events at the source locations for all years in
+            total.
+        args : list of dicts
+            Other fixed parameters each LLH depends on, given as a dict. Each
+            value must be a dict as used in the single LLH class.
+            List must have length of number of added samples.
+
+        Returns
+        -------
+        TS : float
+            Lambda test statistic, 2 times the natural logarithm of the LLH
+            ratio.
+        ns_grad : array-like, shape (1)
+            Gradient of the test statistic in the fit parameter `ns`.
+        """
+        raise NotImplementedError("TODO")
+        return
+
+    def fit_lnllh_ratio(self, X, ns0, args, bounds, minimizer_opts):
+        """
+        Fit the LLH parameter :math:`n_S` for a given set of data and fixed
+        LLH arguments for the multi year case
+
+        The total LLH is the sum of all single LLHs operating on disjunct data
+        sets each. The fitted ``ns`` parameter gets split up over the data sets
+        to regard detection efficiency per year.
+        The relative weight is the effective area per year summed over every
+        source position. For a single source, this reduces to a single detection
+        efficiency per year at the sources position.
+
+        Parameters
+        ----------
+        X : dict of record-arrays
+            Fixed data set each LLH depends on, given as a dict. Each value
+            must be a record array as used in the single LLH class.
+        ns0 : float
+            Fitter seed for the fit parameter ``ns``: number of signal events
+            that we expect at the source locations.
+        args : list of dicts
+            Other fixed parameters each LLH depends on, given as a dict. Each
+            value must be a dict as used in the single LLH class.
+            List must have length of number of added samples.
+        bounds : array-like, shape (1, 2)
+            Minimization bounds ``[[min, max]]`` for ``ns``. Use None for one of
+            ``min`` or ``max`` when there is no bound in that direction.
+        minimizer_opts : dict
+            Options passed to ``scipy.optimize.minimize`` [5]_ using the
+            "L-BFGS-B" algorithm.
+
+        Returns
+        -------
+        ns : float
+            Best fit parameter number of signal events :math:`n_S`.
+        TS : float
+            Best fit test statistic value.
+
+        Notes
+        -----
+        .. [5] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466
+        """
+        raise NotImplementedError("TODO")
+        return
+
+
+class MaxBurstGRBLLH(GRBLLH):
     # TODO: Redefine the TS only here. Instead of stacking, evaluate single LLH
     #       For every source seperately. The best fit TS is then max_i(TS_i).
-
-
-class MultiyearGRBLLH(GRBLLH):
     def __init__(self):
+        raise NotImplementedError("Not done yet.")
         return
-
-    # TODO: Collect multiple GRBLLHs and make a new LLH with split ns
-    #       and adapted fit_llh method.
