@@ -215,3 +215,22 @@ class TransientsAnalysis(object):
         res["TS"] = np.array(TS)
 
         return res, nzeros
+
+    def unblind(self):
+        """
+        Get the TS value for unblinded on data.
+
+        Parameters
+        ----------
+        Xon : record-array
+            On time data
+        ns0 : float
+        minimizer_opts : dict, optional
+
+        Returns
+        -------
+        TS : float
+        ns : float
+        significance : float
+        """
+        raise NotImplementedError("Not done yet.")

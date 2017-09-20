@@ -28,16 +28,22 @@ class SignalInjector(object):
         One of ``['circle'|'band']``. Selects MC events to inject based
         on their true location:
 
-        - 'circle' : Select ``MC`` events in circle around a source.
-        - 'band' : Select ``MC`` events in a declination band around a source.
+        - 'circle': Select ``MC`` events in circle around each source.
+        - 'band': Select ``MC`` events in a declination band around each source.
 
         (default: 'band')
 
     inj_width : float, optinal
-        If ``mode`` is 'band', this is half the width of the declination band
-        centered at the source positions in radian.
-        If ``mode`` is ``circle`` this is the radius of the circle in radian.
+        Angular size of the regions from which MC events are injected, in
+        radians.
+
+        - If ``mode`` is ``'band'``, this is half the width of the declination
+          band centered at the source positions in radian.
+        - If ``mode`` is ``'circle'`` this is the radius of the circular
+          selection region in radian.
+
         (default: ``np.deg2rad(2)``)
+
     sin_dec_range : array-like, shape (2), optional
         Boundaries for which injected events are discarded, when their rotated
         coordinates are outside this bounds. Is useful, when a zenith cut is
@@ -190,8 +196,8 @@ class SignalInjector(object):
 
         MC : recarray or dict(enum, recarray)
             Either single structured array describing Monte Carlo events or a
-            dictionary with integer keys `enum` mapped to record arrays.
-            `MC` must contain names given in `exp_names` and additonally:
+            dictionary with integer keys ``enum`` mapped to record arrays.
+            ``MC`` must contain names given in ``exp_names`` and additonally:
 
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
@@ -219,6 +225,9 @@ class SignalInjector(object):
         """
         if not isinstance(MC, dict):  # Work consitently with dicts
             MC = {-1: MC}
+        else:
+            if not np.all([isinstance(k, int) for k in MC.keys()]):
+                raise ValueError("MC has non-integer keys.")
 
         required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
         for n in required_names:
@@ -383,9 +392,11 @@ class SignalInjector(object):
 
             # Else return same dict structure as used in fit
             sam_ev = dict()
+            idx_m = np.zeros_like(sam_idx, dtype=bool)
             for enum in enums:
                 # Select events per sample
-                idx = sam_idx[sam_idx["enum"] == enum]["ev_idx"]
+                enum_m = sam_idx["enum"] == enum
+                idx = sam_idx[enum_m]["ev_idx"]
                 sam_ev_i = np.copy(self._MC[enum][idx])
                 # Broadcast corresponding sources for correct rotation
                 src_idx = sam_idx[sam_idx["enum"] == enum]["src_idx"]
@@ -393,8 +404,12 @@ class SignalInjector(object):
                     src_ra[src_idx], src_dec[src_idx], sam_ev_i)
                 sam_ev[enum]["timeMJD"] = self._sample_times(
                     src_t[src_idx], src_dt[src_idx])[m]
+                # Build up the mask for the returned indices 'sam_idx'
+                _idx_m = np.zeros_like(m)
+                _idx_m[m] = True
+                idx_m[enum_m] = _idx_m
 
-            yield n, sam_ev, sam_idx[m]
+            yield n, sam_ev, sam_idx[idx_m]
 
     def _set_sampling_weights(self):
         """
@@ -509,6 +524,7 @@ class SignalInjector(object):
 
         The rotation angles to move the true directions to the sources are used
         to rotate the measured positions by the same amount.
+        Events rotated outside ``sin_dec_range`` are removed.
 
         Parameters
         ----------
@@ -523,7 +539,7 @@ class SignalInjector(object):
         --------
         ev : structured array
             Array with rotated values, true MC information is deleted
-        m : array-like
+        m : array-like, shape (len(MC))
             Boolean mask, ``False`` for events that got rotated outside the
             ``sin_dec_range`` and are thus filtered out. Must be applied to the
             sampled times.
