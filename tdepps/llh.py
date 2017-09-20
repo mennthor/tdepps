@@ -70,11 +70,13 @@ class GRBLLH(object):
 
         - "bins", array-like: Explicit bin edges of the sinus declination
           histogram used to fit a spline describing the spatial background PDF.
-          Bins must be in range [-1, 1].
-        - "kent", bool, optional: If True, the signal PDF uses the Kent [3]_
-          distribution. A 2D gaussian PDF is used otherwise. (default: True)
+          Bins must be in range ``[-1, 1]``.
+          Bins are used for every 1D hist, including BG PDF, detector weight
+          histogram and expected events per ``sin_dec`` histogram.
+        - "kent", bool, optional: If ``True``, the signal PDF uses the Kent [3]_
+          distribution. A 2D gaussian PDF is used otherwise. (default: ``True``)
         - "k", int, optional: Degree of the smoothing spline used to fit the
-          background histogram. Must be 1 <= k <= 5. (default: 3)
+          background histogram. Must be ``1 <= k <= 5``. (default: 3)
 
     energy_pdf_args : dict
         Arguments for the energy PDF ratio. Must contain keys:
@@ -273,7 +275,7 @@ class GRBLLH(object):
         self._SECINDAY = 24. * 60. * 60.
 
         # Create background spline used in the spatial PDF from data
-        self._spatial_bg_spl = self._create_sin_dec_spline(
+        self._spatial_bg_spl = self._normed_sin_dec_spline(
             sin_dec=X["sinDec"], bins=self._spatial_pdf_args["bins"],
             weights=np.ones(len(X)))
 
@@ -282,9 +284,15 @@ class GRBLLH(object):
             sin_dec_bg, logE_bg, w_bg, sin_dec_sig, logE_sig, w_sig)
 
         # Create sin_dec signal spline for the src detector weights from MC
-        self._spatial_signal_spl = self._create_sin_dec_spline(
+        self._spatial_signal_spl = self._normed_sin_dec_spline(
             sin_dec=MC["sinDec"], bins=self._energy_pdf_args["bins"][0],
             weights=w_sig)
+
+        # Create event expectation signal spline per sin_dec for absolute event
+        # expectations used for multiyear weighting
+        self._nexpected_signal_spl = self._nexpected_per_sin_dec_spline(
+            sin_dec=MC["sinDec"], trueE=MC["trueE"], ow=MC["ow"],
+            bins=self._spatial_pdf_args["bins"])
 
         return
 
@@ -371,7 +379,7 @@ class GRBLLH(object):
             locations.
 
         args : dict
-            Other fixed parameters {'par_name': value}, the LLH depents on.
+            Other fixed parameters {'par_name': value}, the LLH depends on.
             Here `args` must have keys:
 
             - 'ns', array-like, shape (nsrcs): Number of expected background
@@ -426,8 +434,6 @@ class GRBLLH(object):
         minimizer_opts : dict
             Options passed to `scipy.optimize.minimize` [4]_ using the
             "L-BFGS-B" algorithm.
-
-
 
         Returns
         -------
@@ -535,7 +541,7 @@ class GRBLLH(object):
         ----------
         src_dec : array-like, shape (nsrcs)
             Declination coordinate of each source in radian in interval
-            [-pi/2, pi/2].
+            ``[-pi/2, pi/2]``.
         src_w_theo : array-like, shape (nsrcs)
             Theoretical source weight per source, eg. from a known gamma flux.
 
@@ -544,9 +550,13 @@ class GRBLLH(object):
         src_w : array-like, shape (nsrcs, 1)
             Combined normalized weight per source.
         """
+        sin_dec = np.sin(src_dec)
+        min_sin_dec, max_sin_dec = self._spatial_pdf_args["bins"][[0, -1]]
+        if np.any(sin_dec < min_sin_dec) or np.any(sin_dec > max_sin_dec):
+            raise ValueError("Requested weight for a sin_dec outside the " +
+                             "declination binning.")
         # Get src detector weights form signal sin_dec spline from MC
         src_dec_w = np.exp(self._spatial_signal_spl(np.sin(src_dec)))
-
         # Make combined src weight by multiplying with the theoretical weights
         src_w = src_dec_w * src_w_theo
         src_w = src_w[:, None] / np.sum(src_w)
@@ -578,6 +588,33 @@ class GRBLLH(object):
         trange[:, 1] = dt[:, 1] + sig_t_clip
 
         return trange
+
+    def expect_weights(self, src_dec):
+        """
+        Returns an event expectation in units ``1/(T sr)`` per declination.
+
+        If integrated over soild angle and multiplied with a flux normalization
+        at ``1 GeV`` in units ``1/(GeV cm^2 s sr)``, this yields the total event
+        rate from the MC signal sample used to build the PDFs.
+
+        Parameters
+        ----------
+        src_dec : array-like, shape (nsrcs)
+            Declination coordinate of each source in radian in interval
+            ``[-pi/2, pi/2]``.
+
+        Returns
+        -------
+        expect_w : array-like, shape (nsrcs, 1)
+            Unnormalized event expectation per given ``src_dec`` in
+            ``1/(T sr)``.
+        """
+        sin_dec = np.sin(src_dec)
+        min_sin_dec, max_sin_dec = self._spatial_pdf_args["bins"][[0, -1]]
+        if np.any(sin_dec < min_sin_dec) or np.any(sin_dec > max_sin_dec):
+            raise ValueError("Requested weight for a sin_dec outside the " +
+                             "declination binning.")
+        return np.exp(self._nexpected_signal_spl(sin_dec))
 
     # #########################################################################
     # Signal over background probabilities for time, spatial and energy PDFs
@@ -1001,29 +1038,29 @@ class GRBLLH(object):
                                           bounds_error=False, fill_value=None)
         return spl
 
-    def _create_sin_dec_spline(self, sin_dec, bins, weights):
+    def _normed_sin_dec_spline(self, sin_dec, bins, weights):
         """
-        Fit an interpolating spline to a histogram of sin(dec).
+        Fit an interpolating spline to a histogram of ``sin_dec`` and normalize
+        so it is a PDF in ``sin_dec``.
 
         Spline is extrapolated outside it's definition range.
 
         Parameters
         ----------
         sin_dec : array-like, shape (nevts)
-            Equatorial sinus declination coordinates in [-1, 1].
+            Equatorial sinus declination coordinates in ``[-1, 1]``.
         bins : array-like, shape (nbins + 1)
-            Explicit bin edges to use in the sin_dec histogram.
+            Explicit bin edges to use in the ``sin_dec`` histogram.
         weights : array-like, shape (nevts)
             Weights used in histogram creation.
 
         Returns
         -------
         sin_dec_spl : scipy.interpolate.InterpolatingSpline
-            Spline object interpolating the created histogram. Must be evaluated
-            with sin(dec) and exponentiated to give the correct PDF values.
+            Spline object interpolating the created ``sin_dec`` histogram.
+            Must be evaluated with sin(dec) and exponentiated to give the
+            correct PDF values.
         """
-        k = self._spatial_pdf_args["k"]
-
         assert np.all((sin_dec >= bins[0]) & (sin_dec <= bins[-1]))
 
         # Make normalised hist to fit the spline to x, y pairs
@@ -1031,14 +1068,75 @@ class GRBLLH(object):
                                   density=True)
 
         if np.any(hist <= 0.):
-            raise ValueError("Got empty ev_sin_dec hist bins, this must not " +
+            raise ValueError("Got empty sin_dec hist bins, this must not " +
                              "happen. Empty bins idx:\n{}".format(
                                  np.arange(len(bins) - 1)[hist <= 0.]))
 
+        return self._fit_spline_to_hist(hist, bins)
+
+    def _nexpected_per_sin_dec_spline(self, sin_dec, trueE, ow, bins):
+        """
+        Make a spline describing the expected number of events for signal from a
+        histogram::
+
+        .. math:
+
+          \frac{n_\text{exp}}{T\Delta\Omega} =
+            \sum_{i\in\Delta E, \Delta \Omega}
+                \frac{\text{ow}_i (E_i/\text{GeV})^{-\gamma}}{{\Delta\Omega}}
+
+        Parameters
+        ----------
+        sin_dec : array-like, shape (nevts)
+            Equatorial sinus declination coordinates in ``[-1, 1]``.
+        bins : array-like, shape (nbins + 1)
+            Explicit bin edges to use in the ``sin_dec`` histogram.
+
+        Returns
+        -------
+        eff_area_spl : scipy.interpolate.InterpolatingSpline
+            Spline object interpolating the created effective area histogram.
+            Must be exponentiated to give the correct values.
+        """
+        # Not using a normalization: would be global constant for all weigths
+        w_sig = ow * power_law_flux_per_type(trueE,
+                                             self._energy_pdf_args["gamma"])
+        hist, bins = np.histogram(sin_dec, bins=bins, weights=w_sig,
+                                  density=False)
+
+        if np.any(hist <= 0.):
+            raise ValueError("Got empty sin_dec hist bins, this must not " +
+                             "happen. Empty bins idx:\n{}".format(
+                                 np.arange(len(bins) - 1)[hist <= 0.]))
+
+        # Make effective area by normalizing by the bin volume
+        hist /= np.diff(bins) * 2. * np.pi
+        return self._fit_spline_to_hist(hist, bins)
+
+    def _fit_spline_to_hist(self, h, bins):
+        """
+        Fit an interpolating spline to a histogram in ln-space.
+
+        Spline is extrapolated outside it's definition range.
+
+        Parameters
+        ----------
+        h : array-like
+            Histogram values per bin.
+        bins : array-like, shape (len(h) + 1)
+            Explicit bin edges for the the histogram.
+
+        Returns
+        -------
+        spl : scipy.interpolate.InterpolatingSpline
+            Spline object interpolating the histogram. Must be exponentiated to
+            give the correct histograms values.
+        """
+        k = self._spatial_pdf_args["k"]
         mids = 0.5 * (bins[:-1] + bins[1:])
         # Add the outermost bin edges to avoid overshoots at the edges
         x = np.concatenate((bins[[0]], mids, bins[[-1]]))
-        y = np.log(hist)
+        y = np.log(h)
         y = np.concatenate((y[[0]], y, y[[-1]]))
         return sci.InterpolatedUnivariateSpline(x, y, k=k, ext="extrapolate")
 
