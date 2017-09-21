@@ -669,12 +669,11 @@ class GRBLLH(object):
                                     ev_sin_dec, ev_sig) *
                self._soverb_energy(ev_sin_dec, ev_logE))
 
-        # If mutliple srcs: sum over signal contribution from each src.
+        # If mutliple srcs: sum over weighted signal contribution from each src
         # The single src case is automatically included due to broadcasting
         src_w = self.src_weights(src_dec, src_w_theo)
-        # Background expecation is sum over all on-time windows, assuming non-
-        # overlapping windows.
-        sob = np.sum(sob * src_w, axis=0) / np.sum(nb)
+        # Background expecation per source
+        sob = np.sum(sob * src_w / nb, axis=0)
 
         # Apply a SoB ratio cut, to save computation time on events that don't
         # contribute anyway. We have a relative and an absolute threshold
