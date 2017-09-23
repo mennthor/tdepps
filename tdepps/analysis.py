@@ -7,10 +7,13 @@ standard_library.install_aliases()
 
 import numpy as np
 from numpy.lib.recfunctions import append_fields, stack_arrays
+import scipy.stats as scs
+import scipy.optimize as sco
 from tqdm import tqdm
 
 from tdepps.llh import GRBLLH
-from tdepps.utils import fill_dict_defaults
+from tdepps.utils import (fill_dict_defaults, get_weighted_percentile,
+                          make_ns_poisson_weights)
 
 
 class TransientsAnalysis(object):
@@ -215,6 +218,240 @@ class TransientsAnalysis(object):
         res["TS"] = np.array(TS)
 
         return res, nzeros
+
+    def performance(self, ts_val, beta, bg_inj, bg_rate_inj, signal_inj,
+                    mu0=None, ntrials=100, minimizer_opts=None,
+                    tol_perc_err=5e-3, tol_mu_rel=1e-3, maxloops=100,
+                    verb=False):
+        """
+        Iteratively search for the best fit `mu`, so that a fraction `beta` of
+        the scaled PDF lies above the background test statistic value `ts_val`.
+
+        Performance search on a PDF parameter `mu` which is the expectation
+        value for a poisson PDF via a second variable defining a test statistic
+        which is directly influenced by the choice of `mu`.
+
+        Parameters
+        ----------
+        ts_val : float
+            Test statistic value of the BG distribution, which is connected to
+            the alpha value (Type I error).
+        beta : float
+            Fraction of alternative hypothesis PDF that should lie right of the
+            `ts_val`.
+        bg_inj : `tdepps.bg_injector` instance
+            Injector to generate background-like pseudo events.
+        bg_rate_inj : `tdepps.bg_rate_injector` instance
+            Injector to generate the times of background-like pseudo events.
+        signal_inj : `tdepps.signal_injector.sample` generator
+            Injector generator to generate signal events.
+        minimizer_opts : dict, optional
+            See :py:meth:`do_trials`, Parameters
+        mu0 : float, optional
+            Seed value to begin the minimization at. If None a region close to
+            the minimum is searched for automatically. If explicitely given, it
+            must be >= 0. (default: None)
+        ntrials : int, optional
+            How many new trials to make per new iteration. (default: 100)
+        tol_perc_err, tol_mu_rel : float, optional
+            The iteration stops when BOTH of the following conditons are met:
+
+            - The error on the estimated percentile for the current best fit
+              ``mu`` is ``errors[-1] <= tol_perc_err`` AND
+            - The relative difference in the best fit ``mus`` is
+              ``abs(mus[-1]-mus[-2])/mus[-1]<= tol_mu_rel``.
+
+            Furthermore the conditions must be met in both the last and second
+            to last trial loops to avoid a break on accidental fluctuations.
+            (default: tol_perc_err: 5e-3, tol_mu_rel: 1e-3)
+        maxloops : int, optional
+            Break the minimization process after this many loops with ntrials
+            trials each. (default: 100)
+        verb : bool, optional
+            If ``True``print convergence message during fit. (default: False)
+
+        Returns
+        -------
+        res : dict
+            Result dictionary with keys:
+
+            - "mu_bf": Best fit mu, equal to mu[-1].
+            - "mu": List of visited mu values during minimization.
+            - "ts": List of generated TS values during minimization.
+            - "ns": List of generared ns values during minimization.
+            - "err": List of errors on the weighted TS percentile per iteration.
+            - "perc": List of estimated TS percentiles per iteration.
+            - "nloops": Number of iterations needed to converge.
+            - "ninitloops": Number of initial scan iterations done.
+            - "lastfitres": scipy.optimize.OptimizeResult of the last fit.
+            - "converged": Boolean, if ``True`` fit converged within maxloops.
+        """
+        def loss(mu, ns, ts):
+            """
+            Logged least squares loss for percentile distance to beta. No
+            gradient is returned, because is has a pole at the minimum and the
+            minimizer doesn't like that.
+
+            Parameters
+            ----------
+            mu : float
+                Current expectation value for poisson PDF.
+            ns : array-like
+                ns values from all trials done so far.
+            ts : array-like
+                Test statistic values from all trials done so far.
+
+            Returns
+            -------
+            loss : float and array-like
+                Value of the loss function at the current mu.
+            """
+            # Reweight TS trials using the poisson statistics of ns
+            w, _ = make_ns_poisson_weights(mu=mu, ns=ns)
+            perc, _ = get_weighted_percentile(x=ts, val=ts_val, w=w)
+            return np.log10((perc - beta)**2)
+
+        def append_batch_of_trials(n, mu, ns, ts):
+            """Do n trials and append result to ns and ts arrays"""
+            res, nzeros = self.do_trials(n, ns0=mu, bg_inj=bg_inj,
+                                         bg_rate_inj=bg_rate_inj,
+                                         signal_inj=signal_inj,
+                                         minimizer_opts=minimizer_opts,
+                                         verb=False)
+            ns = np.concatenate((ns, res["ns"], np.zeros(nzeros, dtype=float)))
+            ts = np.concatenate((ts, res["ts"], np.zeros(nzeros, dtype=float)))
+            return ns, ts
+
+        def get_perc_and_err(mu, ns, ts):
+            """
+            Get the percentile and its relative error for all trials under
+            the current best fit mu.
+            """
+            w, _ = make_ns_poisson_weights(mu=mu, ns=ns)
+            perc, err = get_weighted_percentile(x=ts, val=ts_val, w=w)
+            return perc, err
+
+        # Keep track of progress
+        mus = np.array([], dtype=np.float)
+        ts = np.array([], dtype=np.float)
+        ns = np.array([], dtype=np.int)
+        errors = np.array([], dtype=np.float)
+        percs = np.array([], dtype=np.float)
+        n_init_loops = 0
+        n_loops = 0
+        converged = False
+
+        # If no seed given, start initial scan to get close to the minimum
+        dmu = 5.  # Must be handtuned to the problem...
+        if mu0 is None:
+            n_init_trials = 10  # Not too few but also not too many for 1st scan
+
+            def frac_over_tsval(ts):
+                """Fraction of 'n_init_trials' last trials above 'ts_val'"""
+                if len(ts) < n_init_trials:
+                    return 0.
+                return (np.sum(ts[-n_init_trials:] > ts_val) /
+                        n_init_trials)
+
+            mu = 1.
+            stop = False
+            while not stop:
+                ns, ts = append_batch_of_trials(n_init_trials, mu, ns, ts)
+
+                # Save progress
+                mus = np.append(mus, mu)
+                # Err estimation is not reliable here, too few trials, so use
+                # worst error = 1 for all trials
+                perc, _ = get_perc_and_err(mu, ns, ts)
+                errors = np.append(errors, 1.)
+                percs = np.append(percs, perc)
+
+                # Go above beta in the last two batches to have enough trials
+                # above best fit
+                if n_init_loops > 2:
+                    stop = ((frac_over_tsval(ts) > beta) and
+                            (frac_over_tsval(ts[:-n_init_trials]) > beta))
+
+                mu += dmu
+                n_init_loops += 1
+
+            if verb:
+                print("Made {} intitial scan loops with {} trials total".format(
+                    n_init_loops, len(ts)))
+
+        elif mu0 < 0.:
+            raise ValueError("Seed `mu0` must be >= 0.")
+        else:
+            # Init and do first batch of trials
+            mu = mu0
+            mus = np.append(mus, mu)
+            errors = np.append(errors, 1.)
+            percs = np.append(percs, -1.)
+            ns, ts = append_batch_of_trials(ntrials, mu, ns, ts)
+
+        # Process minimizer loop until last two rel. error are below tolerance
+        stop = False
+        while n_loops <= 2 or not stop:
+            # Make new batch of trials
+            ns, ts = append_batch_of_trials(ntrials, mu, ns, ts)
+
+            # Now fit the poisson expectation by reusing all (reweighted) trials
+            # Bounds: 90% CL central interval around best mu
+            bl, bu = scs.poisson.interval(0.90, mu)
+            bounds = [bl, max(bu, 1.)]  # Avoid [0, 0] for small mu
+            # Do a seed scan prior to fitting to avoid local minima
+            seeds = np.arange(*bounds)
+            seed = seeds[np.argmin([loss(mui, ns, ts) for mui in seeds])]
+
+            res = sco.minimize(loss, [seed], bounds=[bounds], args=(ns, ts),
+                               jac=False, method="L-BFGS-B",
+                               options={"ftol": 100, "gtol": 1e-8})
+            mu = res.x
+            perc, err = get_perc_and_err(mu, ns, ts)
+
+            # Make some manual tweaks to help the minimizer: (credit: mrichman)
+            oldmu = mus[-1]
+            # New fit is suddenly more than 50% above old fit: Truncate change
+            if np.abs(mu - oldmu) / oldmu > 0.5:
+                if mu > oldmu:
+                    mu = 1.5 * oldmu
+                else:
+                    mu = 0.5 * oldmu
+                err = errors[-1]  # Make sure we definitely do another trial
+            # Fit is identically to previous fit
+            if mu == oldmu:
+                mu = 1.1 * oldmu  # Choose larger mu: conservative -> more flux
+                err = errors[-1]
+
+            # Save the progress
+            mus = np.append(mus, mu)
+            errors = np.append(errors, err)
+            percs = np.append(percs, perc)
+            n_loops += 1
+
+            # Error conditions must match in the last and last to last trials
+            if n_loops > 2:
+                mu_rel_err1 = np.abs(mus[-1] - mus[-2]) / mus[-1]
+                mu_rel_err2 = np.abs(mus[-2] - mus[-3]) / mus[-2]
+                if ((mu_rel_err1 <= tol_mu_rel) and
+                        (mu_rel_err2 <= tol_mu_rel) and
+                        (errors[-1] < tol_perc_err) and
+                        (errors[-2] < tol_perc_err)):
+                    if verb:
+                        print("Break: below tol_mu_rel and tol_perc_err.")
+                    converged = True
+                    stop = True
+
+            if n_loops == maxloops:
+                if verb:
+                    print("Manual break after {} loops with {} main ".format(
+                          n_loops, n_loops * ntrials) + "trials: Reached " +
+                          "`maxloops` loops.")
+                break
+
+        return {"mu_bf": mus[-1], "mus": mus, "ts": ts, "ns": ns, "err": errors,
+                "perc": percs, "nloops": n_loops, "ninitloops": n_init_loops,
+                "lastfitres": res, "converged": converged}
 
     def unblind(self):
         """

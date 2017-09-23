@@ -11,7 +11,7 @@ standard_library.install_aliases()
 
 import numpy as np
 import scipy.optimize as sco
-from scipy.stats import rv_continuous, chi2
+from scipy.stats import rv_continuous, chi2, poisson
 
 
 def power_law_flux_per_type(trueE, gamma):
@@ -198,6 +198,86 @@ def func_min_in_interval(func, interval, nscan=7):
                         options={"gtol": 1e-12, "ftol": 1e-12}).x
 
     return func(xmin)
+
+
+def make_ns_poisson_weights(mu, ns):
+    """
+    The values of ns are drawn from poisson PDF with a specific mu.
+    To reuse trials generated from a different mu, we can reweight the ns
+    values to match the current mu.
+
+    Parameters
+    ----------
+    mu : float
+        Possion expectation value, >= 0.
+    ns : array-like
+        ns values from various trials.
+
+    Returns
+    -------
+    weights : array-like
+        Weights to reweights ns values to the poissnian with expectaion mu.
+    hist : array-like
+        Number of events falling in each ns bin.
+    """
+    if mu < 0.:
+        raise ValueError("Poisson expectation 'mu' must be >= 0.")
+    # Bin ns values to assign proper weight
+    hist = np.bincount(ns)
+    nbins = len(hist)
+    bins = np.arange(nbins)
+    # Get probability per bin for current mu
+    pmf = poisson.pmf(bins, mu)
+    # Get weights, split equally per bin
+    weights = np.zeros(nbins)
+    mask = hist > 0.
+    weights[mask] = pmf[mask] / hist[mask]
+    # Reassign weight to per trial ns
+    idx = np.digitize(ns, bins, right=True)
+    return weights[idx], hist
+
+
+def get_weighted_percentile(x, val, w=None):
+    """
+    Calculate the weighted percentile of data `x` with weight `w`.
+
+    This calculates the amount of data in `x` lying under the threshold
+    `val` (analogue to np.percentile).
+    The relativ error is estimated from weighted counting statistics:
+
+        sum(w[x <= val]) / sum(w)
+
+    Parameters
+    ----------
+    x : array-like
+        Data values on which the percentile is calculated.
+    val : float
+        Threshold in x-space to calculate the percentile against.
+    w : array-like
+        Weight for each data point. If None, all weights are assumed to be 1.
+        (default: None)
+
+    Returns
+    -------
+    perc : float
+        Percentile in [0, 1], fraction of data point > val.
+    err : float
+        Estimated relative error on the percentile.
+    """
+    x = np.asarray(x, dtype=float)
+
+    if w is None:
+        w = np.zeros_like(x) + 1. / len(x)
+    elif np.sum(w**2) == 0:
+        raise ValueError("Squared weight sum is zero, so weights are zero.")
+
+    # Get weighted percentile
+    mask = x > val
+    perc = np.sum(w[mask]) / np.sum(w)
+    # Binomial error on weighted percentile in Wald approximation
+    err = np.sqrt(perc * (1. - perc) * np.sum(w**2))
+
+    return perc, err
 
 
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
