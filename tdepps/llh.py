@@ -653,7 +653,7 @@ class GRBLLH(object):
         ev_sig = X["sigma"]
 
         # Get other fixed paramters
-        nb = args["nb"]
+        nb = args["nb"][:, None]
         srcs = args["srcs"]
 
         # Setup source parameters
