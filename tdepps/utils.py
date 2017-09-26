@@ -237,15 +237,16 @@ def make_ns_poisson_weights(mu, ns):
     return weights[idx], hist
 
 
-def get_weighted_percentile(x, val, w=None):
+def weighted_cdf(x, val, weights=None):
     """
-    Calculate the weighted percentile of data `x` with weight `w`.
+    Calculate the weighted CDF of data ``x`` with weights ``weights``.
 
-    This calculates the amount of data in `x` lying under the threshold
-    `val` (analogue to np.percentile).
-    The relativ error is estimated from weighted counting statistics:
+    This calculates the fraction  of data points ``x <= val``, so we get a CDF
+    curve when ``val`` is scanned for the same data points.
+    The uncertainty is calculated from weighted binomial statistics using a
+    Wald approximation.
 
-        sum(w[x <= val]) / sum(w)
+    Inverse function of ``weighted_percentile``.
 
     Parameters
     ----------
@@ -253,31 +254,32 @@ def get_weighted_percentile(x, val, w=None):
         Data values on which the percentile is calculated.
     val : float
         Threshold in x-space to calculate the percentile against.
-    w : array-like
-        Weight for each data point. If None, all weights are assumed to be 1.
-        (default: None)
+    weights : array-like
+        Weight for each data point. If ``None``, all weights are assumed to be
+        1. (default: None)
 
     Returns
     -------
-    perc : float
-        Percentile in [0, 1], fraction of data point > val.
+    cdf : float
+        CDF in ``[0, 1]``, fraction of ``x <= val``.
     err : float
-        Estimated relative error on the percentile.
+        Estimated uncertainty on the CDF value.
     """
-    x = np.asarray(x, dtype=float)
+    x = np.asarray(x)
 
-    if w is None:
-        w = np.zeros_like(x) + 1. / len(x)
-    elif np.sum(w**2) == 0:
-        raise ValueError("Squared weight sum is zero, so weights are zero.")
+    if weights is None:
+        weights = np.ones_like(x)
+    elif np.any(weights < 0.) or (np.sum(weights) <= 0):
+        raise ValueError("Weights must be positive and add up to > 0.")
 
-    # Get weighted percentile
-    mask = x > val
-    perc = np.sum(w[mask]) / np.sum(w)
-    # Binomial error on weighted percentile in Wald approximation
-    err = np.sqrt(perc * (1. - perc) * np.sum(w**2))
+    # Get weighted CDF: Fraction of weighted values in x <= val
+    mask = (x <= val)
+    weights = weights / np.sum(weights)
+    cdf = np.sum(weights[mask])
+    # Binomial error on weighted cdf in Wald approximation
+    err = np.sqrt(cdf * (1. - cdf) * np.sum(weights**2))
 
-    return perc, err
+    return cdf, err
 
 
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):

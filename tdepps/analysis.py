@@ -12,7 +12,7 @@ import scipy.optimize as sco
 from tqdm import tqdm
 
 from tdepps.llh import GRBLLH
-from tdepps.utils import (fill_dict_defaults, get_weighted_percentile,
+from tdepps.utils import (fill_dict_defaults, weighted_cdf,
                           make_ns_poisson_weights)
 
 
@@ -84,7 +84,7 @@ class TransientsAnalysis(object):
         self._llh = llh
 
     def do_trials(self, n_trials, ns0, bg_inj, bg_rate_inj, signal_inj=None,
-                  minimizer_opts=None, verb=False):
+                  minimizer_opts=None, full_out=False, verb=False):
         """
         Do pseudo experiment trials using only background-like events from the
         given event injectors.
@@ -126,6 +126,13 @@ class TransientsAnalysis(object):
 
             (default: None)
 
+        full_out : bool, optional
+            If ``True`` also return number of injected signal events per trial.
+            (default: ``False``)
+        verb : bool, optional
+            If ``True`` show iteration status with ``tqdm``.
+            (default: ``False``)
+
         Returns
         -------
         res : record-array, shape (n_trials)
@@ -138,6 +145,9 @@ class TransientsAnalysis(object):
         nzeros : int
             How many trials with `ns = 0` and `TS = 0` occured. This is done to
             save memory, because usually a lot of trials are zero.
+        nsig_all : array
+            Only if ``full_out==True`` also return the number of injected signal
+            events per trial.
         """
         # Setup minimizer defaults and bounds
         if minimizer_opts is None:
@@ -168,6 +178,9 @@ class TransientsAnalysis(object):
         assert len(nb) == len(self._srcs)
         assert nb.shape == (self._srcs.shape)
 
+        if signal_inj is not None:
+            nsig_all = []
+
         # Create args and do trials
         args = {"nb": nb, "srcs": self._srcs}
         nzeros = 0
@@ -189,6 +202,7 @@ class TransientsAnalysis(object):
 
             if signal_inj is not None:
                 nsig, Xsig, _ = next(signal_inj)
+                nsig_all.append(nsig)
                 nevts += nsig[0]
             else:
                 Xsig = None
@@ -217,12 +231,14 @@ class TransientsAnalysis(object):
         res["ns"] = np.array(ns)
         res["TS"] = np.array(TS)
 
-        return res, nzeros
+        if full_out:
+            return res, nzeros, np.concatenate(nsig_all)
+        else:
+            return res, nzeros
 
     def performance(self, ts_val, beta, bg_inj, bg_rate_inj, signal_inj,
-                    mu0=None, ntrials=100, minimizer_opts=None,
-                    tol_perc_err=5e-3, tol_mu_rel=1e-3, maxloops=100,
-                    verb=False):
+                    mu0=-0.1, ntrials=100, tol_perc_err=5e-3, tol_mu_rel=1e-3,
+                    maxloops=100, minimizer_opts=None, verb=False):
         """
         Iteratively search for the best fit `mu`, so that a fraction `beta` of
         the scaled PDF lies above the background test statistic value `ts_val`.
@@ -248,9 +264,11 @@ class TransientsAnalysis(object):
         minimizer_opts : dict, optional
             See :py:meth:`do_trials`, Parameters
         mu0 : float, optional
-            Seed value to begin the minimization at. If None a region close to
-            the minimum is searched for automatically. If explicitely given, it
-            must be >= 0. (default: None)
+            Seed value to begin the minimization at. If ``< 0`` a region close
+            to the minimum is searched for automatically with few trials and
+            increasing ``mu`` by ``mu += abs(mu0)``.
+            If ``> 0`` this value is taken to start the minimization at.
+            (default: ``-0.1``)
         ntrials : int, optional
             How many new trials to make per new iteration. (default: 100)
         tol_perc_err, tol_mu_rel : float, optional
@@ -307,19 +325,19 @@ class TransientsAnalysis(object):
                 Value of the loss function at the current mu.
             """
             # Reweight TS trials using the poisson statistics of ns
-            w, _ = make_ns_poisson_weights(mu=mu, ns=ns)
-            perc, _ = get_weighted_percentile(x=ts, val=ts_val, w=w)
-            return np.log10((perc - beta)**2)
+            perc, _ = get_perc_and_err(mu, ns, ts)
+            return np.log10((perc - (1. - beta))**2)
 
         def append_batch_of_trials(n, mu, ns, ts):
             """Do n trials and append result to ns and ts arrays"""
-            res, nzeros = self.do_trials(n, ns0=mu, bg_inj=bg_inj,
-                                         bg_rate_inj=bg_rate_inj,
-                                         signal_inj=signal_inj,
-                                         minimizer_opts=minimizer_opts,
-                                         verb=False)
-            ns = np.concatenate((ns, res["ns"], np.zeros(nzeros, dtype=float)))
-            ts = np.concatenate((ts, res["ts"], np.zeros(nzeros, dtype=float)))
+            sig_gen = signal_inj.sample(mean_mu=mu, poisson=True)
+            res, nzeros, nsig = self.do_trials(n, ns0=mu, bg_inj=bg_inj,
+                                               bg_rate_inj=bg_rate_inj,
+                                               signal_inj=sig_gen,
+                                               minimizer_opts=minimizer_opts,
+                                               full_out=True, verb=False)
+            ns = np.concatenate((ns, nsig))
+            ts = np.concatenate((ts, res["TS"], np.zeros(nzeros, dtype=float)))
             return ns, ts
 
         def get_perc_and_err(mu, ns, ts):
@@ -328,7 +346,7 @@ class TransientsAnalysis(object):
             the current best fit mu.
             """
             w, _ = make_ns_poisson_weights(mu=mu, ns=ns)
-            perc, err = get_weighted_percentile(x=ts, val=ts_val, w=w)
+            perc, err = weighted_cdf(x=ts, val=ts_val, weights=w)
             return perc, err
 
         # Keep track of progress
@@ -342,8 +360,10 @@ class TransientsAnalysis(object):
         converged = False
 
         # If no seed given, start initial scan to get close to the minimum
-        dmu = 5.  # Must be handtuned to the problem...
-        if mu0 is None:
+        if mu0 < 0:
+            if verb:
+                print("Starting intitial scan loops.")
+            dmu = np.abs(mu0)  # Must be handtuned to the problem...
             n_init_trials = 10  # Not too few but also not too many for 1st scan
 
             def frac_over_tsval(ts):
@@ -378,20 +398,26 @@ class TransientsAnalysis(object):
             if verb:
                 print("Made {} intitial scan loops with {} trials total".format(
                     n_init_loops, len(ts)))
-
-        elif mu0 < 0.:
-            raise ValueError("Seed `mu0` must be >= 0.")
-        else:
+        elif mu0 > 0.:
             # Init and do first batch of trials
             mu = mu0
-            mus = np.append(mus, mu)
-            errors = np.append(errors, 1.)
-            percs = np.append(percs, -1.)
-            ns, ts = append_batch_of_trials(ntrials, mu, ns, ts)
+            # mus = np.append(mus, mu)
+            # errors = np.append(errors, 1.)
+            # percs = np.append(percs, -1.)
+            # ns, ts = append_batch_of_trials(ntrials, mu, ns, ts)
+        else:
+            raise ValueError("Seed `mu0` can be >0 or <0, but not == 0.")
+
+        if verb:
+            print("Starting main trials with mu0 = {}.".format(mu))
 
         # Process minimizer loop until last two rel. error are below tolerance
-        stop = False
-        while n_loops <= 2 or not stop:
+        if verb:
+            trial_iter = tqdm(range(maxloops))
+        else:
+            trial_iter = range(maxloops)
+
+        for i in trial_iter:
             # Make new batch of trials
             ns, ts = append_batch_of_trials(ntrials, mu, ns, ts)
 
@@ -409,30 +435,34 @@ class TransientsAnalysis(object):
             mu = res.x
             perc, err = get_perc_and_err(mu, ns, ts)
 
-            # Make some manual tweaks to help the minimizer: (credit: mrichman)
-            oldmu = mus[-1]
-            # New fit is suddenly more than 50% above old fit: Truncate change
-            if np.abs(mu - oldmu) / oldmu > 0.5:
-                if mu > oldmu:
-                    mu = 1.5 * oldmu
-                else:
-                    mu = 0.5 * oldmu
-                err = errors[-1]  # Make sure we definitely do another trial
-            # Fit is identically to previous fit
-            if mu == oldmu:
-                mu = 1.1 * oldmu  # Choose larger mu: conservative -> more flux
-                err = errors[-1]
-
             # Save the progress
             mus = np.append(mus, mu)
             errors = np.append(errors, err)
             percs = np.append(percs, perc)
-            n_loops += 1
 
-            # Error conditions must match in the last and last to last trials
+            # First build up neccessary statisitcs for the tests
             if n_loops > 2:
-                mu_rel_err1 = np.abs(mus[-1] - mus[-2]) / mus[-1]
-                mu_rel_err2 = np.abs(mus[-2] - mus[-3]) / mus[-2]
+                # Make some manual tweaks to help the minimizer
+                oldmu = mus[-2]
+                # New fit suddenly more than 50% above old fit: Truncate change
+                if (oldmu > 0.) and (np.abs(mu - oldmu) / oldmu > 0.5):
+                    if mu > oldmu:
+                        mu = 1.5 * oldmu
+                    else:
+                        mu = 0.5 * oldmu
+                    err = errors[-1]  # Make sure we definitely do another trial
+                # Fit is identically to previous fit
+                if mu == oldmu:
+                    mu = 1.1 * oldmu  # Larger mu: conservative -> more flux
+                    err = errors[-1]
+
+                # Err conditions must match in the last and last to last trials
+                if (mus[-1] > 0.) and (mus[-2] > 0.):
+                    mu_rel_err1 = np.abs(mus[-1] - mus[-2]) / mus[-1]
+                    mu_rel_err2 = np.abs(mus[-2] - mus[-3]) / mus[-2]
+                else:  # If errs can't be calculated, make sure we don't break
+                    mu_rel_err1 = 10 * tol_mu_rel
+                    mu_rel_err2 = 10 * tol_mu_rel
                 if ((mu_rel_err1 <= tol_mu_rel) and
                         (mu_rel_err2 <= tol_mu_rel) and
                         (errors[-1] < tol_perc_err) and
@@ -440,14 +470,14 @@ class TransientsAnalysis(object):
                     if verb:
                         print("Break: below tol_mu_rel and tol_perc_err.")
                     converged = True
-                    stop = True
+                    break
 
-            if n_loops == maxloops:
-                if verb:
-                    print("Manual break after {} loops with {} main ".format(
-                          n_loops, n_loops * ntrials) + "trials: Reached " +
-                          "`maxloops` loops.")
-                break
+            n_loops += 1
+
+        if (n_loops == maxloops) and verb:
+            print("Manual break after {} loops with {} main ".format(
+                  n_loops, n_loops * ntrials) + "trials: Reached " +
+                  "`maxloops` loops.")
 
         return {"mu_bf": mus[-1], "mus": mus, "ts": ts, "ns": ns, "err": errors,
                 "perc": percs, "nloops": n_loops, "ninitloops": n_init_loops,
