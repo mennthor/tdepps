@@ -1184,17 +1184,16 @@ class GRBLLH(object):
 
 class MultiSampleGRBLLH(object):
     def __init__(self):
-        self._names = []
-        self._llhs = []
+        self._samples = {}
         return
 
     @property
     def names(self):
-        return self._names
+        return list(self._samples.keys())
 
     @property
     def llhs(self):
-        return self._llhs
+        return list(self._samples.values())
 
     def add_sample(self, name, llh):
         """
@@ -1210,12 +1209,12 @@ class MultiSampleGRBLLH(object):
         if not isinstance(llh, GRBLLH):
             raise ValueError("`llh` object must be of type GRBLLH.")
 
-        if name in self._names:
+        if name in self.names:
             raise KeyError("Name '{}' has already been added. ".format(name) +
                            "Choose a different name.")
+        else:
+            self._samples[name] = llh
 
-        self._names.append(name)
-        self._llhs.append(llh)
         return
 
     def lnllh_ratio(self, X, ns, args):
@@ -1230,7 +1229,8 @@ class MultiSampleGRBLLH(object):
         ----------
         X : dict of record-arrays
             Fixed data set each LLH depends on, given as a dict. Each value must
-            be a record array as used in the single LLH class.
+            be a record array as used in the single LLH class. Dictionary keys
+            must match ``MultiSampleGRBLLH.names``.
         ns : float
             Number of signal events at the source locations for all years in
             total.
@@ -1247,8 +1247,42 @@ class MultiSampleGRBLLH(object):
         ns_grad : array-like, shape (1)
             Gradient of the test statistic in the fit parameter `ns`.
         """
-        raise NotImplementedError("TODO")
-        return
+        if X.keys() != self._samples.keys():
+            raise ValueError("Given `X` has not the same keys as stored llh" +
+                             "names.")
+
+        # Set up the ns splitting weights: This effectively renormalizes all
+        # single LLH per source weights over all samples.
+        ns_weights = np.empty(len(self._samples), dtype=np.float)
+        for i, name in enumerate(self.names):
+            llh = self._samples[name]
+            args_i = args[name]
+
+            src_w_theo = args_i["srcs"]["w_theo"]
+            src_w_dec = llh.expect_weights(args_i["srcs"]["dec"])
+
+            ns_weights[i] = np.sum(src_w_dec * src_w_theo)
+
+        # Normalize over all samples
+        ns_weights /= np.sum(ns_weights)
+        self._wj = ns_weights
+
+        # Loop over ln-LLHs and add their contribution
+        TS = 0.
+        ns_grad = 0.
+        for i, name in enumerate(self.names):
+            # Get per sample information
+            llh = self._samples[name]
+            X_i = X[name]
+            args_i = args[name]
+
+            # sob = llh._soverb(X_i, args_i)
+            # TS_i, ns_grad_i = llh._lnllh_ratio(ns * ns_weights[i], sob)
+            TS_i, ns_grad_i = llh.lnllh_ratio(X_i, ns * ns_weights[i], args_i)
+            TS += TS_i
+            ns_grad += ns_grad_i * ns_weights[i]
+
+        return TS, np.array([ns_grad])
 
     def fit_lnllh_ratio(self, X, ns0, args, bounds, minimizer_opts):
         """
