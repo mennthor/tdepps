@@ -1182,7 +1182,7 @@ class GRBLLH(object):
         return rep
 
 
-class MultiyearGRBLLH(object):
+class MultiSampleGRBLLH(object):
     def __init__(self):
         self._names = []
         self._llhs = []
@@ -1194,7 +1194,7 @@ class MultiyearGRBLLH(object):
 
     @property
     def llhs(self):
-        return self._llh
+        return self._llhs
 
     def add_sample(self, name, llh):
         """
