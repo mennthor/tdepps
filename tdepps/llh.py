@@ -1248,8 +1248,11 @@ class MultiSampleGRBLLH(object):
             Gradient of the test statistic in the fit parameter `ns`.
         """
         if X.keys() != self._llhs.keys():
-            raise ValueError("Given `X` has not the same keys as stored llh" +
+            raise ValueError("Given `X` has not the same keys as stored llh " +
                              "names.")
+        if args.keys() != self._llhs.keys():
+            raise ValueError("Given `args` has not the same keys as stored " +
+                             "llh names.")
 
         # Get ns split weights using the sourc list per sample
         ns_weights = self._get_ns_weights(args)
