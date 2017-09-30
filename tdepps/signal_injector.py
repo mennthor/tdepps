@@ -218,9 +218,12 @@ class SignalInjector(object):
         """
         if not isinstance(MC, dict):  # Work consistently with dicts
             MC = {-1: MC}
-        else:  # Map dict names to integer keys for use as indices
+            self._keymap = {-1: -1}  # Trivial wrappers for consistency
+            self._enummap = {-1: -1}
+        else:  # Map dict names to int keys for use as indices and vice-versa
             self._keymap = {key: i for key, i in zip(srcs.keys(),
                                                      np.arange(len(srcs)))}
+            self._enummap = {enum: key for key, enum in self._keymap.items()}
 
         if not isinstance(srcs, dict):  # Work consistently with dicts
             srcs = {-1: srcs}
@@ -362,14 +365,19 @@ class SignalInjector(object):
         sam_ev : iterator
             Sampled_events for each loop iteration, either as simple array or
             as dictionary for each sample.
+        idx : array-like
+            Indices mapping the sampled events to the injected MC events in
+            ``self._MC`` for debugging purposes.
         """
         if self._mc_arr is None:
             raise ValueError("Injector has not been filled with MC data yet.")
 
-        src_ra = {k: srcs["ra"] for k, srcs in self._srcs.items()}
-        src_dec = self._srcs["dec"]
-        src_t = self._srcs["t"]
-        src_dt = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
+        # Only one sample, src positions are unambigious
+        if len(self._keymap) == 1:
+            src_ra = self._srcs[-1]["ra"]
+            src_dec = self._srcs[-1]["dec"]
+            src_t = self._srcs[-1]["t"]
+            src_dt = np.vstack((self._srcs[-1]["dt0"], self._srcs[-1]["dt1"])).T
 
         n = int(np.around(mean_mu))
         while True:
@@ -397,20 +405,28 @@ class SignalInjector(object):
                 yield n, sam_ev, sam_idx[m]
                 continue
 
-            # Else return same dict structure as used in fit
+            # Else return same dict structure as used in `fit`
             sam_ev = dict()
+            # Total mask to filter out events rotated outside `sin_dec_range`
             idx_m = np.zeros_like(sam_idx, dtype=bool)
             for enum in enums:
+                key = self._enummap[enum]
+                # Get source positions for the correct sample
+                _src_ra = self._srcs[key]["ra"]
+                _src_dec = self._srcs[key]["dec"]
+                _src_t = self._srcs[key]["t"]
+                _src_dt = np.vstack((self._srcs[key]["dt0"],
+                                     self._srcs[key]["dt1"])).T
                 # Select events per sample
-                enum_m = sam_idx["enum"] == enum
+                enum_m = (sam_idx["enum"] == enum)
                 idx = sam_idx[enum_m]["ev_idx"]
-                sam_ev_i = np.copy(self._MC[enum][idx])
+                sam_ev_i = np.copy(self._MC[key][idx])
                 # Broadcast corresponding sources for correct rotation
-                src_idx = sam_idx[sam_idx["enum"] == enum]["src_idx"]
-                sam_ev[enum], m = self._rot_and_strip(
-                    src_ra[src_idx], src_dec[src_idx], sam_ev_i)
-                sam_ev[enum]["timeMJD"] = self._sample_times(
-                    src_t[src_idx], src_dt[src_idx])[m]
+                src_idx = sam_idx[enum_m]["src_idx"]
+                sam_ev[key], m = self._rot_and_strip(
+                    _src_ra[src_idx], _src_dec[src_idx], sam_ev_i)
+                sam_ev[key]["timeMJD"] = self._sample_times(
+                    _src_t[src_idx], _src_dt[src_idx])[m]
                 # Build up the mask for the returned indices 'sam_idx'
                 _idx_m = np.zeros_like(m)
                 _idx_m[m] = True
