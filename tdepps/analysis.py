@@ -1,7 +1,7 @@
 # coding: utf-8
 
 from __future__ import print_function, division, absolute_import
-from builtins import range, int
+from builtins import range, int, next, zip
 from future import standard_library
 standard_library.install_aliases()
 

@@ -1,7 +1,9 @@
 # coding: utf-8
 
 from __future__ import print_function, division, absolute_import
+from builtins import zip, range, int
 from future import standard_library
+from future.utils import viewkeys
 standard_library.install_aliases()
 
 import math
@@ -1247,10 +1249,10 @@ class MultiSampleGRBLLH(object):
         ns_grad : array-like, shape (1)
             Gradient of the test statistic in the fit parameter `ns`.
         """
-        if X.keys() != self._llhs.keys():
+        if viewkeys(X) != viewkeys(self._llhs):
             raise ValueError("Given `X` has not the same keys as stored llh " +
                              "names.")
-        if args.keys() != self._llhs.keys():
+        if viewkeys(args) != viewkeys(self._llhs):
             raise ValueError("Given `args` has not the same keys as stored " +
                              "llh names.")
 

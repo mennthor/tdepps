@@ -5,7 +5,7 @@ Collection of repetedly used or large helper functions.
 """
 
 from __future__ import print_function, division, absolute_import
-from builtins import zip
+from builtins import zip, map
 from future import standard_library
 standard_library.install_aliases()
 
