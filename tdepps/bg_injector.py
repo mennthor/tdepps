@@ -3,6 +3,7 @@
 from __future__ import print_function, division, absolute_import
 from builtins import range, zip, super
 from future import standard_library
+from future.utils import viewkeys
 standard_library.install_aliases()
 
 import numpy as np
@@ -649,3 +650,70 @@ class MRichmanBGInjector(BGInjector):
 
         # Combine and convert to record-array
         return self._add_ra_sin_dec(np.vstack((ax0_pts, ax1_pts, ax2_pts)).T)
+
+
+class MultiBGInjector(object):
+    """
+    Container class that holds single instances of BGInjectors.
+    """
+    def __init__(self):
+        self._injs = {}
+        return
+
+    @property
+    def names(self):
+        return list(self._injs.keys())
+
+    @property
+    def llhs(self):
+        return list(self._injs.values())
+
+    def add_injector(self, name, inj):
+        """
+        Add a injector object to consider.
+
+        Parameters
+        ----------
+        name : str
+            Name of the inj object. Should be connected to the dataset used.
+        inj : tdepps.bg_injector.BGInjector
+            BG injector object sampling pseudo BG events.
+        """
+        if not isinstance(inj, BGInjector):
+            raise ValueError("`inj` object must be of type BGInjector.")
+
+        if name in self.names:
+            raise KeyError("Name '{}' has already been added. ".format(name) +
+                           "Choose a different name.")
+        else:
+            self._injs[name] = inj
+
+        return
+
+    def sample(self, n_samples=1):
+        """
+        Call each added injector's sample method and wrap the sampled arrays in
+        dictionaries for use in ``MultiSampleGRBLLH``.
+
+        Parameters
+        ----------
+        n_samples : dict
+            Number of samples to generate per injector. Dictionary keys must
+            match added ``self.names``.
+
+        Returns
+        -------
+        sam_ev : dictionary
+            Sampled events from each added ``BGInjector``.
+        """
+        if viewkeys(n_samples) != viewkeys(self._injs):
+            raise ValueError("Given `n_samples` has not the same keys as " +
+                             "stored injectors names.")
+
+        sam_ev = {}
+        for name in self.names:
+            # Get per sample information
+            inj = self._injs[name]
+            sam_ev[name] = inj.sample(n_samples[name])
+
+        return sam_ev
