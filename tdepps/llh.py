@@ -1232,7 +1232,7 @@ class MultiSampleGRBLLH(object):
         X : dict of record-arrays
             Fixed data set each LLH depends on, given as a dict. Each value must
             be a record array as used in the single LLH class. Dictionary keys
-            must match added ``MultiSampleGRBLLH.names``.
+            must match added ``self.names``.
         ns : float
             Number of signal events at the source locations for all years in
             total.
