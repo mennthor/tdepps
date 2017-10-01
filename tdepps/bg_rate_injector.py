@@ -3,6 +3,7 @@
 from __future__ import print_function, division, absolute_import
 from builtins import dict, open, filter, zip, super
 from future import standard_library
+from future.utils import viewkeys
 standard_library.install_aliases()
 
 import os
@@ -559,3 +560,80 @@ class BinnedBGRateInjector(BGRateInjector):
         # class variables as promised
         self._livetime = np.sum(stop_mjd - start_mjd)
         return self._set_best_fit(resx)
+
+
+class MultiBGRateInjector(object):
+    """
+    Container class that holds single instances of BGRateInjectors.
+    """
+    def __init__(self):
+        self._injs = {}
+        return
+
+    @property
+    def names(self):
+        return list(self._injs.keys())
+
+    @property
+    def llhs(self):
+        return list(self._injs.values())
+
+    def add_injector(self, name, inj):
+        """
+        Add a injector object to consider.
+
+        Parameters
+        ----------
+        name : str
+            Name of the inj object. Should be connected to the dataset used.
+        inj : tdepps.bg_injector.BGInjector
+            BG injector object sampling pseudo BG events.
+        """
+        if not isinstance(inj, BGRateInjector):
+            raise ValueError("`inj` object must be of type BGRateInjector.")
+
+        if name in self.names:
+            raise KeyError("Name '{}' has already been added. ".format(name) +
+                           "Choose a different name.")
+        else:
+            self._injs[name] = inj
+
+        return
+
+    def sample(self, t, trange, poisson=True):
+        """
+        Call each added injector's sample method and wrap the sampled arrays in
+        dictionaries for use in ``MultiSampleGRBLLH``.
+
+        Parameters
+        ----------
+        t : dict of arrays
+            Array of MJD times of sources per injector.
+        trange : dict of arrays
+            Time windows ``[[t0, t1], ...]`` in seconds around each given time
+            ``t`` per injector.
+        poisson : bool, optional
+            If True, sample the number of events per src using a poisson
+            distribution, with expectation from the background expectation in
+            each time window. Otherwise they are rounded to the next integer to
+            the expectation value and alway the same. (default: True)
+
+        Returns
+        -------
+        sam_ev : dictionary
+            Sampled times from each added ``BGRateInjector``.
+        """
+        if viewkeys(t) != viewkeys(self._injs):
+            raise ValueError("Given `t` has not the same keys as " +
+                             "stored injectors names.")
+        if viewkeys(trange) != viewkeys(self._injs):
+            raise ValueError("Given `t` has not the same keys as " +
+                             "stored injectors names.")
+
+        sam_ev = {}
+        for name in self.names:
+            # Get per sample information
+            inj = self._injs[name]
+            sam_ev[name] = inj.sample(t[name], trange[name])
+
+        return sam_ev
