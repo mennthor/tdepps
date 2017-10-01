@@ -361,9 +361,9 @@ class SignalInjector(object):
         Returns
         --------
         num : int
-            Number of events
+            Number of events sampled in total
         sam_ev : iterator
-            Sampled_events for each loop iteration, either as simple array or
+            Sampled events for each loop iteration, either as simple array or
             as dictionary for each sample.
         idx : array-like
             Indices mapping the sampled events to the injected MC events in
