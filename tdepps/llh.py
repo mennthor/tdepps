@@ -177,7 +177,7 @@ class GRBLLH(object):
             raise ValueError("Bins for BG spline not in valid range [-1, 1].")
         if np.any(X["sinDec"] < bins[0]) or np.any(X["sinDec"] > bins[-1]):
             raise ValueError("sinDec data events outside given bins. If this" +
-                             "is intended, please remove them beforehand.")
+                             " is intended, please remove them beforehand.")
         self._spatial_pdf_args["bins"] = bins
 
         # Setup energy PDF args
@@ -1249,6 +1249,9 @@ class MultiSampleGRBLLH(object):
         ns_grad : array-like, shape (1)
             Gradient of the test statistic in the fit parameter `ns`.
         """
+        if len(self.names) == 0:
+            raise ValueError("No sample has been added yet.")
+
         if viewkeys(X) != viewkeys(self._llhs):
             raise ValueError("Given `X` has not the same keys as stored llh " +
                              "names.")
@@ -1315,6 +1318,9 @@ class MultiSampleGRBLLH(object):
         -----
         .. [5] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466
         """
+        if len(self.names) == 0:
+            raise ValueError("No sample has been added yet.")
+
         def _neglnllh(ns):
             """
             Wrapper for the LLH function returning the negative ln-LLH ratio
@@ -1346,6 +1352,48 @@ class MultiSampleGRBLLH(object):
 
         # Return function value with correct sign
         return res.x[0], -1. * res.fun[0]
+
+    def time_pdf_def_range(self, src_t, dt):
+        """
+        Returns the time window per source and per sample, in which the PDF
+        ratio is defined.
+
+        Parameters
+        ----------
+        src_t : dict of arrays
+            Times of each source event in MJD days per sample.
+        dt : dict of arrays, each shape (nsrcs, 2)
+            Time windows ``[start, end]`` in seconds centered at each src_t in
+            which the signal PDF is assumed to be uniform per sample.
+
+        Returns
+        -------
+        trange : dict of arrays, each shape (nsrcs, 2)
+            Total time window per source ``[start, end]`` in seconds in which
+            the time PDF is defined and thus non-zero per sample.
+        """
+        if len(self.names) == 0:
+            raise ValueError("No sample has been added yet.")
+
+        if viewkeys(src_t) != viewkeys(self._llhs):
+            raise ValueError("Given `src_t` has not the same keys as stored " +
+                             "llh names.")
+        if viewkeys(dt) != viewkeys(self._llhs):
+            raise ValueError("Given `dt` has not the same keys as stored " +
+                             "llh names.")
+
+        trange = {}
+        for name, llh in self._llhs.items():
+            _, dti, _, sig_t_clip = llh._setup_time_windows(
+                src_t[name], dt[name])
+
+            # Total time window per source in seconds
+            trange_i = np.empty_like(dti, dtype=np.float)
+            trange_i[:, 0] = dti[:, 0] - sig_t_clip
+            trange_i[:, 1] = dti[:, 1] + sig_t_clip
+            trange[name] = trange_i
+
+        return trange
 
     def _get_ns_weights(self, args):
         """
