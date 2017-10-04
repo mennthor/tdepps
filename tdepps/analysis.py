@@ -483,6 +483,88 @@ class TransientsAnalysis(object):
                 "perc": percs, "nloops": n_loops, "ninitloops": n_init_loops,
                 "lastfitres": res, "converged": converged}
 
+    def performance_chi2(self, ts_val, beta, bg_inj, bg_rate_inj, signal_inj,
+                         mus, par0=[1., 1., 1.], ntrials=1000, verb=False):
+        """
+        Make independent trials within given range and fit a ``chi2`` CDF to the
+        resulting percentiles, becasue they are surprisingly well described by
+        that.
+
+        Parameters
+        ----------
+        ts_val : float
+            Test statistic value of the BG distribution, which is connected to
+            the alpha value (Type I error).
+        beta : float
+            Fraction of alternative hypothesis PDF that should lie right of the
+            `ts_val`.
+        bg_inj : `tdepps.bg_injector` instance
+            Injector to generate background-like pseudo events.
+        bg_rate_inj : `tdepps.bg_rate_injector` instance
+            Injector to generate the times of background-like pseudo events.
+        signal_inj : `tdepps.signal_injector.sample` generator
+            Injector generator to generate signal events.
+        mus : array-like
+            How much mean poisson signal shall be injected.
+        par0 : list, optional
+            Seed values ``[df, loc, scale]`` for the ``chi2`` CDF fit.
+            (default: ``[1., 1., 1.]``)
+        ntrials : int, optional
+            How many new trials to make per independent trial. (default: 1000)
+        verb : bool, optional
+            If ``True`` print progress message during fit. (default: False)
+
+        Returns
+        -------
+        mu_bf : float
+            Best fit poisson signal expectation derived from the fitted ``chi2``
+            CDF.
+        cdfs : array-like, len(mus)
+            Calculated CDF values for each trial from the ``chi2`` function.
+        TS : list of arrays
+            For each bunch ``mu`` trials the resulting test satistic values.
+            From these we can in principle  calculate other ``ts_val, beta``
+            combinations by calculating new percentiles and refit the ``chi2``
+            wthout doing more trials.
+        best_pars : tuple, len(3)
+            Best fit parameters from the ``chi2`` CDF fit.
+        """
+        if np.any(mus < 0):
+            raise ValueError("`mus` must not have an entry < 0.")
+
+        if verb:
+            trial_iter = tqdm(mus)
+        else:
+            trial_iter = mus
+
+        # Do the trials
+        TS = []
+        for mui in trial_iter:
+            if verb:
+                print("Trials for mu = {:.2f}".format(mui))
+            sig_gen = signal_inj.sample(mean_mu=mui)
+            res, nzeros = self.do_trials(n_trials=ntrials, ns0=mui,
+                                         signal_inj=sig_gen, bg_inj=bg_inj,
+                                         bg_rate_inj=bg_rate_inj,
+                                         verb=False, full_out=False)
+            TS.append(np.concatenate((res["TS"],
+                                      np.zeros(nzeros, dtype=np.float))))
+
+        # Create the CDF values and fit the chi2
+        cdfs = []
+        for TSi in TS:
+            cdfs.append(weighted_cdf(TSi, val=ts_val)[0])
+        cdfs = np.array(cdfs)
+
+        def cdf_func(x, df, loc, scale):
+            """Can't use scs.chi2.cdf directly in curve fit."""
+            return scs.chi2.cdf(x, df, loc, scale)
+
+        pars, cov = sco.curve_fit(cdf_func, xdata=mus, ydata=1. - cdfs)
+        mu_bf = scs.chi2.ppf(beta, *pars)
+
+        return mu_bf, cdfs, TS, pars
+
     def unblind(self):
         """
         Get the TS value for unblinded on data.
