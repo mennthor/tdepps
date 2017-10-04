@@ -3,6 +3,7 @@
 from __future__ import division, print_function, absolute_import
 from builtins import dict, int, zip
 from future import standard_library
+from future.utils import viewkeys
 standard_library.install_aliases()
 
 import numpy as np
@@ -228,7 +229,7 @@ class SignalInjector(object):
         if not isinstance(srcs, dict):  # Work consistently with dicts
             srcs = {-1: srcs}
         else:  # Keys must be equivalent to MC keys
-            if MC.keys() != srcs.keys():
+            if viewkeys(MC) != viewkeys(srcs):
                 raise ValueError("Keys in `MC` and `srcs` don't match.")
 
         # Check each recarray's names
@@ -239,14 +240,18 @@ class SignalInjector(object):
                     raise ValueError("Source recarray '" +
                                      "{}' is missing name '{}'.".format(key, n))
 
+        if not isinstance(exp_names, dict):
+            exp_names = {-1: exp_names}
         required_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
         for n in required_names:
-            if n not in exp_names:
-                raise ValueError("`exp_names` is missing name '{}'.".format(n))
+            for key, exp_ni in exp_names.items():
+                if n not in exp_ni:
+                    raise ValueError("`exp_names` is missing name " +
+                                     "'{}' at key '{}'.".format(n, key))
 
-        MC_names = exp_names + ("trueRa", "trueDec", "trueE", "ow")
-        for n in MC_names:
-            for key, mc_i in MC.items():
+        for key, mc_i in MC.items():
+            MC_names = exp_names[key] + ("trueRa", "trueDec", "trueE", "ow")
+            for n in MC_names:
                 if n not in mc_i.dtype.names:
                     e = "MC sample '{}' is missing name '{}'.".format(key, n)
                     raise ValueError(e)
@@ -331,7 +336,7 @@ class SignalInjector(object):
 
             self._mc_arr = np.append(self._mc_arr, mc_arr)
 
-            print("Sample '{}': Selected {:6d} evts at {:6d} sources.".format(
+            print("Sample '{}': Selected {:d} evts at {:d} sources.".format(
                 key, n_tot, _nsrcs))
             print("  # Sources without selected evts: {}".format(
                 _nsrcs - np.count_nonzero(np.sum(core_mask, axis=1))))
@@ -399,7 +404,7 @@ class SignalInjector(object):
                 sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
                 src_idx = sam_idx['src_idx']
                 sam_ev, m = self._rot_and_strip(
-                    src_ra[src_idx], src_dec[src_idx], sam_ev)
+                    src_ra[src_idx], src_dec[src_idx], sam_ev, key=-1)
                 sam_ev["timeMJD"] = self._sample_times(
                     src_t[src_idx], src_dt[src_idx])[m]
                 yield n, sam_ev, sam_idx[m]
@@ -424,7 +429,7 @@ class SignalInjector(object):
                 # Broadcast corresponding sources for correct rotation
                 src_idx = sam_idx[enum_m]["src_idx"]
                 sam_ev[key], m = self._rot_and_strip(
-                    _src_ra[src_idx], _src_dec[src_idx], sam_ev_i)
+                    _src_ra[src_idx], _src_dec[src_idx], sam_ev_i, key=key)
                 sam_ev[key]["timeMJD"] = self._sample_times(
                     _src_t[src_idx], _src_dt[src_idx])[m]
                 # Build up the mask for the returned indices 'sam_idx'
@@ -562,7 +567,7 @@ class SignalInjector(object):
                 assert len(self._omega[key]) == self._nsrcs[key]
         return
 
-    def _rot_and_strip(self, src_ras, src_decs, MC):
+    def _rot_and_strip(self, src_ras, src_decs, MC, key):
         """
         Rotate injected event positions to the sources and strip Monte Carlo
         information from the output array.
@@ -579,6 +584,8 @@ class SignalInjector(object):
             These are the coordinates we rotate on per event in ``MC``.
         MC : record array
             See :py:meth:<SignalInjector.fit>, Parameters.
+        key : dict key
+            Which MC sample we are looking at.
 
         Returns
         --------
@@ -603,7 +610,8 @@ class SignalInjector(object):
         MC = MC[m]
 
         # Remove all names not in experimental data (= remove MC attributes)
-        drop_names = [n for n in MC.dtype.names if n not in self._exp_names]
+        drop_names = [n for n in MC.dtype.names if
+                      n not in self._exp_names[key]]
         return drop_fields(MC, drop_names), m
 
     def _sample_times(self, src_t, dt):
@@ -623,10 +631,8 @@ class SignalInjector(object):
         times : array-like, shape (nevts)
             Sampled times for this trial.
         """
-        nevts = len(src_t)
-
         # Sample uniformly in [0, 1] and scale to time windows per source in MJD
-        r = self._rndgen.uniform(0, 1, size=nevts)
+        r = self._rndgen.uniform(0, 1, size=len(src_t))
         times_rel = r * np.diff(dt, axis=1).ravel() + dt[:, 0]
 
         return src_t + times_rel / self._SECINDAY
@@ -635,6 +641,7 @@ class SignalInjector(object):
         """
         Use to print all settings: `>>> print(sig_inj_object)`
         """
+        raise NotImplementedError("Needs some fixes for dicts.")
         rep = "Signal Injector object\n"
         rep += "----------------------\n\n"
         rep += "- gamma     : {:.2f}\n".format(self._gamma)
