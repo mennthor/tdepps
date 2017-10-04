@@ -1,8 +1,9 @@
 # coding: utf-8
 
 from __future__ import division, print_function, absolute_import
-from builtins import dict, int
+from builtins import dict, int, zip
 from future import standard_library
+from future.utils import viewkeys
 standard_library.install_aliases()
 
 import numpy as np
@@ -125,7 +126,7 @@ class SignalInjector(object):
     def rndgen(self, random_state):
         self._rndgen = check_random_state(random_state)
 
-    def mu2flux(self, mu, per_source=False):
+    def mu2flux(self, mu):
         """
         Convert a given number of events ``mu`` to a corresponding particle
         flux normalization :math:`F_0` in units [GeV^-1 cm^-2].
@@ -141,23 +142,13 @@ class SignalInjector(object):
         ----------
         mu : float
             Expectation for number of events.
-        per_source : bool, optional
-            If True, return the flux per source, which is the total flux
-            weighted by the intrinsic weights per source. (default: False)
 
         Returns
         -------
         flux : float or array-like
-            If ``per_source`` is ``True``, return the total flux for all
-            sources, otherwise the flux per source. Flux is in unit
-            [GeV^-1 cm^-2].
+            Total flux for all sources in unit ``[GeV^-1 cm^-2]``.
         """
-        flux = mu / self._raw_flux
-        if per_source:
-            w_theo = self._srcs["w_theo"] / np.sum(self._srcs["w_theo"])
-            return flux * w_theo
-        else:
-            return flux
+        return mu / self._raw_flux
 
     def flux2mu(self, flux):
         """
@@ -180,8 +171,10 @@ class SignalInjector(object):
 
         Parameters
         -----------
-        srcs : recarray, shape (nsrcs)
-            Source properties, must have names:
+        srcs : recarray or dict(name, recarray)
+            Source properties as single record array or as dictionary with
+            sample names mapped to record arrays. Keys must match keys in
+            ``MC``. Each record array must have names:
 
             - 'ra', float: Right-ascension coordinate of each source in
               radian in intervall :math:`[0, 2\pi]`.
@@ -194,15 +187,16 @@ class SignalInjector(object):
             - 'w_theo', float: Theoretical source weight per source, eg. from
               a known gamma flux.
 
-        MC : recarray or dict(enum, recarray)
+        MC : recarray or dict(name, recarray)
             Either single structured array describing Monte Carlo events or a
-            dictionary with integer keys ``enum`` mapped to record arrays.
-            ``MC`` must contain names given in ``exp_names`` and additonally:
+            dictionary with sample names mapped to record arrays. Keys must
+            match ``srcs``. Each record array must contain names given in
+            ``exp_names`` and additonally:
 
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
-            - 'ow', float: Per event 'neutrino generator' OneWeight [1]_,
+            - 'ow', float: Per event, type 'neutrino generator' OneWeight [1]_,
               so it is already divided by ``nevts * nfiles * type_weight``.
               Units are ``[GeV sr cm^2]``. Final event weights are obtained by
               multiplying with desired flux per particle type.
@@ -223,40 +217,58 @@ class SignalInjector(object):
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
-        if not isinstance(MC, dict):  # Work consitently with dicts
+        if not isinstance(MC, dict):  # Work consistently with dicts
             MC = {-1: MC}
-        else:
-            if not np.all([isinstance(k, int) for k in MC.keys()]):
-                raise ValueError("MC has non-integer keys.")
+            self._keymap = {-1: -1}  # Trivial wrappers for consistency
+            self._enummap = {-1: -1}
+        else:  # Map dict names to int keys for use as indices and vice-versa
+            self._keymap = {key: i for key, i in zip(srcs.keys(),
+                                                     np.arange(len(srcs)))}
+            self._enummap = {enum: key for key, enum in self._keymap.items()}
 
+        if not isinstance(srcs, dict):  # Work consistently with dicts
+            srcs = {-1: srcs}
+        else:  # Keys must be equivalent to MC keys
+            if viewkeys(MC) != viewkeys(srcs):
+                raise ValueError("Keys in `MC` and `srcs` don't match.")
+
+        # Check each recarray's names
         required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
         for n in required_names:
-            if n not in srcs.dtype.names:
-                raise ValueError("`srcs` is missing name '{}'.".format(n))
+            for key, srcs_i in srcs.items():
+                if n not in srcs_i.dtype.names:
+                    raise ValueError("Source recarray '" +
+                                     "{}' is missing name '{}'.".format(key, n))
 
+        if not isinstance(exp_names, dict):
+            exp_names = {-1: exp_names}
         required_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
         for n in required_names:
-            if n not in exp_names:
-                raise ValueError("`exp_names` is missing name '{}'.".format(n))
+            for key, exp_ni in exp_names.items():
+                if n not in exp_ni:
+                    raise ValueError("`exp_names` is missing name " +
+                                     "'{}' at key '{}'.".format(n, key))
 
-        MC_names = exp_names + ("trueRa", "trueDec", "trueE", "ow")
-        for n in MC_names:
-            for key, mc_i in MC.items():
+        for key, mc_i in MC.items():
+            MC_names = exp_names[key] + ("trueRa", "trueDec", "trueE", "ow")
+            for n in MC_names:
                 if n not in mc_i.dtype.names:
                     e = "MC sample '{}' is missing name '{}'.".format(key, n)
                     raise ValueError(e)
 
         self._exp_names = exp_names
 
-        # For new srcs set injection solid angle
+        # Set injection solid angles for all sources
         self._srcs = srcs
-        self._nsrcs = len(srcs)
+        self._nsrcs = {key: len(srcs_i) for key, srcs_i in srcs.items()}
         self._set_solid_angle()
 
         # Check if sin_dec_range is OK with the used source positions
-        if (np.any(np.sin(srcs["dec"]) < self._sin_dec_range[0]) |
-                np.any(np.sin(srcs["dec"]) > self._sin_dec_range[1])):
-            raise ValueError("Source position(s) outside `sin_dec_range`.")
+        for key, srcs_i in srcs.items():
+            if (np.any(np.sin(srcs_i["dec"]) < self._sin_dec_range[0]) |
+                    np.any(np.sin(srcs_i["dec"]) > self._sin_dec_range[1])):
+                raise ValueError("Source position(s) outside `sin_dec_range` " +
+                                 "in `srcs` array for sample {}.".format(key))
 
         # Store selected event ids in mc_arr to sample from a single array
         # ev_idx: event ID per sam., src_idx: src ID per sam., enum: sample ID
@@ -269,19 +281,23 @@ class SignalInjector(object):
         self._MC = dict()
 
         # Loop all samples
-        assert self._mode in ["band", "circle"]
-        for key, mc_i in MC.items():
+        for key in self._keymap.keys():
+            _nsrcs = self._nsrcs[key]
+            _min_dec = self._min_dec[key]
+            _max_dec = self._max_dec[key]
+            mc_i = MC[key]
+            srcs_i = srcs[key]
             # Select events in the injection regions
             if self._mode == "band":
                 # Broadcast to mask all srcs at once
-                min_decs = self._min_dec.reshape(self._nsrcs, 1)
-                max_decs = self._max_dec.reshape(self._nsrcs, 1)
+                min_decs = _min_dec.reshape(_nsrcs, 1)
+                max_decs = _max_dec.reshape(_nsrcs, 1)
                 mc_true_dec = mc_i["trueDec"]
                 inj_mask = ((mc_true_dec > min_decs) & (mc_true_dec < max_decs))
             else:
                 # Compare great circle distance to each src with inj_width
-                src_ra = np.atleast_2d(srcs["ra"]).reshape(self._nsrcs, 1)
-                src_dec = np.atleast_2d(srcs["dec"]).reshape(self._nsrcs, 1)
+                src_ra = np.atleast_2d(srcs_i["ra"]).reshape(_nsrcs, 1)
+                src_dec = np.atleast_2d(srcs_i["dec"]).reshape(_nsrcs, 1)
                 mc_true_ra = mc_i["trueRa"]
                 mc_true_dec = mc_i["trueDec"]
                 cos_dist = (np.cos(src_ra - mc_true_ra) *
@@ -291,12 +307,13 @@ class SignalInjector(object):
                 inj_mask = cos_dist > cos_r
 
             if not np.any(inj_mask):
-                print("Sample {:d}: No events were selected!".format(key))
-                self._MC[key] = mc_i[inj_mask.any(axis=0)]  # Add empty slice
+                print("Sample '{:d}': No events were selected!".format(key))
+                # Nevertheless add empty slice
+                self._MC[key] = mc_i[np.any(inj_mask, axis=0)]
                 continue
 
             # Select all at least in one injection region (include overlap)
-            total_mask = inj_mask.any(axis=0)
+            total_mask = np.any(inj_mask, axis=0)
             N_unique = np.count_nonzero(total_mask)
             self._MC[key] = mc_i[total_mask]
 
@@ -307,24 +324,22 @@ class SignalInjector(object):
             # Append all events to sampling array
             mc_arr = np.empty(n_tot, dtype=dtype)
 
-            # Bookkeeping: Create id to acces the events in the sampling step
+            # Bookkeeping: Create id to access the events in the sampling step
             _core = core_mask.ravel()
             # Unique id for selected events per sample and per src
-            mc_arr["ev_idx"] = np.tile(np.arange(N_unique), self._nsrcs)[_core]
+            mc_arr["ev_idx"] = np.tile(np.arange(N_unique), _nsrcs)[_core]
             # Same src id for each selected evt per src (rows in core_mask)
-            mc_arr['src_idx'] = np.repeat(np.arange(self._nsrcs),
+            mc_arr['src_idx'] = np.repeat(np.arange(_nsrcs),
                                           np.sum(core_mask, axis=1))
             # Repeat enum id for each sample
-            mc_arr["enum"] = key * np.ones(n_tot, dtype=np.int)
+            mc_arr["enum"] = self._keymap[key] * np.ones(n_tot, dtype=np.int)
 
             self._mc_arr = np.append(self._mc_arr, mc_arr)
 
-            del mc_arr  # Only needed next loop again, but with different shape
-
-            print("Sample {:d}: Selected {:6d} evts at {:6d} sources.".format(
-                key, n_tot, self._nsrcs))
+            print("Sample '{}': Selected {:d} evts at {:d} sources.".format(
+                key, n_tot, _nsrcs))
             print("  # Sources without selected evts: {}".format(
-                self._nsrcs - np.count_nonzero(np.sum(core_mask, axis=1))))
+                _nsrcs - np.count_nonzero(np.sum(core_mask, axis=1))))
 
         if len(self._mc_arr) < 1:
             raise ValueError("No events were selected. Check `inj_width`.")
@@ -351,18 +366,23 @@ class SignalInjector(object):
         Returns
         --------
         num : int
-            Number of events
+            Number of events sampled in total
         sam_ev : iterator
-            Sampled_events for each loop iteration, either as simple array or
+            Sampled events for each loop iteration, either as simple array or
             as dictionary for each sample.
+        idx : array-like
+            Indices mapping the sampled events to the injected MC events in
+            ``self._MC`` for debugging purposes.
         """
         if self._mc_arr is None:
             raise ValueError("Injector has not been filled with MC data yet.")
 
-        src_ra = self._srcs["ra"]
-        src_dec = self._srcs["dec"]
-        src_t = self._srcs["t"]
-        src_dt = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
+        # Only one sample, src positions are unambigious
+        if len(self._keymap) == 1:
+            src_ra = self._srcs[-1]["ra"]
+            src_dec = self._srcs[-1]["dec"]
+            src_t = self._srcs[-1]["t"]
+            src_dt = np.vstack((self._srcs[-1]["dt0"], self._srcs[-1]["dt1"])).T
 
         n = int(np.around(mean_mu))
         while True:
@@ -384,26 +404,34 @@ class SignalInjector(object):
                 sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
                 src_idx = sam_idx['src_idx']
                 sam_ev, m = self._rot_and_strip(
-                    src_ra[src_idx], src_dec[src_idx], sam_ev)
+                    src_ra[src_idx], src_dec[src_idx], sam_ev, key=-1)
                 sam_ev["timeMJD"] = self._sample_times(
                     src_t[src_idx], src_dt[src_idx])[m]
                 yield n, sam_ev, sam_idx[m]
                 continue
 
-            # Else return same dict structure as used in fit
+            # Else return same dict structure as used in `fit`
             sam_ev = dict()
+            # Total mask to filter out events rotated outside `sin_dec_range`
             idx_m = np.zeros_like(sam_idx, dtype=bool)
             for enum in enums:
+                key = self._enummap[enum]
+                # Get source positions for the correct sample
+                _src_ra = self._srcs[key]["ra"]
+                _src_dec = self._srcs[key]["dec"]
+                _src_t = self._srcs[key]["t"]
+                _src_dt = np.vstack((self._srcs[key]["dt0"],
+                                     self._srcs[key]["dt1"])).T
                 # Select events per sample
-                enum_m = sam_idx["enum"] == enum
+                enum_m = (sam_idx["enum"] == enum)
                 idx = sam_idx[enum_m]["ev_idx"]
-                sam_ev_i = np.copy(self._MC[enum][idx])
+                sam_ev_i = np.copy(self._MC[key][idx])
                 # Broadcast corresponding sources for correct rotation
-                src_idx = sam_idx[sam_idx["enum"] == enum]["src_idx"]
-                sam_ev[enum], m = self._rot_and_strip(
-                    src_ra[src_idx], src_dec[src_idx], sam_ev_i)
-                sam_ev[enum]["timeMJD"] = self._sample_times(
-                    src_t[src_idx], src_dt[src_idx])[m]
+                src_idx = sam_idx[enum_m]["src_idx"]
+                sam_ev[key], m = self._rot_and_strip(
+                    _src_ra[src_idx], _src_dec[src_idx], sam_ev_i, key=key)
+                sam_ev[key]["timeMJD"] = self._sample_times(
+                    _src_t[src_idx], _src_dt[src_idx])[m]
                 # Build up the mask for the returned indices 'sam_idx'
                 _idx_m = np.zeros_like(m)
                 _idx_m[m] = True
@@ -446,30 +474,45 @@ class SignalInjector(object):
         fluence from a given number of events from that relation.
         """
         src_idx = self._mc_arr["src_idx"]
-        w_theo = self._srcs["w_theo"]
 
-        # Broadcast src dependent weight parts to each evt
-        omega = self._omega[src_idx]
-        w_theo = (w_theo / np.sum(w_theo))[src_idx]
-        assert len(omega) == len(w_theo) == len(self._mc_arr)
+        # Norm over all w_theo in all samples
+        w_theo_sum = 0.
+        for srcs in self._srcs.values():
+            w_theo_sum += np.sum(srcs["w_theo"])
+        assert np.isclose(np.sum(np.concatenate([srcs["w_theo"] / w_theo_sum
+                                                 for srcs in
+                                                 self._srcs.values()])), 1.)
 
-        # Calculate physical weights for E^-gamma fluence for all events
         w = []
-        for enum, mc_i in self._MC.items():  # Select again per sample
-            idx = self._mc_arr[self._mc_arr["enum"] == enum]["ev_idx"]
-            flux = power_law_flux_per_type(mc_i["trueE"][idx], self._gamma)
-            w.append(mc_i["ow"][idx] * flux)
+        self._raw_flux_per_sample = {}
+        for key in self._keymap.keys():
+            srcs = self._srcs[key]
+            mc_i = self._MC[key]
+            enum_mask = (self._mc_arr["enum"] == self._keymap[key])
 
-        # Finalize by dividing with per event injection solid angle
+            src_idx = self._mc_arr[enum_mask]["src_idx"]
+
+            # Broadcast src dependent weight parts to each evt
+            omega = self._omega[key][src_idx]
+            w_theo = srcs["w_theo"][src_idx] / w_theo_sum
+            assert (len(omega) == len(w_theo) == np.sum(enum_mask) ==
+                    len(self._mc_arr[enum_mask]))
+
+            ev_idx = self._mc_arr[enum_mask]["ev_idx"]
+            flux = power_law_flux_per_type(mc_i["trueE"][ev_idx], self._gamma)
+            w.append(mc_i["ow"][ev_idx] * flux / omega * w_theo)
+            self._raw_flux_per_sample[key] = np.sum(w[-1])
+
         w = np.concatenate(w, axis=0)
-        w *= w_theo
-        w /= omega
         assert len(w) == len(self._mc_arr)
 
-        # Total injected fluence and normalized sampling weights
         self._raw_flux = np.sum(w)
+        assert np.isclose(np.sum(list(self._raw_flux_per_sample.values())),
+                          self._raw_flux)
+
+        # Sampling weights used for injecting events from the whole selection
         self._sample_w = w / self._raw_flux
-        assert np.allclose(np.sum(self._sample_w), 1.)
+        assert np.isclose(np.sum(self._sample_w), 1.)
 
         return
 
@@ -483,41 +526,48 @@ class SignalInjector(object):
 
         Sets up private class varaibles:
 
-        - ``_omega``, array-like: Solid angle in radians of each injection
-          region.
-        - ``_min_dec``, ``_max_dec``, array-like: Upper/lower bounds for each
-          declination band in radians (only if `self._mode` is 'band').
+        - ``_omega``, dict of arrays: Solid angle in radians of each injection
+          region for each source sample.
+        - ``_min_dec``, ``_max_dec``, dict of arrays: Upper/lower bounds for
+          each declination band in radians for each source sample. Optional,
+          only set if `self._mode` is 'band'.
         """
         assert self._mode in ["band", "circle"]
 
-        if self._mode == "band":
-            sin_dec_bandwidth = np.sin(self._inj_width)
-            A, B = self._sin_dec_range
+        self._min_dec = {}
+        self._max_dec = {}
+        self._omega = {}
+        for key, _srcs in self._srcs.items():
+            if self._mode == "band":
+                sin_dec_bandwidth = np.sin(self._inj_width)
+                A, B = self._sin_dec_range
 
-            if self._skylab_band:
-                m = (A - B + 2. * sin_dec_bandwidth) / (A - B)
-                b = sin_dec_bandwidth * (A + B) / (B - A)
-                sin_dec = m * np.sin(self._srcs["dec"]) + b
+                if self._skylab_band:
+                    m = (A - B + 2. * sin_dec_bandwidth) / (A - B)
+                    b = sin_dec_bandwidth * (A + B) / (B - A)
+                    sin_dec = m * np.sin(_srcs["dec"]) + b
+                else:
+                    sin_dec = np.sin(_srcs["dec"])
+
+                min_sin_dec = np.maximum(A, sin_dec - sin_dec_bandwidth)
+                max_sin_dec = np.minimum(B, sin_dec + sin_dec_bandwidth)
+
+                self._min_dec[key] = np.arcsin(np.clip(min_sin_dec, -1., 1.))
+                self._max_dec[key] = np.arcsin(np.clip(max_sin_dec, -1., 1.))
+
+                # Solid angles of selected events around each source
+                self._omega[key] = 2. * np.pi * (max_sin_dec - min_sin_dec)
+                assert (len(self._min_dec[key]) == len(self._max_dec[key]) ==
+                        self._nsrcs[key])
             else:
-                sin_dec = np.sin(self._srcs["dec"])
-
-            min_sin_dec = np.maximum(A, sin_dec - sin_dec_bandwidth)
-            max_sin_dec = np.minimum(B, sin_dec + sin_dec_bandwidth)
-
-            self._min_dec = np.arcsin(np.clip(min_sin_dec, -1., 1.))
-            self._max_dec = np.arcsin(np.clip(max_sin_dec, -1., 1.))
-
-            # Solid angles of selected events around each source
-            self._omega = 2. * np.pi * (max_sin_dec - min_sin_dec)
-            assert (len(self._min_dec) == len(self._max_dec) == self._nsrcs)
-        else:
-            r = self._inj_width
-            _omega = 2 * np.pi * (1. - np.cos(r))
-            self._omega = np.ones(self._nsrcs, dtype=np.float) * _omega
-            assert len(self._omega) == self._nsrcs
+                r = self._inj_width
+                _omega = 2 * np.pi * (1. - np.cos(r))
+                self._omega[key] = (np.ones(self._nsrcs[key],
+                                            dtype=np.float) * _omega)
+                assert len(self._omega[key]) == self._nsrcs[key]
         return
 
-    def _rot_and_strip(self, src_ras, src_decs, MC):
+    def _rot_and_strip(self, src_ras, src_decs, MC, key):
         """
         Rotate injected event positions to the sources and strip Monte Carlo
         information from the output array.
@@ -534,6 +584,8 @@ class SignalInjector(object):
             These are the coordinates we rotate on per event in ``MC``.
         MC : record array
             See :py:meth:<SignalInjector.fit>, Parameters.
+        key : dict key
+            Which MC sample we are looking at.
 
         Returns
         --------
@@ -558,7 +610,8 @@ class SignalInjector(object):
         MC = MC[m]
 
         # Remove all names not in experimental data (= remove MC attributes)
-        drop_names = [n for n in MC.dtype.names if n not in self._exp_names]
+        drop_names = [n for n in MC.dtype.names if
+                      n not in self._exp_names[key]]
         return drop_fields(MC, drop_names), m
 
     def _sample_times(self, src_t, dt):
@@ -578,10 +631,8 @@ class SignalInjector(object):
         times : array-like, shape (nevts)
             Sampled times for this trial.
         """
-        nevts = len(src_t)
-
         # Sample uniformly in [0, 1] and scale to time windows per source in MJD
-        r = self._rndgen.uniform(0, 1, size=nevts)
+        r = self._rndgen.uniform(0, 1, size=len(src_t))
         times_rel = r * np.diff(dt, axis=1).ravel() + dt[:, 0]
 
         return src_t + times_rel / self._SECINDAY
@@ -590,6 +641,7 @@ class SignalInjector(object):
         """
         Use to print all settings: `>>> print(sig_inj_object)`
         """
+        raise NotImplementedError("Needs some fixes for dicts.")
         rep = "Signal Injector object\n"
         rep += "----------------------\n\n"
         rep += "- gamma     : {:.2f}\n".format(self._gamma)

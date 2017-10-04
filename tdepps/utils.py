@@ -5,13 +5,13 @@ Collection of repetedly used or large helper functions.
 """
 
 from __future__ import print_function, division, absolute_import
-from builtins import zip
+from builtins import zip, map
 from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
 import scipy.optimize as sco
-from scipy.stats import rv_continuous, chi2
+from scipy.stats import rv_continuous, chi2, poisson
 
 
 def power_law_flux_per_type(trueE, gamma):
@@ -198,6 +198,88 @@ def func_min_in_interval(func, interval, nscan=7):
                         options={"gtol": 1e-12, "ftol": 1e-12}).x
 
     return func(xmin)
+
+
+def make_ns_poisson_weights(mu, ns):
+    """
+    The values of ns are drawn from poisson PDF with a specific mu.
+    To reuse trials generated from a different mu, we can reweight the ns
+    values to match the current mu.
+
+    Parameters
+    ----------
+    mu : float
+        Possion expectation value, >= 0.
+    ns : array-like
+        ns values from various trials.
+
+    Returns
+    -------
+    weights : array-like
+        Weights to reweights ns values to the poissnian with expectaion mu.
+    hist : array-like
+        Number of events falling in each ns bin.
+    """
+    if mu < 0.:
+        raise ValueError("Poisson expectation 'mu' must be >= 0.")
+    # Bin ns values to assign proper weight
+    hist = np.bincount(ns)
+    nbins = len(hist)
+    bins = np.arange(nbins)
+    # Get probability per bin for current mu
+    pmf = poisson.pmf(bins, mu)
+    # Get weights, split equally per bin
+    weights = np.zeros(nbins)
+    mask = hist > 0.
+    weights[mask] = pmf[mask] / hist[mask]
+    # Reassign weight to per trial ns
+    idx = np.digitize(ns, bins, right=True)
+    return weights[idx], hist
+
+
+def weighted_cdf(x, val, weights=None):
+    """
+    Calculate the weighted CDF of data ``x`` with weights ``weights``.
+
+    This calculates the fraction  of data points ``x <= val``, so we get a CDF
+    curve when ``val`` is scanned for the same data points.
+    The uncertainty is calculated from weighted binomial statistics using a
+    Wald approximation.
+
+    Inverse function of ``weighted_percentile``.
+
+    Parameters
+    ----------
+    x : array-like
+        Data values on which the percentile is calculated.
+    val : float
+        Threshold in x-space to calculate the percentile against.
+    weights : array-like
+        Weight for each data point. If ``None``, all weights are assumed to be
+        1. (default: None)
+
+    Returns
+    -------
+    cdf : float
+        CDF in ``[0, 1]``, fraction of ``x <= val``.
+    err : float
+        Estimated uncertainty on the CDF value.
+    """
+    x = np.asarray(x)
+
+    if weights is None:
+        weights = np.ones_like(x)
+    elif np.any(weights < 0.) or (np.sum(weights) <= 0):
+        raise ValueError("Weights must be positive and add up to > 0.")
+
+    # Get weighted CDF: Fraction of weighted values in x <= val
+    mask = (x <= val)
+    weights = weights / np.sum(weights)
+    cdf = np.sum(weights[mask])
+    # Binomial error on weighted cdf in Wald approximation
+    err = np.sqrt(cdf * (1. - cdf) * np.sum(weights**2))
+
+    return cdf, err
 
 
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):

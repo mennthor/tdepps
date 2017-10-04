@@ -1,7 +1,9 @@
 # coding: utf-8
 
 from __future__ import print_function, division, absolute_import
+from builtins import zip, range, int
 from future import standard_library
+from future.utils import viewkeys
 standard_library.install_aliases()
 
 import math
@@ -175,7 +177,7 @@ class GRBLLH(object):
             raise ValueError("Bins for BG spline not in valid range [-1, 1].")
         if np.any(X["sinDec"] < bins[0]) or np.any(X["sinDec"] > bins[-1]):
             raise ValueError("sinDec data events outside given bins. If this" +
-                             "is intended, please remove them beforehand.")
+                             " is intended, please remove them beforehand.")
         self._spatial_pdf_args["bins"] = bins
 
         # Setup energy PDF args
@@ -653,7 +655,7 @@ class GRBLLH(object):
         ev_sig = X["sigma"]
 
         # Get other fixed paramters
-        nb = args["nb"]
+        nb = args["nb"][:, None]
         srcs = args["srcs"]
 
         # Setup source parameters
@@ -669,12 +671,11 @@ class GRBLLH(object):
                                     ev_sin_dec, ev_sig) *
                self._soverb_energy(ev_sin_dec, ev_logE))
 
-        # If mutliple srcs: sum over signal contribution from each src.
+        # If mutliple srcs: sum over weighted signal contribution from each src
         # The single src case is automatically included due to broadcasting
         src_w = self.src_weights(src_dec, src_w_theo)
-        # Background expecation is sum over all on-time windows, assuming non-
-        # overlapping windows.
-        sob = np.sum(sob * src_w, axis=0) / np.sum(nb)
+        # Background expecation per source
+        sob = np.sum(sob * src_w / nb, axis=0)
 
         # Apply a SoB ratio cut, to save computation time on events that don't
         # contribute anyway. We have a relative and an absolute threshold
@@ -1183,19 +1184,18 @@ class GRBLLH(object):
         return rep
 
 
-class MultiyearGRBLLH(object):
+class MultiSampleGRBLLH(object):
     def __init__(self):
-        self._names = []
-        self._llhs = []
+        self._llhs = {}
         return
 
     @property
     def names(self):
-        return self._names
+        return list(self._llhs.keys())
 
     @property
     def llhs(self):
-        return self._llh
+        return list(self._llhs.values())
 
     def add_sample(self, name, llh):
         """
@@ -1211,12 +1211,12 @@ class MultiyearGRBLLH(object):
         if not isinstance(llh, GRBLLH):
             raise ValueError("`llh` object must be of type GRBLLH.")
 
-        if name in self._names:
+        if name in self.names:
             raise KeyError("Name '{}' has already been added. ".format(name) +
                            "Choose a different name.")
+        else:
+            self._llhs[name] = llh
 
-        self._names.append(name)
-        self._llhs.append(llh)
         return
 
     def lnllh_ratio(self, X, ns, args):
@@ -1231,14 +1231,15 @@ class MultiyearGRBLLH(object):
         ----------
         X : dict of record-arrays
             Fixed data set each LLH depends on, given as a dict. Each value must
-            be a record array as used in the single LLH class.
+            be a record array as used in the single LLH class. Dictionary keys
+            must match added ``self.names``.
         ns : float
             Number of signal events at the source locations for all years in
             total.
-        args : list of dicts
+        args : dict of dicts
             Other fixed parameters each LLH depends on, given as a dict. Each
-            value must be a dict as used in the single LLH class.
-            List must have length of number of added samples.
+            value must be a dict as used in the single LLH class. Dictionary
+            keys must match added ``MultiSampleGRBLLH.names``.
 
         Returns
         -------
@@ -1248,8 +1249,35 @@ class MultiyearGRBLLH(object):
         ns_grad : array-like, shape (1)
             Gradient of the test statistic in the fit parameter `ns`.
         """
-        raise NotImplementedError("TODO")
-        return
+        if len(self.names) == 0:
+            raise ValueError("No sample has been added yet.")
+
+        if viewkeys(X) != viewkeys(self._llhs):
+            raise ValueError("Given `X` has not the same keys as stored llh " +
+                             "names.")
+        if viewkeys(args) != viewkeys(self._llhs):
+            raise ValueError("Given `args` has not the same keys as stored " +
+                             "llh names.")
+
+        # Get ns split weights using the sourc list per sample
+        ns_weights = self._get_ns_weights(args)
+
+        # Loop over ln-LLHs and add their contribution
+        TS = 0.
+        ns_grad = 0.
+        for i, name in enumerate(self.names):
+            # Get per sample information
+            llh = self._llhs[name]
+            X_i = X[name]
+            args_i = args[name]
+
+            # sob = llh._soverb(X_i, args_i)
+            # TS_i, ns_grad_i = llh._lnllh_ratio(ns * ns_weights[i], sob)
+            TS_i, ns_grad_i = llh.lnllh_ratio(X_i, ns * ns_weights[i], args_i)
+            TS += TS_i
+            ns_grad += ns_grad_i * ns_weights[i]
+
+        return TS, np.array([ns_grad])
 
     def fit_lnllh_ratio(self, X, ns0, args, bounds, minimizer_opts):
         """
@@ -1266,15 +1294,12 @@ class MultiyearGRBLLH(object):
         Parameters
         ----------
         X : dict of record-arrays
-            Fixed data set each LLH depends on, given as a dict. Each value
-            must be a record array as used in the single LLH class.
+            See :py:meth:`lnllh_ratio`, Parameters
         ns0 : float
             Fitter seed for the fit parameter ``ns``: number of signal events
             that we expect at the source locations.
-        args : list of dicts
-            Other fixed parameters each LLH depends on, given as a dict. Each
-            value must be a dict as used in the single LLH class.
-            List must have length of number of added samples.
+        args : dict of dicts
+            See :py:meth:`lnllh_ratio`, Parameters
         bounds : array-like, shape (1, 2)
             Minimization bounds ``[[min, max]]`` for ``ns``. Use None for one of
             ``min`` or ``max`` when there is no bound in that direction.
@@ -1293,8 +1318,111 @@ class MultiyearGRBLLH(object):
         -----
         .. [5] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466
         """
-        raise NotImplementedError("TODO")
-        return
+        if len(self.names) == 0:
+            raise ValueError("No sample has been added yet.")
+
+        def _neglnllh(ns):
+            """
+            Wrapper for the LLH function returning the negative ln-LLH ratio
+            suitable for the minimizer.
+
+            Parameters
+            ----------
+            ns : float
+                See :py:meth:`lnllh_ratio`, Parameters
+
+            Returns
+            -------
+            lnllh : float
+                See :py:meth:`lnllh_ratio`, Returns
+            lnllh_grad : array-like
+                See :py:meth:`lnllh_ratio`, Returns
+            """
+            lnllh, lnllh_grad = self.lnllh_ratio(X, ns, args)
+            return -1. * lnllh, -1. * lnllh_grad
+
+        # If no events are given for any LLH, best fit is 0, we can skip all
+        # further steps
+        lenX = [len(X_i) for X_i in X.values()]
+        if np.all(lenX == 0):
+            return 0., 0.
+        else:  # Fit other cases
+            res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True, bounds=bounds,
+                               method="L-BFGS-B", options=minimizer_opts)
+
+        # Return function value with correct sign
+        return res.x[0], -1. * res.fun[0]
+
+    def time_pdf_def_range(self, src_t, dt):
+        """
+        Returns the time window per source and per sample, in which the PDF
+        ratio is defined.
+
+        Parameters
+        ----------
+        src_t : dict of arrays
+            Times of each source event in MJD days per sample.
+        dt : dict of arrays, each shape (nsrcs, 2)
+            Time windows ``[start, end]`` in seconds centered at each src_t in
+            which the signal PDF is assumed to be uniform per sample.
+
+        Returns
+        -------
+        trange : dict of arrays, each shape (nsrcs, 2)
+            Total time window per source ``[start, end]`` in seconds in which
+            the time PDF is defined and thus non-zero per sample.
+        """
+        if len(self.names) == 0:
+            raise ValueError("No sample has been added yet.")
+
+        if viewkeys(src_t) != viewkeys(self._llhs):
+            raise ValueError("Given `src_t` has not the same keys as stored " +
+                             "llh names.")
+        if viewkeys(dt) != viewkeys(self._llhs):
+            raise ValueError("Given `dt` has not the same keys as stored " +
+                             "llh names.")
+
+        trange = {}
+        for name, llh in self._llhs.items():
+            _, dti, _, sig_t_clip = llh._setup_time_windows(
+                src_t[name], dt[name])
+
+            # Total time window per source in seconds
+            trange_i = np.empty_like(dti, dtype=np.float)
+            trange_i[:, 0] = dti[:, 0] - sig_t_clip
+            trange_i[:, 1] = dti[:, 1] + sig_t_clip
+            trange[name] = trange_i
+
+        return trange
+
+    def _get_ns_weights(self, args):
+        """
+        Set up the ns splitting weights: The weights effectively renormalize
+        all single LLH per source weights over all samples.
+
+        Parameters
+        ----------
+        args : dict of dicts
+            See :py:meth:`lnllh_ratio`, Parameters
+
+        Returns
+        -------
+        ns_weigths : array-like
+            Weight per sample to split up ``ns`` among different samples.
+        """
+        ns_weights = np.empty(len(self._llhs), dtype=np.float)
+        for i, name in enumerate(self.names):
+            llh = self._llhs[name]
+            args_i = args[name]
+
+            src_w_theo = args_i["srcs"]["w_theo"]
+            src_w_dec = llh.expect_weights(args_i["srcs"]["dec"])
+
+            ns_weights[i] = np.sum(src_w_dec * src_w_theo)
+
+        # Normalize over all samples
+        ns_weights /= np.sum(ns_weights)
+        return ns_weights
 
 
 class MaxBurstGRBLLH(GRBLLH):
