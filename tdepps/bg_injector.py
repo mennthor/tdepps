@@ -682,6 +682,9 @@ class MultiBGInjector(object):
         if not isinstance(inj, BGInjector):
             raise ValueError("`inj` object must be of type BGInjector.")
 
+        if inj._n_features is None:
+            raise RuntimeError("Injector must be fitted before adding.")
+
         if name in self.names:
             raise KeyError("Name '{}' has already been added. ".format(name) +
                            "Choose a different name.")
@@ -706,6 +709,9 @@ class MultiBGInjector(object):
         sam_ev : dictionary
             Sampled events from each added ``BGInjector``.
         """
+        if len(self.names) == 0:
+            raise ValueError("No injector has been added yet.")
+
         if viewkeys(n_samples) != viewkeys(self._injs):
             raise ValueError("Given `n_samples` has not the same keys as " +
                              "stored injectors names.")
