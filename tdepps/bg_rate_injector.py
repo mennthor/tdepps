@@ -359,7 +359,7 @@ class RunlistBGRateInjector(BGRateInjector):
         # Use relativ poisson error as LSQ weights, but ignore empty bins
         w = np.zeros_like(rate)
         m = (rate > 0)
-        w[m] = rate[m] / np.sqrt(rate[m])
+        w[m] = np.sqrt(h["nevts"][m])
         binmids = 0.5 * (h["start_mjd"] + h["stop_mjd"])
 
         resx = self._rate_func.fit(binmids, rate, p0=x0, w=w, **kwargs)
@@ -369,7 +369,8 @@ class RunlistBGRateInjector(BGRateInjector):
         self._livetime = np.sum(h["runtime"])
         return self._set_best_fit(resx)
 
-    def create_goodrun_dict(self, runlist, filter_runs):
+    @staticmethod
+    def create_goodrun_dict(runlist, filter_runs):
         """
         Create a dict of lists from a runlist in JSON format.
 
@@ -452,35 +453,41 @@ class RunlistBGRateInjector(BGRateInjector):
         tot_mask = np.zeros_like(T, dtype=bool)
         # Histogram time values in each run manually
         evts = np.zeros_like(run, dtype=int)
+        eps = 1. / self._SECINDAY
         for i, (start, stop) in enumerate(zip(start_mjd, stop_mjd)):
-            mask = (T >= start) & (T <= stop)
+            mask = (T >= start - eps) & (T <= stop + eps)
             evts[i] = np.sum(mask)
             tot_evts += np.sum(mask)
             tot_mask = tot_mask | mask
 
         # Crosscheck, if we got all events and didn't double count
-        if not tot_evts == len(T):
-            t_left = T[~tot_mask]
-            idx_left = np.where(np.isin(T, t_left))
-            err = ("Not all events in 'T' were sorted in bins. If this is " +
-                   "intended, please remove them beforehand.\n")
-            err += "  Events selected : {}\n".format(tot_evts)
-            err += "  Events in T     : {}\n".format(len(T))
-            err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
-                ["{}".format(ti) for ti in t_left]))
-            err += "  Indices:\n    {}".format(", ".join(
-                ["{}".format(i) for i in idx_left]))
-            raise ValueError(err)
+        # if not tot_evts == len(T):
+        #     t_left = T[~tot_mask]
+        #     idx_left = np.where(np.isin(T, t_left))
+        #     err = ("Not all events in 'T' were sorted in bins. If this is " +
+        #            "intended, please remove them beforehand.\n")
+        #     err += "  Events selected : {}\n".format(tot_evts)
+        #     err += "  Events in T     : {}\n".format(len(T))
+        #     err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
+        #         ["{}".format(ti) for ti in t_left]))
+        #     err += "  Indices:\n    {}".format(", ".join(
+        #         ["{}".format(i) for i in idx_left]))
+        #     raise ValueError(err)
 
         if remove_zero_runs:
-            # Remove all zero event runs and update livetime
+            # Remove all zero event runs
             m = (evts > 0)
-            _livetime = np.sum(stop_mjd[~m] - start_mjd[~m])
-            evts, run = evts[m], run[m]
-            start_mjd, stop_mjd = start_mjd[m], stop_mjd[m]
-            print("Removing runs with zero events")
-            print("  Number of runs with 0 events : {:d}".format(np.sum(~m)))
-            print("  Total livetime of those runs : {:.3f} d".format(_livetime))
+            if np.sum(~m) > 0:
+                _livetime = np.sum(stop_mjd[~m] - start_mjd[~m])
+                evts, run = evts[m], run[m]
+                start_mjd, stop_mjd = start_mjd[m], stop_mjd[m]
+                print("Removing runs with zero events")
+                print("  Number of runs with 0 events : " +
+                      "{:d}".format(np.sum(~m)))
+                print("  Total livetime of those runs : " +
+                      "{:.3f} d".format(_livetime))
+            else:
+                print("No runs with zero events found.")
 
         # Normalize to rate in Hz
         runtime = stop_mjd - start_mjd
@@ -592,6 +599,11 @@ class MultiBGRateInjector(object):
         if not isinstance(inj, BGRateInjector):
             raise ValueError("`inj` object must be of type BGRateInjector.")
 
+        try:
+            inj.best_pars
+        except RuntimeWarning:
+            raise RuntimeWarning("Injector must be fitted before adding.")
+
         if name in self.names:
             raise KeyError("Name '{}' has already been added. ".format(name) +
                            "Choose a different name.")
@@ -623,17 +635,59 @@ class MultiBGRateInjector(object):
         sam_ev : dictionary
             Sampled times from each added ``BGRateInjector``.
         """
+        if len(self.names) == 0:
+            raise ValueError("No injector has been added yet.")
+
         if viewkeys(t) != viewkeys(self._injs):
             raise ValueError("Given `t` has not the same keys as " +
-                             "stored injectors names.")
+                             "stored injector names.")
         if viewkeys(trange) != viewkeys(self._injs):
-            raise ValueError("Given `t` has not the same keys as " +
-                             "stored injectors names.")
+            raise ValueError("Given `trange` has not the same keys as " +
+                             "stored injector names.")
 
         sam_ev = {}
-        for name in self.names:
-            # Get per sample information
-            inj = self._injs[name]
-            sam_ev[name] = inj.sample(t[name], trange[name])
+        for name, inj in self._injs.items():
+            sam_ev[name] = np.concatenate(inj.sample(t[name], trange[name]))
 
         return sam_ev
+
+    def get_nb(self, t, trange):
+        """
+        Return the expected number of events from integrating the rate function
+        in the given time ranges.
+
+        Parameters
+        ----------
+        t : dict of arrays, each shape (nsrcs)
+            MJD times of sources per injector.
+        trange : dict od array, each shape(nsrcs, 2)
+            Time windows ``[[t0, t1], ...]`` in seconds around each given time
+            ``t`` per injector.
+
+        Returns
+        -------
+        nb : dict of arrays, each shape (nsrcs)
+            Expected number of background events for each sources time window
+            per injcetor.
+        """
+        if len(self.names) == 0:
+            raise ValueError("No injector has been added yet.")
+
+        if viewkeys(t) != viewkeys(self._injs):
+            raise ValueError("Given `t` has not the same keys as " +
+                             "stored injector names.")
+        if viewkeys(trange) != viewkeys(self._injs):
+            raise ValueError("Given `trange` has not the same keys as " +
+                             "stored injector names.")
+
+        nb = {}
+        for name, inj in self._injs.items():
+            if inj._best_pars is None:
+                raise RuntimeError("Injector '{} was not fit to " +
+                                   "data yet.".format(name))
+
+            # BG expectations are the integrals over each time frames
+            ti, trangei = inj._prep_t_trange(t[name], trange[name])
+            nb[name] = inj._best_estimator_integral(ti, trangei)
+
+        return nb
