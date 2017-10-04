@@ -3,17 +3,23 @@
 from __future__ import print_function, division, absolute_import
 from builtins import range, int, next, zip
 from future import standard_library
+from future.utils import viewkeys
 standard_library.install_aliases()
 
 import numpy as np
 from numpy.lib.recfunctions import append_fields, stack_arrays
 import scipy.stats as scs
 import scipy.optimize as sco
-from tqdm import tqdm
 
-from tdepps.llh import GRBLLH
+from tdepps.llh import GRBLLH, MultiSampleGRBLLH
 from tdepps.utils import (fill_dict_defaults, weighted_cdf,
                           make_ns_poisson_weights)
+
+import sys
+if any("jupyter" in arg for arg in sys.argv):
+    from tqdm import tqdm_notebook as tqdm
+else:
+    from tqdm import tqdm
 
 
 class TransientsAnalysis(object):
@@ -23,7 +29,7 @@ class TransientsAnalysis(object):
 
         Parameters
         ----------
-        srcs : recarray, shape (nsrcs)
+        srcs : dict or dict of recarrays, shape (nsrcs)
             Source properties, must have names:
 
             - 'ra', float: Right-ascension coordinate of each source in radian
@@ -36,52 +42,69 @@ class TransientsAnalysis(object):
             - 'w_theo', float: Theoretical source weight per source, eg. from a
               known gamma flux.
 
-        llh : `tdepps.LLH.GRBLLH` instance
+            If given as dictionary each value holds the source information for a
+            different sample. ``llh`` must then be of type ``MultiLLH``.
+        llh : ``tdepps.LLH.GRBLLH`` or ``MultiSampleGRBLLH`` instance
             LLH function used to test the hypothesis, that signal neutrinos have
             been measured accompaning a source event occuring only for a limited
             amount of time, eg. a gamma ray burst (GRB).
+            If ``srcs`` is given as a dict, ``llh`` must be of type
+            ``MultiSampleGRBLLH``.
         """
-        self.srcs = srcs
-        self.llh = llh
+        if not isinstance(srcs, dict):  # Temporary work with dicts
+            srcs = {-1: srcs}
+
+        # If we have a multi LLH, keys must match
+        if isinstance(llh, MultiSampleGRBLLH):
+            if viewkeys(llh._llhs) != viewkeys(srcs):
+                raise ValueError("`llh` is a `tdepps.llh.MultiSampleGRBLLH` " +
+                                 "but sample names in `llh` and keys in " +
+                                 "`srcs` don't match.")
+        elif not isinstance(llh, GRBLLH):
+            raise ValueError("`llh` must be an instance of " +
+                             "`tdepps.llh.GRBLLH` or " +
+                             "`tdepps.llh.MultiSampleGRBLLH`.")
+
+        # Check each source recarray's names and test the time windows
+        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
+        _allsrcs = np.empty(0, dtype=[(n, np.float) for n in required_names])
+        for n in required_names:
+            for key, srcs_i in srcs.items():
+                if n not in srcs_i.dtype.names:
+                    raise ValueError("Source recarray '" +
+                                     "{}' is missing name '{}'.".format(key, n))
+                    _allsrcs = stack_arrays(_allsrcs, srcs_i)
+
+        # Test mutual exclusiveness of all source time windows
+        t, dt0, dt1 = _allsrcs["t"], _allsrcs["dt0"], _allsrcs["dt1"]
+        exclusive = (((t + dt0)[:, None] >= t + dt1) |
+                     ((t + dt1)[:, None] <= t + dt0))
+        # Fix manually that time windows overlap with themselves
+        np.fill_diagonal(exclusive, True)
+        # If any entry is False, we have an overlapping window case
+        if np.any(exclusive is False):
+            window_ids = [[x, y] for x, y in zip(*np.where(~exclusive))]
+            raise ValueError("Overlapping time windows: {}.".format(
+                ", ".join(["[{:d}, {:d}]".format(*c) for c in
+                          window_ids])) + "\nThis is not supported.")
+
+        self._llh = llh
+        if (len(srcs) == 1) and (srcs.keys()[0] == -1):
+            self._srcs = srcs[-1]
+            self._multi = False
+        else:
+            self._srcs = srcs
+            self._multi = True
+
         return
 
     @property
     def srcs(self):
         return self._srcs
 
-    @srcs.setter
-    def srcs(self, srcs):
-        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
-        for n in required_names:
-            if n not in srcs.dtype.names:
-                raise ValueError("`srcs` is missing name '{}'.".format(n))
-
-        # Test mutual exclusiveness of the windows
-        # larger edge must be y than lower edge and vice versa to be exclusive
-        t, dt0, dt1 = srcs["t"], srcs["dt0"], srcs["dt1"]
-        exclusive = (((t + dt0)[:, None] >= t + dt1) |
-                     ((t + dt1)[:, None] <= t + dt0))
-        # Fix manually that time windows overlap with themselves of course
-        np.fill_diagonal(exclusive, True)
-        # If any entry is False, we have an overlapping window case
-        if np.any(exclusive is False):
-            window_ids = [[x, y] for x, y in zip(*np.where(~exclusive))]
-            raise ValueError("Overlapping time windows: {}.".format(", ".join(
-                ["[{:d}, {:d}]".format(*c) for c in window_ids])) +
-                "\nThis is not supported yet.")
-
-        self._srcs = srcs
-
     @property
     def llh(self):
         return self._llh
-
-    @llh.setter
-    def llh(self, llh):
-        if not isinstance(llh, GRBLLH):
-            raise ValueError("`llh` must be an instance of " +
-                             "`tdepps.llh.GRBLLH`.")
-        self._llh = llh
 
     def do_trials(self, n_trials, ns0, bg_inj, bg_rate_inj, signal_inj=None,
                   minimizer_opts=None, full_out=False, verb=False):
@@ -164,57 +187,93 @@ class TransientsAnalysis(object):
         assert len(minopts) >= len(opt_keys)
 
         # Prepare fixed source parameters for injectors
-        src_t = self._srcs["t"]
-        src_dt = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
+        if self._multi:
+            src_t = {}
+            src_dt = {}
+            for key, src_i in self._srcs.items():
+                src_t[key] = src_i["t"]
+                src_dt[key] = np.vstack((src_i["dt0"], src_i["dt1"])).T
+        else:
+            src_t = self._srcs["t"]
+            src_dt = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
 
         # Total injection time window in which the time PDF is defined and
         # nonzero.
         trange = self._llh.time_pdf_def_range(src_t, src_dt)
         assert len(trange) == len(self._srcs)
-        assert trange.shape == (len(self._srcs), 2)
 
         # Number of expected background events in each given time frame
         nb = bg_rate_inj.get_nb(src_t, trange)
         assert len(nb) == len(self._srcs)
-        assert nb.shape == (self._srcs.shape)
-
-        if signal_inj is not None:
-            nsig_all = []
 
         # Create args and do trials
-        args = {"nb": nb, "srcs": self._srcs}
-        nzeros = 0
-        ns, TS = [], []
+        if self._multi:
+            args = {name: {"nb": nb[name], "srcs": self._srcs[name]} for name in
+                    self._srcs.keys()}
+        else:
+            args = {"nb": nb, "srcs": self._srcs}
+
+        # Select iterator depending on `verb` keyword
         if verb:
             trial_iter = tqdm(range(n_trials))
         else:
             trial_iter = range(n_trials)
+
+        nzeros = 0
+        ns, TS = [], []
+        nsig_all = []
         for i in trial_iter:
             # Inject events from given injectors
             times = bg_rate_inj.sample(src_t, trange, poisson=True)
-            times = np.concatenate(times, axis=0)
-            nevts = len(times)
+            if self._multi:
+                nevts_split = {n: len(times_i) for n, times_i in times.items()}
+                nevts = np.sum([len(times_i) for times_i in times.values()])
+                if nevts > 0:
+                    X = bg_inj.sample(nevts_split)
+                    for key, arr in X.items():
+                        X[key] = append_fields(arr, "timeMJD", times[key],
+                                               dtypes=np.float, usemask=False)
 
-            if nevts > 0:
-                X = bg_inj.sample(nevts)
-                X = append_fields(X, "timeMJD", times, dtypes=np.float,
-                                  usemask=False)
+                if signal_inj is not None:
+                    nsig, Xsig, _ = next(signal_inj)
+                    nsig_all.append(nsig[0])
+                    nevts += nsig[0]
+                else:
+                    Xsig = None
 
-            if signal_inj is not None:
-                nsig, Xsig, _ = next(signal_inj)
-                nsig_all.append(nsig)
-                nevts += nsig[0]
+                # If we have no events at all, fit will be zero
+                if nevts == 0:
+                    nzeros += 1
+                    continue
+
+                # Else ask LLH what value we have
+                if Xsig is not None:
+                    for key, arr in Xsig.items():
+                        X[key] = stack_arrays((X[key], arr), usemask=False)
             else:
-                Xsig = None
+                times = np.concatenate(times, axis=0)
+                nevts = len(times)
 
-            # If we have no events at all, fit will be zero
-            if nevts == 0:
-                nzeros += 1
-                continue
+                if nevts > 0:
+                    X = bg_inj.sample(nevts)
+                    X = append_fields(X, "timeMJD", times, dtypes=np.float,
+                                      usemask=False)
 
-            # Else ask LLH what value we have
-            if Xsig is not None:
-                X = stack_arrays((X, Xsig), usemask=False)
+                if signal_inj is not None:
+                    nsig, Xsig, _ = next(signal_inj)
+                    nsig_all.append(nsig[0])
+                    nevts += nsig[0]
+                else:
+                    Xsig = None
+
+                # If we have no events at all, fit will be zero
+                if nevts == 0:
+                    nzeros += 1
+                    continue
+
+                # Else ask LLH what value we have
+                if Xsig is not None:
+                    X = stack_arrays((X, Xsig), usemask=False)
 
             # Only store the best fit params and the TS value if nonzero
             _ns, _TS = self.llh.fit_lnllh_ratio(X, ns0, args, bounds,
@@ -232,7 +291,7 @@ class TransientsAnalysis(object):
         res["TS"] = np.array(TS)
 
         if full_out:
-            return res, nzeros, np.concatenate(nsig_all)
+            return res, nzeros, np.array(nsig_all)
         else:
             return res, nzeros
 
@@ -363,8 +422,8 @@ class TransientsAnalysis(object):
         if mu0 < 0:
             if verb:
                 print("Starting intitial scan loops.")
-            dmu = np.abs(mu0)  # Must be handtuned to the problem...
-            n_init_trials = 10  # Not too few but also not too many for 1st scan
+            dmu = -mu0
+            n_init_trials = 20  # Not too few but also not too many for 1st scan
 
             def frac_over_tsval(ts):
                 """Fraction of 'n_init_trials' last trials above 'ts_val'"""
