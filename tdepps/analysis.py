@@ -604,8 +604,6 @@ class TransientsAnalysis(object):
         # Do the trials
         TS = []
         for mui in trial_iter:
-            if verb:
-                print("Trials for mu = {:.2f}".format(mui))
             sig_gen = signal_inj.sample(mean_mu=mui)
             res, nzeros = self.do_trials(n_trials=ntrials, ns0=mui,
                                          signal_inj=sig_gen, bg_inj=bg_inj,
