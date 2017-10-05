@@ -414,28 +414,34 @@ class SignalInjector(object):
             sam_ev = dict()
             # Total mask to filter out events rotated outside `sin_dec_range`
             idx_m = np.zeros_like(sam_idx, dtype=bool)
-            for enum in enums:
+            for enum in self._enummap.keys():
                 key = self._enummap[enum]
-                # Get source positions for the correct sample
-                _src_ra = self._srcs[key]["ra"]
-                _src_dec = self._srcs[key]["dec"]
-                _src_t = self._srcs[key]["t"]
-                _src_dt = np.vstack((self._srcs[key]["dt0"],
-                                     self._srcs[key]["dt1"])).T
-                # Select events per sample
-                enum_m = (sam_idx["enum"] == enum)
-                idx = sam_idx[enum_m]["ev_idx"]
-                sam_ev_i = np.copy(self._MC[key][idx])
-                # Broadcast corresponding sources for correct rotation
-                src_idx = sam_idx[enum_m]["src_idx"]
-                sam_ev[key], m = self._rot_and_strip(
-                    _src_ra[src_idx], _src_dec[src_idx], sam_ev_i, key=key)
-                sam_ev[key]["timeMJD"] = self._sample_times(
-                    _src_t[src_idx], _src_dt[src_idx])[m]
-                # Build up the mask for the returned indices 'sam_idx'
-                _idx_m = np.zeros_like(m)
-                _idx_m[m] = True
-                idx_m[enum_m] = _idx_m
+                if enum in enums:
+                    # Get source positions for the correct sample
+                    _src_ra = self._srcs[key]["ra"]
+                    _src_dec = self._srcs[key]["dec"]
+                    _src_t = self._srcs[key]["t"]
+                    _src_dt = np.vstack((self._srcs[key]["dt0"],
+                                         self._srcs[key]["dt1"])).T
+                    # Select events per sample
+                    enum_m = (sam_idx["enum"] == enum)
+                    idx = sam_idx[enum_m]["ev_idx"]
+                    sam_ev_i = np.copy(self._MC[key][idx])
+                    # Broadcast corresponding sources for correct rotation
+                    src_idx = sam_idx[enum_m]["src_idx"]
+                    sam_ev[key], m = self._rot_and_strip(
+                        _src_ra[src_idx], _src_dec[src_idx], sam_ev_i, key=key)
+                    sam_ev[key]["timeMJD"] = self._sample_times(
+                        _src_t[src_idx], _src_dt[src_idx])[m]
+                    # Build up the mask for the returned indices 'sam_idx'
+                    _idx_m = np.zeros_like(m)
+                    _idx_m[m] = True
+                    idx_m[enum_m] = _idx_m
+                else:
+                    drop_names = [ni for ni in self._MC[key].dtype.names if
+                                  ni not in self._exp_names[key]]
+                    sam_ev[key] = drop_fields(
+                        np.empty((0,), dtype=self._MC[key].dtype), drop_names)
 
             yield n, sam_ev, sam_idx[idx_m]
 
