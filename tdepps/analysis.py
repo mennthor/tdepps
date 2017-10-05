@@ -233,6 +233,8 @@ class TransientsAnalysis(object):
                     for key, arr in X.items():
                         X[key] = append_fields(arr, "timeMJD", times[key],
                                                dtypes=np.float, usemask=False)
+                else:
+                    X = None
 
                 if signal_inj is not None:
                     nsig, Xsig, _ = next(signal_inj)
@@ -248,8 +250,11 @@ class TransientsAnalysis(object):
 
                 # Else ask LLH what value we have
                 if Xsig is not None:
-                    for key, arr in Xsig.items():
-                        X[key] = stack_arrays((X[key], arr), usemask=False)
+                    if X is not None:
+                        for key, arr in Xsig.items():
+                            X[key] = stack_arrays((X[key], arr), usemask=False)
+                    else:
+                        X = Xsig
             else:
                 times = np.concatenate(times, axis=0)
                 nevts = len(times)
