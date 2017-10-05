@@ -622,8 +622,12 @@ class TransientsAnalysis(object):
             """Can't use scs.chi2.cdf directly in curve fit."""
             return scs.chi2.cdf(x, df, loc, scale)
 
-        pars, cov = sco.curve_fit(cdf_func, xdata=mus, ydata=1. - cdfs)
-        mu_bf = scs.chi2.ppf(beta, *pars)
+        try:
+            pars, cov = sco.curve_fit(cdf_func, xdata=mus, ydata=1. - cdfs)
+            mu_bf = scs.chi2.ppf(beta, *pars)
+        except RuntimeError:
+            print("Couldn't find best params, returning `None` instead.")
+            return None, cdfs, TS, None
 
         return mu_bf, cdfs, TS, pars
 
