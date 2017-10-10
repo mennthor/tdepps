@@ -1267,9 +1267,11 @@ class MultiSampleGRBLLH(object):
         ns_grad = 0.
         for i, name in enumerate(self.names):
             # Get per sample information
-            llh = self._llhs[name]
             X_i = X[name]
+            if X_i is None:
+                continue
             args_i = args[name]
+            llh = self._llhs[name]
 
             # sob = llh._soverb(X_i, args_i)
             # TS_i, ns_grad_i = llh._lnllh_ratio(ns * ns_weights[i], sob)

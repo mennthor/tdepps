@@ -233,6 +233,8 @@ class TransientsAnalysis(object):
                     for key, arr in X.items():
                         X[key] = append_fields(arr, "timeMJD", times[key],
                                                dtypes=np.float, usemask=False)
+                else:
+                    X = None
 
                 if signal_inj is not None:
                     nsig, Xsig, _ = next(signal_inj)
@@ -248,8 +250,11 @@ class TransientsAnalysis(object):
 
                 # Else ask LLH what value we have
                 if Xsig is not None:
-                    for key, arr in Xsig.items():
-                        X[key] = stack_arrays((X[key], arr), usemask=False)
+                    if X is not None:
+                        for key, arr in Xsig.items():
+                            X[key] = stack_arrays((X[key], arr), usemask=False)
+                    else:
+                        X = Xsig
             else:
                 times = np.concatenate(times, axis=0)
                 nevts = len(times)
@@ -599,8 +604,6 @@ class TransientsAnalysis(object):
         # Do the trials
         TS = []
         for mui in trial_iter:
-            if verb:
-                print("Trials for mu = {:.2f}".format(mui))
             sig_gen = signal_inj.sample(mean_mu=mui)
             res, nzeros = self.do_trials(n_trials=ntrials, ns0=mui,
                                          signal_inj=sig_gen, bg_inj=bg_inj,
@@ -619,8 +622,12 @@ class TransientsAnalysis(object):
             """Can't use scs.chi2.cdf directly in curve fit."""
             return scs.chi2.cdf(x, df, loc, scale)
 
-        pars, cov = sco.curve_fit(cdf_func, xdata=mus, ydata=1. - cdfs)
-        mu_bf = scs.chi2.ppf(beta, *pars)
+        try:
+            pars, cov = sco.curve_fit(cdf_func, xdata=mus, ydata=1. - cdfs)
+            mu_bf = scs.chi2.ppf(beta, *pars)
+        except RuntimeError:
+            print("Couldn't find best params, returning `None` instead.")
+            return None, cdfs, TS, None
 
         return mu_bf, cdfs, TS, pars
 
