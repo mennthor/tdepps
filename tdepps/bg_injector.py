@@ -252,7 +252,8 @@ class KDEBGInjector(BGInjector):
         %(BGInjector.fit.parameters)s
             If ``None`` the KDE model is checked, if it already is fitted and
             usable. This can be used to use an already existing KDE model for
-            injection.
+            injection. Be careful that the fitted model has the data stored in
+            the same order as described by ``self._X_names``.
         bounds : None or array-like, shape (n_features, 2)
             Boundary conditions for each dimension. If None, [-np.inf, +np.inf]
             is used in each dimension. (default: None)
