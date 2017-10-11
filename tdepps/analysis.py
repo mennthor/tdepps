@@ -16,10 +16,7 @@ from tdepps.utils import (fill_dict_defaults, weighted_cdf,
                           make_ns_poisson_weights)
 
 import sys
-if any("jupyter" in arg for arg in sys.argv):
-    from tqdm import tqdm_notebook as tqdm
-else:
-    from tqdm import tqdm
+from tqdm import tqdm
 
 
 class TransientsAnalysis(object):
@@ -220,12 +217,13 @@ class TransientsAnalysis(object):
             trial_iter = range(n_trials)
 
         nzeros = 0
-        ns, TS = [], []
+        ns = []
+        TS = []
         nsig_all = []
-        for i in trial_iter:
-            # Inject events from given injectors
-            times = bg_rate_inj.sample(src_t, trange, poisson=True)
-            if self._multi:
+        if self._multi:  # Use multi LLH syntax
+            for i in trial_iter:
+                # Inject events from given injectors
+                times = bg_rate_inj.sample(src_t, trange, poisson=True)
                 nevts_split = {n: len(times_i) for n, times_i in times.items()}
                 nevts = np.sum([len(times_i) for times_i in times.values()])
                 if nevts > 0:
@@ -255,7 +253,22 @@ class TransientsAnalysis(object):
                             X[key] = stack_arrays((X[key], arr), usemask=False)
                     else:
                         X = Xsig
-            else:
+
+                # Only store the best fit params and the TS value if nonzero
+                _ns, _TS = self.llh.fit_lnllh_ratio(X, ns0, args, bounds,
+                                                    minimizer_opts)
+                if (_ns == 0) and (_TS == 0):
+                    nzeros += 1
+                    if full_out:
+                        ns.append(0.)
+                        TS.append(0.)
+                else:
+                    ns.append(_ns)
+                    TS.append(_TS)
+        else:  # Use single LLH and injectors
+            for i in trial_iter:
+                # Inject events from given injectors
+                times = bg_rate_inj.sample(src_t, trange, poisson=True)
                 times = np.concatenate(times, axis=0)
                 nevts = len(times)
 
@@ -280,23 +293,33 @@ class TransientsAnalysis(object):
                 if Xsig is not None:
                     X = stack_arrays((X, Xsig), usemask=False)
 
-            # Only store the best fit params and the TS value if nonzero
-            _ns, _TS = self.llh.fit_lnllh_ratio(X, ns0, args, bounds,
-                                                minimizer_opts)
-            if (_ns == 0) and (_TS == 0):
-                nzeros += 1
-            else:
-                ns.append(_ns)
-                TS.append(_TS)
+                # Only store the best fit params and the TS value if nonzero
+                _ns, _TS = self.llh.fit_lnllh_ratio(X, ns0, args, bounds,
+                                                    minimizer_opts)
+                if (_ns == 0.) and (_TS == 0.):
+                    nzeros += 1
+                    if full_out:
+                        ns.append(0.)
+                        TS.append(0.)
+                else:
+                    ns.append(_ns)
+                    TS.append(_TS)
 
         # Make output record array for non zero trials
-        res = np.empty((n_trials - nzeros,),
+        if full_out:
+            size = n_trials
+        else:
+            size = n_trials - nzeros
+        res = np.empty((size,),
                        dtype=[("ns", np.float), ("TS", np.float)])
         res["ns"] = np.array(ns)
         res["TS"] = np.array(TS)
 
         if full_out:
-            return res, nzeros, np.array(nsig_all)
+            if signal_inj is not None:
+                return res, nzeros, np.array(nsig_all, dtype=int)
+            else:
+                return res, nzeros, np.empty((0,))
         else:
             return res, nzeros
 
@@ -580,18 +603,21 @@ class TransientsAnalysis(object):
 
         Returns
         -------
-        mu_bf : float
-            Best fit poisson signal expectation derived from the fitted ``chi2``
-            CDF.
-        cdfs : array-like, len(mus)
-            Calculated CDF values for each trial from the ``chi2`` function.
-        TS : list of arrays
-            For each bunch ``mu`` trials the resulting test satistic values.
-            From these we can in principle  calculate other ``ts_val, beta``
-            combinations by calculating new percentiles and refit the ``chi2``
-            wthout doing more trials.
-        best_pars : tuple, len(3)
-            Best fit parameters from the ``chi2`` CDF fit.
+        res : dict
+            Result dictionary with keys:
+
+            - "mu_bf": Best fit poisson signal expectation derived from the
+              fitted ``chi2`` CDF.
+            - "cdfs": Calculated CDF values for each trial from the ``chi2``
+              function.
+            - "pars": Best fit parameters from the ``chi2`` CDF fit.
+            - "ts": For each bunch ``mu`` trials the resulting test satistic
+              values. From these we can in principle  calculate other
+              ``ts_val, beta`` combinations by calculating new percentiles and
+              refit the ``chi2`` wthout doing more trials.
+            - "ns": Same as ``'ts'`` but for the fitted signal parameter.
+            - "ninj": Same as ``'ns'`` but the number of injected signal events
+              per trial per bunch of trials.
         """
         if np.any(mus < 0):
             raise ValueError("`mus` must not have an entry < 0.")
@@ -603,14 +629,18 @@ class TransientsAnalysis(object):
 
         # Do the trials
         TS = []
+        ns = []
+        nsig = []
         for mui in trial_iter:
             sig_gen = signal_inj.sample(mean_mu=mui)
-            res, nzeros = self.do_trials(n_trials=ntrials, ns0=mui,
-                                         signal_inj=sig_gen, bg_inj=bg_inj,
-                                         bg_rate_inj=bg_rate_inj,
-                                         verb=False, full_out=False)
-            TS.append(np.concatenate((res["TS"],
-                                      np.zeros(nzeros, dtype=np.float))))
+            res, nzeros, nsig_i = self.do_trials(n_trials=ntrials, ns0=mui,
+                                                 signal_inj=sig_gen,
+                                                 bg_inj=bg_inj,
+                                                 bg_rate_inj=bg_rate_inj,
+                                                 verb=False, full_out=True)
+            TS.append(res["TS"])
+            ns.append(res["ns"])
+            nsig.append(nsig_i)
 
         # Create the CDF values and fit the chi2
         cdfs = []
@@ -623,13 +653,15 @@ class TransientsAnalysis(object):
             return scs.chi2.cdf(x, df, loc, scale)
 
         try:
-            pars, cov = sco.curve_fit(cdf_func, xdata=mus, ydata=1. - cdfs)
+            pars, _ = sco.curve_fit(cdf_func, xdata=mus, ydata=1. - cdfs)
             mu_bf = scs.chi2.ppf(beta, *pars)
         except RuntimeError:
             print("Couldn't find best params, returning `None` instead.")
-            return None, cdfs, TS, None
+            mu_bf = None
+            pars = None
 
-        return mu_bf, cdfs, TS, pars
+        return {"mu_bf": mu_bf, "cdfs": cdfs, "pars": pars,
+                "ts": TS, "ns": ns, "ninj": nsig}
 
     def unblind(self):
         """
