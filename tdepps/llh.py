@@ -1259,7 +1259,7 @@ class MultiSampleGRBLLH(object):
             raise ValueError("Given `args` has not the same keys as stored " +
                              "llh names.")
 
-        # Get ns split weights using the sourc list per sample
+        # Get ns split weights using the source list per sample
         ns_weights = self._get_ns_weights(args)
 
         # Loop over ln-LLHs and add their contribution
@@ -1345,8 +1345,8 @@ class MultiSampleGRBLLH(object):
 
         # If no events are given for any LLH, best fit is 0, we can skip all
         # further steps
-        lenX = [len(X_i) for X_i in X.values()]
-        if np.all(lenX == 0):
+        lenX = np.sum([len(X_i) for X_i in X.values()])
+        if lenX == 0:
             return 0., 0.
         else:  # Fit other cases
             res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True, bounds=bounds,
