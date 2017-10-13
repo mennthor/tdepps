@@ -546,7 +546,7 @@ class Sinus1yrConstRateFunction(Sinus1yrRateFunction):
         So the number of expected events is still following the seasonal
         fluctuations, but in the time windows we sample uniformly (step
         function like). Perfect for small time windows, avoiding rejection
-        sampling.
+        sampling and thus giving a speed boost.
 
         Parameters
         ----------
