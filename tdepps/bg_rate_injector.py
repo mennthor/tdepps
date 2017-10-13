@@ -3,7 +3,6 @@
 from __future__ import print_function, division, absolute_import
 from builtins import dict, open, filter, zip, super
 from future import standard_library
-from future.utils import viewkeys
 standard_library.install_aliases()
 
 import os
@@ -22,7 +21,7 @@ class BGRateInjector(object):
 
     @docs.get_sectionsf("BGRateInjector.init", sections=["Parameters"])
     @docs.dedent
-    def __init__(self, rate_func, random_state=None):
+    def __init__(self, srcs, rate_func, random_state=None):
         """
         Background Rate Injector Base Class
 
@@ -50,6 +49,21 @@ class BGRateInjector(object):
 
         Parameters
         ----------
+        srcs : recarray or dict(name, recarray)
+            Source properties as single record array or as dictionary with
+            sample names mapped to record arrays. Keys must match keys in
+            ``MC``. Each record array must have names:
+
+            - 'ra', float: Right-ascension coordinate of each source in
+              radian in intervall :math:`[0, 2\pi]`.
+            - 'dec', float: Declinatiom coordinate of each source in radian
+              in intervall :math:`[-\pi / 2, \pi / 2]`.
+            - 't', float: Time of the occurence of the source event in MJD
+              days.
+            - 'dt0', 'dt1': float: Lower/upper border of the time search
+              window in seconds, centered around each source time ``t``.
+            - 'w_theo', float: Theoretical source weight per source, eg. from
+              a known gamma flux.
         rate_func : `rate_function.RateFunction` instance
             Class defining the function to describe the time dependent
             background rate. Must provide functions
@@ -74,6 +88,17 @@ class BGRateInjector(object):
         self._rate_func = rate_func
         self.rndgen = random_state
 
+        # Setup and check source times and time ranges
+        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
+        for n in required_names:
+            if n not in srcs.dtype.names:
+                raise ValueError("`srcs` recarray is missing name " +
+                                 "'{}'.".format(n))
+
+        self._t = np.atleast_1d(srcs["t"])
+        self._trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
+        self._nsrcs = len(srcs)
+
         self._SECINDAY = 24. * 60. * 60.
         self._livetime = None
         self._best_pars = None
@@ -81,6 +106,14 @@ class BGRateInjector(object):
         self._best_estimator_integral = None
 
         return
+
+    @property
+    def srcs(self):
+        return self._t, self._trange
+
+    @srcs.setter
+    def srcs(self, srsc):
+        raise ValueError("`srcs` can't be set. Create new object instead.")
 
     @property
     def rndgen(self):
@@ -162,7 +195,7 @@ class BGRateInjector(object):
         """
         pass
 
-    def sample(self, t, trange, poisson=True):
+    def sample(self, poisson=True):
         """
         Generate random samples from the fitted model for multiple source event
         times and corresponding time frames at once.
@@ -173,10 +206,6 @@ class BGRateInjector(object):
 
         Parameters
         ----------
-        t : array-like, shape (nsrcs)
-            MJD times of sources.
-        trange : array-like, shape(nsrcs, 2)
-            Time windows [[t0, t1], ...] in seconds around each given time t.
         poisson : bool, optional
             If True, sample the number of events per src using a poisson
             distribution, with expectation from the background expectation in
@@ -189,32 +218,21 @@ class BGRateInjector(object):
             The times in MJD for each sampled srcs. Arrays might be empty, when
             the background expectation is low for small time windows.
         """
-        # BG expectations are the integrals over each time frames, shape (nsrcs)
-        t, trange = self._prep_t_trange(t, trange)
-        expect = self.get_nb(t, trange)
-        nsrcs = len(t)
-
         # Get number of actual events to sample times for
+        expect = self.get_nb()
         if poisson:
-            nevents = self._rndgen.poisson(lam=expect, size=nsrcs)
+            nevents = self._rndgen.poisson(lam=expect, size=self._nsrcs)
         else:  # If one expectation is < 0.5 no event is sampled for that src
             nevents = np.round(expect).astype(int)
 
         # Sample all nevents for this trial from the rate function at once
-        return self._rate_func.sample(t, trange, self._best_pars,
+        return self._rate_func.sample(self._t, self._trange, self._best_pars,
                                       n_samples=nevents)
 
-    def get_nb(self, t, trange):
+    def get_nb(self):
         """
         Return the expected number of events from integrating the rate function
-        in the given time ranges.
-
-        Parameters
-        ----------
-        t : array-like, shape (nsrcs)
-            MJD times of sources.
-        trange : array-like, shape(nsrcs, 2)
-            Time windows [[t0, t1], ...] in seconds around each given time t.
+        in the given time ranges from the source array.
 
         Returns
         -------
@@ -224,32 +242,7 @@ class BGRateInjector(object):
         if self._best_pars is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
-        t, trange = self._prep_t_trange(t, trange)
-
-        # BG expectations are the integrals over each time frames, shape (nsrcs)
-        return self._best_estimator_integral(t, trange)
-
-    def _prep_t_trange(self, t, trange):
-        """
-        Put t, trange in needed shapes and check dimensions
-
-        Parameters
-        ----------
-        t, trange
-            See :py:meth:`BGRateInjector.sample`, Parameters
-
-        Returns
-        -------
-        t, trange
-            See :py:meth:`BGRateInjector.sample`, Parameters
-        """
-        t = np.atleast_1d(t)
-        trange = np.atleast_2d(trange)
-        nsrcs = len(t)
-        if trange.shape != (nsrcs, 2):
-            raise ValueError("`trange` shape must be (nsrcs, 2).")
-
-        return t, trange
+        return self._best_estimator_integral(self._t, self._trange)
 
     def _set_best_fit(self, pars):
         """
@@ -277,7 +270,8 @@ class BGRateInjector(object):
 
 class RunlistBGRateInjector(BGRateInjector):
     @docs.dedent
-    def __init__(self, rate_func, runlist, filter_runs=None, random_state=None):
+    def __init__(self, srcs, rate_func, runlist, filter_runs=None,
+                 random_state=None):
         """
         Runlist Background Rate Injector
 
@@ -315,7 +309,8 @@ class RunlistBGRateInjector(BGRateInjector):
         -----
         .. [1] https://live.icecube.wisc.edu/snapshots/
         """
-        super(RunlistBGRateInjector, self).__init__(rate_func, random_state)
+        super(RunlistBGRateInjector, self).__init__(srcs, rate_func,
+                                                    random_state)
 
         if filter_runs is None:
             def filter_runs(run):
@@ -444,21 +439,21 @@ class RunlistBGRateInjector(BGRateInjector):
             - "nevts" : int, numver of events in this run.
             - "rates_std" : float, sqrt(N) stddev of the rate in Hz in this run.
         """
-        # Store events in bins with run borders
+        # Store events in bins with run borders, broadcast for fast masking
         start_mjd = goodrun_dict["good_start_mjd"]
         stop_mjd = goodrun_dict["good_stop_mjd"]
         run = goodrun_dict["run"]
 
-        tot_evts = 0
-        tot_mask = np.zeros_like(T, dtype=bool)
         # Histogram time values in each run manually
-        evts = np.zeros_like(run, dtype=int)
-        eps = 1. / self._SECINDAY
-        for i, (start, stop) in enumerate(zip(start_mjd, stop_mjd)):
-            mask = (T >= start - eps) & (T <= stop + eps)
-            evts[i] = np.sum(mask)
-            tot_evts += np.sum(mask)
-            tot_mask = tot_mask | mask
+        eps = 1. / self._SECINDAY  # 1 second to account for float errors
+
+        mask = ((T[:, None] >= start_mjd[None, :] - eps) &
+                (T[:, None] <= stop_mjd[None, :] + eps))
+
+        evts = np.sum(mask, axis=0)
+        tot_evts = np.sum(evts)
+        tot_mask = np.any(mask, axis=0)
+        assert tot_evts == np.sum(mask)
 
         # Crosscheck, if we got all events and didn't double count
         # if not tot_evts == len(T):
@@ -510,7 +505,7 @@ class RunlistBGRateInjector(BGRateInjector):
 
 
 class BinnedBGRateInjector(BGRateInjector):
-    def __init__(self, rate_func, random_state=None):
+    def __init__(self, srcs, rate_func, random_state=None):
         """
         Binned Background Rate Injector
 
@@ -520,7 +515,8 @@ class BinnedBGRateInjector(BGRateInjector):
         ----------
         %(BGRateInjector.init.parameters)s
         """
-        super(BinnedBGRateInjector, self).__init__(rate_func, random_state)
+        super(BinnedBGRateInjector, self).__init__(srcs, rate_func,
+                                                   random_state)
         return
 
     @docs.dedent
@@ -599,9 +595,7 @@ class MultiBGRateInjector(object):
         if not isinstance(inj, BGRateInjector):
             raise ValueError("`inj` object must be of type BGRateInjector.")
 
-        try:
-            inj.best_pars
-        except RuntimeWarning:
+        if inj._best_pars is None:
             raise RuntimeWarning("Injector must be fitted before adding.")
 
         if name in self.names:
@@ -619,11 +613,6 @@ class MultiBGRateInjector(object):
 
         Parameters
         ----------
-        t : dict of arrays
-            Array of MJD times of sources per injector.
-        trange : dict of arrays
-            Time windows ``[[t0, t1], ...]`` in seconds around each given time
-            ``t`` per injector.
         poisson : bool, optional
             If True, sample the number of events per src using a poisson
             distribution, with expectation from the background expectation in
@@ -638,31 +627,13 @@ class MultiBGRateInjector(object):
         if len(self.names) == 0:
             raise ValueError("No injector has been added yet.")
 
-        if viewkeys(t) != viewkeys(self._injs):
-            raise ValueError("Given `t` has not the same keys as " +
-                             "stored injector names.")
-        if viewkeys(trange) != viewkeys(self._injs):
-            raise ValueError("Given `trange` has not the same keys as " +
-                             "stored injector names.")
+        return {key: np.concatenate(inj.sample(poisson)) for
+                key, inj in self._injs.items()}
 
-        sam_ev = {}
-        for name, inj in self._injs.items():
-            sam_ev[name] = np.concatenate(inj.sample(t[name], trange[name]))
-
-        return sam_ev
-
-    def get_nb(self, t, trange):
+    def get_nb(self):
         """
         Return the expected number of events from integrating the rate function
         in the given time ranges.
-
-        Parameters
-        ----------
-        t : dict of arrays, each shape (nsrcs)
-            MJD times of sources per injector.
-        trange : dict od array, each shape(nsrcs, 2)
-            Time windows ``[[t0, t1], ...]`` in seconds around each given time
-            ``t`` per injector.
 
         Returns
         -------
@@ -673,21 +644,4 @@ class MultiBGRateInjector(object):
         if len(self.names) == 0:
             raise ValueError("No injector has been added yet.")
 
-        if viewkeys(t) != viewkeys(self._injs):
-            raise ValueError("Given `t` has not the same keys as " +
-                             "stored injector names.")
-        if viewkeys(trange) != viewkeys(self._injs):
-            raise ValueError("Given `trange` has not the same keys as " +
-                             "stored injector names.")
-
-        nb = {}
-        for name, inj in self._injs.items():
-            if inj._best_pars is None:
-                raise RuntimeError("Injector '{} was not fit to " +
-                                   "data yet.".format(name))
-
-            # BG expectations are the integrals over each time frames
-            ti, trangei = inj._prep_t_trange(t[name], trange[name])
-            nb[name] = inj._best_estimator_integral(ti, trangei)
-
-        return nb
+        return {key: inj.get_nb() for key, inj in self._injs.items()}
