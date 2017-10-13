@@ -1382,6 +1382,50 @@ class MultiSampleGRBLLH(object):
         lenX = np.sum([len(X_i) for X_i in X.values()])
         if lenX == 0:
             return 0., 0.
+
+        # Get surviving events per LLH, ordering is same as in self.names
+        ns_weights = self._get_ns_weights(args)
+        sob = []
+        for i, name in enumerate(self.names):
+            # Reducing sob by the split weight for the cases nevts = 0, 1, 2
+            sob.append(ns_weights[i] *
+                       self._llhs[name]._soverb(X[name], args[name]))
+
+        nevts = [len(sob_i) for sob_i in sob]
+        nevts_tot = np.sum(nevts)
+
+        # Test nevts again, because we may have applied sob threshold cuts
+        if nevts_tot == 0:
+            return 0., 0.
+        if nevts_tot == 1:
+            idx = np.where(nevts)[0][0]  # Extract tuple and array
+            sob = sob[idx][0]
+            ns = 1. - (1. / sob)
+            if ns <= 0:
+                return 0., 0.
+            else:
+                TS = 2. * (-ns + math.log(sob))
+            return ns, TS
+        elif nevts_tot == 2:
+            idx = np.where(nevts)[0]
+            if len(idx) == 1:  # Both evts in same sample
+                sob = np.array([sob[idx[0]][0], sob[idx[0]][1]])
+            else:  # 2 evts from 2 different samples
+                sob = np.array([sob[idx[0]][0], sob[idx[1]][0]])
+            a = 1. / (sob[0] * sob[1])
+            c = (sob[0] + sob[1]) * a
+            ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
+            if ns <= 0:
+                return 0., 0.
+            else:  # Combine correct LLHs when from different samples
+                if len(idx) == 1:  # Use same LLH when from same sample
+                    name = self.names[idx[0]]
+                    TS, _ = self._llhs[name]._lnllh_ratio(ns, sob)
+                else:  # Use corresponding LLHs when from different sample
+                    name = [self.names[idx[0]], self.names[idx[1]]]
+                    TS = (self._llhs[name[0]]._lnllh_ratio(ns, sob[0])[0] +
+                          self._llhs[name[1]]._lnllh_ratio(ns, sob[1])[0])
+                return ns, TS
         else:  # Fit other cases
             res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True, bounds=bounds,
                                method="L-BFGS-B", options=minimizer_opts)
