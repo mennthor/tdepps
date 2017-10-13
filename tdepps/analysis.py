@@ -200,7 +200,7 @@ class TransientsAnalysis(object):
         assert len(trange) == len(self._srcs)
 
         # Number of expected background events in each given time frame
-        nb = bg_rate_inj.get_nb(src_t, trange)
+        nb = bg_rate_inj.get_nb()
         assert len(nb) == len(self._srcs)
 
         # Create args and do trials
@@ -236,14 +236,17 @@ class TransientsAnalysis(object):
 
                 if signal_inj is not None:
                     nsig, Xsig, _ = next(signal_inj)
-                    nsig_all.append(nsig[0])
-                    nevts += nsig[0]
+                    nsig_all.append(nsig)
+                    nevts += nsig
                 else:
                     Xsig = None
 
                 # If we have no events at all, fit will be zero
                 if nevts == 0:
                     nzeros += 1
+                    if full_out:
+                        ns.append(0.)
+                        TS.append(0.)
                     continue
 
                 # Else ask LLH what value we have
@@ -268,7 +271,7 @@ class TransientsAnalysis(object):
         else:  # Use single LLH and injectors
             for i in trial_iter:
                 # Inject events from given injectors
-                times = bg_rate_inj.sample(src_t, trange, poisson=True)
+                times = bg_rate_inj.sample(poisson=True)
                 times = np.concatenate(times, axis=0)
                 nevts = len(times)
 
@@ -279,14 +282,17 @@ class TransientsAnalysis(object):
 
                 if signal_inj is not None:
                     nsig, Xsig, _ = next(signal_inj)
-                    nsig_all.append(nsig[0])
-                    nevts += nsig[0]
+                    nsig_all.append(nsig)
+                    nevts += nsig
                 else:
                     Xsig = None
 
                 # If we have no events at all, fit will be zero
                 if nevts == 0:
                     nzeros += 1
+                    if full_out:
+                        ns.append(0.)
+                        TS.append(0.)
                     continue
 
                 # Else ask LLH what value we have
@@ -310,14 +316,13 @@ class TransientsAnalysis(object):
             size = n_trials
         else:
             size = n_trials - nzeros
-        res = np.empty((size,),
-                       dtype=[("ns", np.float), ("TS", np.float)])
+        res = np.empty((size,), dtype=[("ns", np.float), ("TS", np.float)])
         res["ns"] = np.array(ns)
         res["TS"] = np.array(TS)
 
         if full_out:
             if signal_inj is not None:
-                return res, nzeros, np.array(nsig_all, dtype=int)
+                return res, nzeros, nsig_all
             else:
                 return res, nzeros, np.empty((0,))
         else:
