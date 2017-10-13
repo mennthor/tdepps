@@ -122,12 +122,12 @@ class GRBLLH(object):
         Arguments for the time PDF ratio. Must contain keys:
 
         - "nsig", float, optional: The truncation of the gaussian edges of the
-          signal PDF to have finite support. Given in units of sigma, must >= 3.
-          (default: 4.)
-        - "sigma_t_min", float, optional: Minimum sigma of the gaussian edges.
-          The gaussian edges of the time signal PDF have at least this sigma.
-        - "sigma_t_max", float, optional: Maximum sigma of the gaussian edges.
-          The gaussian edges of the time signal PDF have maximal this sigma.
+          signal PDF to have finite support. Given in units of sigma, must be
+          ``>= 3``. (default: 4.)
+        - "sigma_t_min", float, optional: Minimum sigma in seconds of the
+          gaussian edges of the time signal PDF. (default: 2.)
+        - "sigma_t_max", float, optional: Maximum sigma in seconds of the
+          gaussian edges of the time signal PDF. (default: 30.)
 
         (default: None)
 
@@ -564,7 +564,8 @@ class GRBLLH(object):
         src_w = src_w[:, None] / np.sum(src_w)
         return src_w
 
-    def time_pdf_def_range(self, src_t, dt):
+    @classmethod
+    def get_on_time_windows(cls, src_t, dt, time_pdf_args):
         """
         Returns the time window per source, in which the PDF ratio is defined.
 
@@ -575,21 +576,54 @@ class GRBLLH(object):
         dt : array-like, shape (nsrcs, 2)
             Time windows [start, end] in seconds centered at each src_t in
             which the signal PDF is assumed to be uniform.
+        time_pdf_args : dict, optional
+            Arguments for the time PDF ratio. Must contain keys:
+
+            - "nsig", float, optional: The truncation of the gaussian edges of
+              the signal PDF to have finite support. Given in units of sigma,
+              must be ``>= 3``. (default: 4.)
+            - "sigma_t_min", float, optional: Minimum sigma in seconds of the
+              gaussian edges of the time signal PDF. (default: 2.)
+            - "sigma_t_max", float, optional: Maximum sigma in seconds of the
+              gaussian edges of the time signal PDF. (default: 30.)
+
+            (default: None)
 
         Returns
         -------
         trange : array-like, shape (nsrcs, 2)
-            Total time window per source [start, end] in seconds in which the
+            Total time window per source [start, end] in MJD dates in which the
             time PDF is defined and thus non-zero.
         """
-        src_t, dt, sig_t, sig_t_clip = self._setup_time_windows(src_t, dt)
+        # This method is repeating some code, maybe there is a better way. But
+        # we need the windows to cut out the on-data befor we create the PDFs
+        required_keys = []
+        opt_keys = {"nsig": 4., "sigma_t_min": 2., "sigma_t_max": 30.}
+        time_pdf_args = fill_dict_defaults(time_pdf_args, required_keys,
+                                           opt_keys)
+        nsig = time_pdf_args["nsig"]
+        if nsig < 3:
+            raise ValueError("'nsig' must be >= 3.")
 
-        # Total time window per source in seconds
-        trange = np.empty_like(dt, dtype=np.float)
-        trange[:, 0] = dt[:, 0] - sig_t_clip
-        trange[:, 1] = dt[:, 1] + sig_t_clip
+        nsig = time_pdf_args["nsig"]
+        sigma_t_min = time_pdf_args["sigma_t_min"]
+        sigma_t_max = time_pdf_args["sigma_t_max"]
 
-        return trange
+        src_t = np.atleast_1d(src_t)
+        dt = np.atleast_2d(dt)
+
+        dt_len = np.diff(dt, axis=1).ravel()
+        sig_t = np.clip(dt_len, sigma_t_min, sigma_t_max)
+        sig_t_clip = nsig * sig_t
+
+        # Total time window around each source in MJD days
+        SECINDAY = 24. * 60. * 60.
+        return np.vstack((src_t + (dt[:, 0] - sig_t_clip) / SECINDAY,
+                          src_t + (dt[:, 1] + sig_t_clip) / SECINDAY)).T
+
+    def time_pdf_def_range(self, src_t, dt):
+        """Wrapper to use on the created object"""
+        return GRBLLH.get_on_time_windows(src_t, dt, self._time_pdf_args)
 
     def expect_weights(self, src_dec):
         """
