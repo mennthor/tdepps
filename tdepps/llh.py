@@ -1169,10 +1169,19 @@ class GRBLLH(object):
         """
         k = self._spatial_pdf_args["k"]
         mids = 0.5 * (bins[:-1] + bins[1:])
-        # Add the outermost bin edges to avoid overshoots at the edges
-        x = np.concatenate((bins[[0]], mids, bins[[-1]]))
+        # Model outermost bin edges to avoid uncontrolled behaviour at the edges
+        if len(h) > 2:
+            # Subtract mean of 1st and 2nd bins from 1st to use as height 0
+            hl = (3. * h[0] - h[1]) / 2.
+            # The same for the right edge
+            hr = (3. * h[-1] - h[-2]) / 2.
+        else:  # Just repeat if we have only 2 bins
+            hl = h[0]
+            hr = h[-1]
+
+        h = np.concatenate(([hl], h, [hr]))
         y = np.log(h)
-        y = np.concatenate((y[[0]], y, y[[-1]]))
+        x = np.concatenate((bins[[0]], mids, bins[[-1]]))
         return sci.InterpolatedUnivariateSpline(x, y, k=k, ext="extrapolate")
 
     def __str__(self):
