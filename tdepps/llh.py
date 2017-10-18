@@ -122,12 +122,12 @@ class GRBLLH(object):
         Arguments for the time PDF ratio. Must contain keys:
 
         - "nsig", float, optional: The truncation of the gaussian edges of the
-          signal PDF to have finite support. Given in units of sigma, must >= 3.
-          (default: 4.)
-        - "sigma_t_min", float, optional: Minimum sigma of the gaussian edges.
-          The gaussian edges of the time signal PDF have at least this sigma.
-        - "sigma_t_max", float, optional: Maximum sigma of the gaussian edges.
-          The gaussian edges of the time signal PDF have maximal this sigma.
+          signal PDF to have finite support. Given in units of sigma, must be
+          ``>= 3``. (default: 4.)
+        - "sigma_t_min", float, optional: Minimum sigma in seconds of the
+          gaussian edges of the time signal PDF. (default: 2.)
+        - "sigma_t_max", float, optional: Maximum sigma in seconds of the
+          gaussian edges of the time signal PDF. (default: 30.)
 
         (default: None)
 
@@ -564,7 +564,8 @@ class GRBLLH(object):
         src_w = src_w[:, None] / np.sum(src_w)
         return src_w
 
-    def time_pdf_def_range(self, src_t, dt):
+    @classmethod
+    def get_on_time_windows(cls, src_t, dt, time_pdf_args):
         """
         Returns the time window per source, in which the PDF ratio is defined.
 
@@ -575,21 +576,54 @@ class GRBLLH(object):
         dt : array-like, shape (nsrcs, 2)
             Time windows [start, end] in seconds centered at each src_t in
             which the signal PDF is assumed to be uniform.
+        time_pdf_args : dict, optional
+            Arguments for the time PDF ratio. Must contain keys:
+
+            - "nsig", float, optional: The truncation of the gaussian edges of
+              the signal PDF to have finite support. Given in units of sigma,
+              must be ``>= 3``. (default: 4.)
+            - "sigma_t_min", float, optional: Minimum sigma in seconds of the
+              gaussian edges of the time signal PDF. (default: 2.)
+            - "sigma_t_max", float, optional: Maximum sigma in seconds of the
+              gaussian edges of the time signal PDF. (default: 30.)
+
+            (default: None)
 
         Returns
         -------
         trange : array-like, shape (nsrcs, 2)
-            Total time window per source [start, end] in seconds in which the
+            Total time window per source [start, end] in MJD dates in which the
             time PDF is defined and thus non-zero.
         """
-        src_t, dt, sig_t, sig_t_clip = self._setup_time_windows(src_t, dt)
+        # This method is repeating some code, maybe there is a better way. But
+        # we need the windows to cut out the on-data befor we create the PDFs
+        required_keys = []
+        opt_keys = {"nsig": 4., "sigma_t_min": 2., "sigma_t_max": 30.}
+        time_pdf_args = fill_dict_defaults(time_pdf_args, required_keys,
+                                           opt_keys)
+        nsig = time_pdf_args["nsig"]
+        if nsig < 3:
+            raise ValueError("'nsig' must be >= 3.")
 
-        # Total time window per source in seconds
-        trange = np.empty_like(dt, dtype=np.float)
-        trange[:, 0] = dt[:, 0] - sig_t_clip
-        trange[:, 1] = dt[:, 1] + sig_t_clip
+        nsig = time_pdf_args["nsig"]
+        sigma_t_min = time_pdf_args["sigma_t_min"]
+        sigma_t_max = time_pdf_args["sigma_t_max"]
 
-        return trange
+        src_t = np.atleast_1d(src_t)
+        dt = np.atleast_2d(dt)
+
+        dt_len = np.diff(dt, axis=1).ravel()
+        sig_t = np.clip(dt_len, sigma_t_min, sigma_t_max)
+        sig_t_clip = nsig * sig_t
+
+        # Total time window around each source in MJD days
+        SECINDAY = 24. * 60. * 60.
+        return np.vstack((src_t + (dt[:, 0] - sig_t_clip) / SECINDAY,
+                          src_t + (dt[:, 1] + sig_t_clip) / SECINDAY)).T
+
+    def time_pdf_def_range(self, src_t, dt):
+        """Wrapper to use on the created object"""
+        return GRBLLH.get_on_time_windows(src_t, dt, self._time_pdf_args)
 
     def expect_weights(self, src_dec):
         """
@@ -1135,10 +1169,19 @@ class GRBLLH(object):
         """
         k = self._spatial_pdf_args["k"]
         mids = 0.5 * (bins[:-1] + bins[1:])
-        # Add the outermost bin edges to avoid overshoots at the edges
-        x = np.concatenate((bins[[0]], mids, bins[[-1]]))
+        # Model outermost bin edges to avoid uncontrolled behaviour at the edges
+        if len(h) > 2:
+            # Subtract mean of 1st and 2nd bins from 1st to use as height 0
+            hl = (3. * h[0] - h[1]) / 2.
+            # The same for the right edge
+            hr = (3. * h[-1] - h[-2]) / 2.
+        else:  # Just repeat if we have only 2 bins
+            hl = h[0]
+            hr = h[-1]
+
+        h = np.concatenate(([hl], h, [hr]))
         y = np.log(h)
-        y = np.concatenate((y[[0]], y, y[[-1]]))
+        x = np.concatenate((bins[[0]], mids, bins[[-1]]))
         return sci.InterpolatedUnivariateSpline(x, y, k=k, ext="extrapolate")
 
     def __str__(self):
@@ -1259,7 +1302,7 @@ class MultiSampleGRBLLH(object):
             raise ValueError("Given `args` has not the same keys as stored " +
                              "llh names.")
 
-        # Get ns split weights using the sourc list per sample
+        # Get ns split weights using the source list per sample
         ns_weights = self._get_ns_weights(args)
 
         # Loop over ln-LLHs and add their contribution
@@ -1345,9 +1388,53 @@ class MultiSampleGRBLLH(object):
 
         # If no events are given for any LLH, best fit is 0, we can skip all
         # further steps
-        lenX = [len(X_i) for X_i in X.values()]
-        if np.all(lenX == 0):
+        lenX = np.sum([len(X_i) for X_i in X.values()])
+        if lenX == 0:
             return 0., 0.
+
+        # Get surviving events per LLH, ordering is same as in self.names
+        ns_weights = self._get_ns_weights(args)
+        sob = []
+        for i, name in enumerate(self.names):
+            # Reducing sob by the split weight for the cases nevts = 0, 1, 2
+            sob.append(ns_weights[i] *
+                       self._llhs[name]._soverb(X[name], args[name]))
+
+        nevts = [len(sob_i) for sob_i in sob]
+        nevts_tot = np.sum(nevts)
+
+        # Test nevts again, because we may have applied sob threshold cuts
+        if nevts_tot == 0:
+            return 0., 0.
+        if nevts_tot == 1:
+            idx = np.where(nevts)[0][0]  # Extract tuple and array
+            sob = sob[idx][0]
+            ns = 1. - (1. / sob)
+            if ns <= 0:
+                return 0., 0.
+            else:
+                TS = 2. * (-ns + math.log(sob))
+            return ns, TS
+        elif nevts_tot == 2:
+            idx = np.where(nevts)[0]
+            if len(idx) == 1:  # Both evts in same sample
+                sob = np.array([sob[idx[0]][0], sob[idx[0]][1]])
+            else:  # 2 evts from 2 different samples
+                sob = np.array([sob[idx[0]][0], sob[idx[1]][0]])
+            a = 1. / (sob[0] * sob[1])
+            c = (sob[0] + sob[1]) * a
+            ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
+            if ns <= 0:
+                return 0., 0.
+            else:  # Combine correct LLHs when from different samples
+                if len(idx) == 1:  # Use same LLH when from same sample
+                    name = self.names[idx[0]]
+                    TS, _ = self._llhs[name]._lnllh_ratio(ns, sob)
+                else:  # Use corresponding LLHs when from different sample
+                    name = [self.names[idx[0]], self.names[idx[1]]]
+                    TS = (self._llhs[name[0]]._lnllh_ratio(ns, sob[0])[0] +
+                          self._llhs[name[1]]._lnllh_ratio(ns, sob[1])[0])
+                return ns, TS
         else:  # Fit other cases
             res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True, bounds=bounds,
                                method="L-BFGS-B", options=minimizer_opts)

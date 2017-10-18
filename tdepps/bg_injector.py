@@ -10,7 +10,7 @@ import numpy as np
 from numpy.lib.recfunctions import drop_fields, append_fields
 from sklearn.utils import check_random_state
 
-import anapymods3.stats.KDE as KDE
+from awkde import GaussianKDE as KDE
 
 import abc     # Abstract Base Class
 import docrep  # Reuse docstrings
@@ -237,8 +237,7 @@ class KDEBGInjector(BGInjector):
 
         self._n_features = None
         # Create KDE model
-        self._kde_model = KDE.GaussianKDE(glob_bw=glob_bw, alpha=alpha,
-                                          diag_cov=diag_cov)
+        self._kde_model = KDE(glob_bw=glob_bw, alpha=alpha, diag_cov=diag_cov)
 
         return
 
@@ -252,7 +251,8 @@ class KDEBGInjector(BGInjector):
         %(BGInjector.fit.parameters)s
             If ``None`` the KDE model is checked, if it already is fitted and
             usable. This can be used to use an already existing KDE model for
-            injection.
+            injection. Be careful that the fitted model has the data stored in
+            the same order as described by ``self._X_names``.
         bounds : None or array-like, shape (n_features, 2)
             Boundary conditions for each dimension. If None, [-np.inf, +np.inf]
             is used in each dimension. (default: None)
@@ -263,19 +263,25 @@ class KDEBGInjector(BGInjector):
         """
         # TODO: Use advanced bounds via mirror method in KDE class.
         # Currently bounds are used to resample events that fall outside
-        if X is not None:
+        if isinstance(X, KDE):
+            self._kde_model = X
+            if self._kde_model._std_X is None:
+                raise ValueError("Given KDE model is not ready to use and " +
+                                 "must be fitted to data first.")
+            self._n_features = self._kde_model._std_X.shape[1]
+        elif isinstance(X, np.ndarray):
             X = self._check_X_names(X)
             self._n_features = len(X.dtype.names)
-            self._bounds = self._check_bounds(bounds)
             # Turn record-array in normal 2D array for more general KDE class
             X = np.vstack((X[n] for n in self._X_names)).T
             self._kde_model.fit(X)
-        elif self._kde_model._std_X is not None:
-            self._n_features = self._kde_model._std_X.shape[1]
-            self._bounds = self._check_bounds(bounds)
+            assert (self._n_features == self._kde_model._std_X.shape[1])
         else:
-            raise ValueError("No new data to fit and KDE model is not fitted.")
+            raise ValueError("`X` is neither an instance of " +
+                             "`awkde.GaussianKDE` nor a record array to " +
+                             "fit a new KDE model to.")
 
+        self._bounds = self._check_bounds(bounds)
         return
 
     @docs.dedent

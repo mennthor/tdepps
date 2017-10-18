@@ -387,7 +387,7 @@ class SignalInjector(object):
         n = int(np.around(mean_mu))
         while True:
             if poisson:
-                n = self._rndgen.poisson(mean_mu, size=1)
+                n = self._rndgen.poisson(mean_mu, size=None)  # Returns scalar
 
             # If n=0 (no events get sampled) return None
             if n < 1:
