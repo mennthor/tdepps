@@ -613,6 +613,7 @@ class TransientsAnalysis(object):
 
             - "mu_bf": Best fit poisson signal expectation derived from the
               fitted ``chi2`` CDF.
+            - "mus": Same as input ``mus``.
             - "cdfs": Calculated CDF values for each trial from the ``chi2``
               function.
             - "pars": Best fit parameters from the ``chi2`` CDF fit.
@@ -665,7 +666,7 @@ class TransientsAnalysis(object):
             mu_bf = None
             pars = None
 
-        return {"mu_bf": mu_bf, "cdfs": cdfs, "pars": pars,
+        return {"mu_bf": mu_bf, "mus": mus, "cdfs": cdfs, "pars": pars,
                 "ts": TS, "ns": ns, "ninj": nsig}
 
     def unblind(self):
