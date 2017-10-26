@@ -582,14 +582,20 @@ class TransientsAnalysis(object):
         resulting percentiles, becasue they are surprisingly well described by
         that.
 
+        The returned CDF and best fit ``chi2`` values are valid for the given
+        combination of ``beta`` and ``ts_val``.
+        But it is possible to use the same trial values to calculate performance
+        at different values by recalculating the CDF values and refitting a
+        ``chi2`` function.
+
         Parameters
         ----------
         ts_val : float
             Test statistic value of the BG distribution, which is connected to
             the alpha value (Type I error).
         beta : float
-            Fraction of alternative hypothesis PDF that should lie right of the
-            `ts_val`.
+            Fraction of signal injected PDF that should lie right of the
+            ``ts_val``.
         bg_inj : `tdepps.bg_injector` instance
             Injector to generate background-like pseudo events.
         bg_rate_inj : `tdepps.bg_rate_injector` instance
@@ -649,6 +655,48 @@ class TransientsAnalysis(object):
             nsig.append(nsig_i)
 
         # Create the CDF values and fit the chi2
+        mu_bf, cdfs, pars = TransientsAnalysis.chi2_performance(ts_val, beta,
+                                                                TS, mus)
+
+        return {"mu_bf": mu_bf, "ts": TS, "ns": ns, "mus": mus, "ninj": nsig,
+                "beta": beta, "tsval": ts_val, "cdfs": cdfs, "pars": pars}
+
+    @staticmethod
+    def chi2_performance(ts_val, beta, TS, mus):
+        """
+        Use collection of trials with different numbers injected mean signal
+        events to calculate the CDF values above a certain test statistic
+        value ``ts_val`` and fit a ``chi2`` CDF to it.
+        From this ``chi2``function we can get the desired percentile ``beta``
+        above ``ts_val``.
+
+        Trials can systematically be made using :py:meth:`performance_chi2`.
+
+        Parameters
+        ----------
+        ts_val : float
+            Test statistic value of the BG distribution, which is connected to
+            the alpha value (Type I error).
+        beta : float
+            Fraction of signal injected PDF that should lie right of the
+            ``ts_val```.
+        mus : array-like
+            How much mean poisson signal shall was injected for each bunch of
+            trials.
+        TS : array-like, shape (len(mus), ntrials_per_mu)
+            Test statistic values for each ``mu`` in ``mus``. These are used to
+            calculate the CDF values used in the fit.
+
+        Returns
+        -------
+        mu_bf : float
+            Best fit mean injected number of signal events to fullfill the
+            tested performance level from ``ts_val`` and ``beta``.
+        cdfs : array-like, shape (len(mus))
+
+        pars : tuple
+            Best fit parameters ``(df, loc, scale)`` for the ``chi2`` CDF.
+        """
         cdfs = []
         for TSi in TS:
             cdfs.append(weighted_cdf(TSi, val=ts_val)[0])
@@ -666,8 +714,7 @@ class TransientsAnalysis(object):
             mu_bf = None
             pars = None
 
-        return {"mu_bf": mu_bf, "mus": mus, "cdfs": cdfs, "pars": pars,
-                "ts": TS, "ns": ns, "ninj": nsig}
+        return mu_bf, cdfs, pars
 
     def unblind(self):
         """
