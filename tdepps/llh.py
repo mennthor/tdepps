@@ -247,20 +247,7 @@ class GRBLLH(object):
         self._energy_pdf_args["bins"][1] = logE_bins
 
         # Setup time PDF args
-        required_keys = []
-        opt_keys = {"nsig": 4., "sigma_t_min": 2., "sigma_t_max": 30.}
-        self._time_pdf_args = fill_dict_defaults(time_pdf_args, required_keys,
-                                                 opt_keys)
-        nsig = self._time_pdf_args["nsig"]
-        if nsig < 3:
-            raise ValueError("'nsig' must be >= 3.")
-
-        tmin = self._time_pdf_args["sigma_t_min"]
-        tmax = self._time_pdf_args["sigma_t_max"]
-        if tmin > tmax or tmin == tmax:
-            raise ValueError("'sigma_t_min' must be < 'sigma_t_max'.")
-        if tmin <= 0:
-            raise ValueError("'sigma_t_min' must be > 0.")
+        self.time_pdf_args = time_pdf_args
 
         # Setup LLH args
         required_keys = []
@@ -321,9 +308,27 @@ class GRBLLH(object):
         return self._time_pdf_args
 
     @time_pdf_args.setter
-    def time_pdf_args(self, arg):
-        raise ValueError("`time_pdf_args` can't be set. Create new " +
-                         "object instead.")
+    def time_pdf_args(self, time_pdf_args):
+        """
+        Time PDF arguments are used on calling functions only, not to create
+        initial PDFs, so they can be altered later without problems.
+        """
+        required_keys = []
+        opt_keys = {"nsig": 4., "sigma_t_min": 2., "sigma_t_max": 30.}
+        self._time_pdf_args = fill_dict_defaults(time_pdf_args, required_keys,
+                                                 opt_keys)
+        nsig = self._time_pdf_args["nsig"]
+        if nsig < 3:
+            raise ValueError("'nsig' must be >= 3.")
+
+        tmin = self._time_pdf_args["sigma_t_min"]
+        tmax = self._time_pdf_args["sigma_t_max"]
+        if tmin > tmax or tmin == tmax:
+            raise ValueError("'sigma_t_min' must be < 'sigma_t_max'.")
+        if tmin <= 0:
+            raise ValueError("'sigma_t_min' must be > 0.")
+
+        return
 
     @property
     def llh_args(self):
@@ -384,7 +389,7 @@ class GRBLLH(object):
             Other fixed parameters {'par_name': value}, the LLH depends on.
             Here `args` must have keys:
 
-            - 'ns', array-like, shape (nsrcs): Number of expected background
+            - 'nb', array-like, shape (nsrcs): Number of expected background
               events for each sources time window.
             - 'srcs', record-array, shape (nsrcs): Fixed source parameters,
               must have names:
