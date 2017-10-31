@@ -453,7 +453,7 @@ class GRBLLH(object):
         -----
         .. [4] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466
         """
-        def _neglnllh(ns):
+        def _neglnllh(ns, sob):
             """
             Wrapper for the LLH function returning the negative ln-LLH ratio
             suitable for the minimizer.
@@ -462,6 +462,8 @@ class GRBLLH(object):
             ----------
             ns : float
                 See :py:meth:`lnllh_ratio`, Parameters
+            sob : array-like
+                Fixed signal over background values for the current data.
 
             Returns
             -------
@@ -481,31 +483,34 @@ class GRBLLH(object):
         # For nevts = [1 | 2] we get a [linear | quadratic] equation to solve.
         sob = self._soverb(X, args)
         nevts = len(sob)
+
         # Test again, because we applied some threshold cuts
         if nevts == 0:
             return 0., 0.
         if nevts == 1:
             # Use scalar math functions, they're faster than numpy
             sob = sob[0]
-            ns = 1. - (1. / sob)
-            if ns <= 0:
+            if sob <= 1.:  # sob <= 1 => ns <= 0, so fit will be 0
                 return 0., 0.
             else:
+                ns = 1. - (1. / sob)
                 TS = 2. * (-ns + math.log(sob))
             return ns, TS
         elif nevts == 2:
-            a = 1. / (sob[0] * sob[1])
-            c = (sob[0] + sob[1]) * a
-            ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
-            if ns <= 0:
+            sum_sob = sob[0] + sob[1]
+            if sum_sob <= 1.:  # Same argument, but a more calc. needed to see
                 return 0., 0.
             else:
-                TS, _ = self._lnllh_ratio(ns, sob)
-            return ns, TS
+                a = 1. / (sob[0] * sob[1])
+                c = sum_sob * a
+                ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
+                TS = 2. * (-ns + np.sum(np.log1p(ns * sob)))
+                return ns, TS
         else:
             # Fit other cases
-            res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True, bounds=bounds,
-                               method="L-BFGS-B", options=minimizer_opts)
+            res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True,
+                               bounds=bounds, args=(sob,), method="L-BFGS-B",
+                               options=minimizer_opts)
 
         # Return function value with correct sign
         return res.x[0], -1. * res.fun[0]
@@ -1235,6 +1240,7 @@ class GRBLLH(object):
 class MultiSampleGRBLLH(object):
     def __init__(self):
         self._llhs = {}
+        self._ns_weights = None
         return
 
     @property
@@ -1265,6 +1271,9 @@ class MultiSampleGRBLLH(object):
         else:
             self._llhs[name] = llh
 
+        # Reset, because weights change for each added sample.
+        self._ns_weights = None
+
         return
 
     def lnllh_ratio(self, X, ns, args):
@@ -1279,8 +1288,9 @@ class MultiSampleGRBLLH(object):
         ----------
         X : dict of record-arrays
             Fixed data set each LLH depends on, given as a dict. Each value must
-            be a record array as used in the single LLH class. Dictionary keys
-            must match added ``self.names``.
+            be a record array as used in the single LLH class or ``None`` if no
+            data for the corresponding LLH is used. Dictionary keys must match
+            added ``self.names``.
         ns : float
             Number of signal events at the source locations for all years in
             total.
@@ -1313,7 +1323,7 @@ class MultiSampleGRBLLH(object):
         # Loop over ln-LLHs and add their contribution
         TS = 0.
         ns_grad = 0.
-        for i, name in enumerate(self.names):
+        for name in self.names:
             # Get per sample information
             X_i = X[name]
             if X_i is None:
@@ -1321,11 +1331,10 @@ class MultiSampleGRBLLH(object):
             args_i = args[name]
             llh = self._llhs[name]
 
-            # sob = llh._soverb(X_i, args_i)
-            # TS_i, ns_grad_i = llh._lnllh_ratio(ns * ns_weights[i], sob)
-            TS_i, ns_grad_i = llh.lnllh_ratio(X_i, ns * ns_weights[i], args_i)
+            TS_i, ns_grad_i = llh.lnllh_ratio(X_i, ns * ns_weights[name],
+                                              args_i)
             TS += TS_i
-            ns_grad += ns_grad_i * ns_weights[i]
+            ns_grad += ns_grad_i * ns_weights[name]
 
         return TS, np.array([ns_grad])
 
@@ -1368,10 +1377,7 @@ class MultiSampleGRBLLH(object):
         -----
         .. [5] https://docs.scipy.org/doc/scipy-0.19.0/reference/generated/scipy.optimize.minimize.html_minimize.py#L36-L466
         """
-        if len(self.names) == 0:
-            raise ValueError("No sample has been added yet.")
-
-        def _neglnllh(ns):
+        def _neglnllh(ns, sob, ns_weights):
             """
             Wrapper for the LLH function returning the negative ln-LLH ratio
             suitable for the minimizer.
@@ -1380,6 +1386,10 @@ class MultiSampleGRBLLH(object):
             ----------
             ns : float
                 See :py:meth:`lnllh_ratio`, Parameters
+            sob : dict
+                Fixed signal over background values for the current data.
+            ns_weights : dict
+                Fixed weights to split ``ns`` in contributions per LLH.
 
             Returns
             -------
@@ -1388,8 +1398,23 @@ class MultiSampleGRBLLH(object):
             lnllh_grad : array-like
                 See :py:meth:`lnllh_ratio`, Returns
             """
-            lnllh, lnllh_grad = self.lnllh_ratio(X, ns, args)
-            return -1. * lnllh, -1. * lnllh_grad
+            # lnllh, lnllh_grad = self.lnllh_ratio(X, ns, args)
+            # return -1. * lnllh, -1. * lnllh_grad
+            # Use sob directly, repeats some code but saves time
+            TS = 0.
+            ns_grad = 0.
+            # If sob is empty for a LLH, it would return (0, [0]) anyway, so
+            # just loop the existing ones.
+            for name, sob_i in sob.items():
+                TS_i, ns_grad_i = self._llhs[name]._lnllh_ratio(
+                    ns * ns_weights[name], sob_i)
+                TS += TS_i
+                ns_grad += ns_grad_i * ns_weights[name]  # Chain rule
+
+            return -TS, np.array([-ns_grad])
+
+        if len(self.names) == 0:
+            raise ValueError("No sample has been added yet.")
 
         # If no events are given for any LLH, best fit is 0, we can skip all
         # further steps
@@ -1397,51 +1422,46 @@ class MultiSampleGRBLLH(object):
         if lenX == 0:
             return 0., 0.
 
-        # Get surviving events per LLH, ordering is same as in self.names
+        # Reducing sob by the split weight for the cases nevts = 0, 1, 2
+        # TS ~ -sum_j ns_j + sum_j sum_i log(ns_j * sob_ji + 1)
+        #    ~ -ns_tot + sum_j sum_i log(ns_j * sob_ji + 1)
         ns_weights = self._get_ns_weights(args)
         sob = []
+        sob_dict = {}  # If we fit, we need it unweighted. If not, it's unused
         for i, name in enumerate(self.names):
-            # Reducing sob by the split weight for the cases nevts = 0, 1, 2
-            sob.append(ns_weights[i] *
-                       self._llhs[name]._soverb(X[name], args[name]))
+            sob_i = self._llhs[name]._soverb(X[name], args[name])
+            sob.append(ns_weights[name] * sob_i)
+            if len(sob_i) > 0:
+                sob_dict[name] = sob_i
+        sob = np.concatenate(sob)
+        nevts = len(sob)
 
-        nevts = [len(sob_i) for sob_i in sob]
-        nevts_tot = np.sum(nevts)
-
-        # Test nevts again, because we may have applied sob threshold cuts
-        if nevts_tot == 0:
+        # Test again, because we may have applied sob threshold cuts per LLH
+        if nevts == 0:
             return 0., 0.
-        if nevts_tot == 1:
-            idx = np.where(nevts)[0][0]  # Extract tuple and array
-            sob = sob[idx][0]
-            ns = 1. - (1. / sob)
-            if ns <= 0:
+        if nevts == 1:
+            # Same case as in single LLH because sob is multi year weighted
+            sob = sob[0]
+            if sob <= 1.:  # sob <= 1 => ns <= 0, so fit will be 0
                 return 0., 0.
             else:
+                ns = 1. - (1. / sob)
                 TS = 2. * (-ns + math.log(sob))
             return ns, TS
-        elif nevts_tot == 2:
-            idx = np.where(nevts)[0]
-            if len(idx) == 1:  # Both evts in same sample
-                sob = np.array([sob[idx[0]][0], sob[idx[0]][1]])
-            else:  # 2 evts from 2 different samples
-                sob = np.array([sob[idx[0]][0], sob[idx[1]][0]])
-            a = 1. / (sob[0] * sob[1])
-            c = (sob[0] + sob[1]) * a
-            ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
-            if ns <= 0:
+        elif nevts == 2:
+            # Same case as in single LLH because sob is multi year weighted
+            sum_sob = sob[0] + sob[1]
+            if sum_sob <= 1.:  # Same argument, but a more calc. needed to see
                 return 0., 0.
-            else:  # Combine correct LLHs when from different samples
-                if len(idx) == 1:  # Use same LLH when from same sample
-                    name = self.names[idx[0]]
-                    TS, _ = self._llhs[name]._lnllh_ratio(ns, sob)
-                else:  # Use corresponding LLHs when from different sample
-                    name = [self.names[idx[0]], self.names[idx[1]]]
-                    TS = (self._llhs[name[0]]._lnllh_ratio(ns, sob[0])[0] +
-                          self._llhs[name[1]]._lnllh_ratio(ns, sob[1])[0])
+            else:
+                a = 1. / (sob[0] * sob[1])
+                c = sum_sob * a
+                ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
+                TS = 2. * (-ns + np.sum(np.log1p(ns * sob)))
                 return ns, TS
         else:  # Fit other cases
-            res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True, bounds=bounds,
+            res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True,
+                               bounds=bounds, args=(sob_dict, ns_weights),
                                method="L-BFGS-B", options=minimizer_opts)
 
         # Return function value with correct sign
@@ -1504,19 +1524,25 @@ class MultiSampleGRBLLH(object):
         ns_weigths : array-like
             Weight per sample to split up ``ns`` among different samples.
         """
-        ns_weights = np.empty(len(self._llhs), dtype=np.float)
-        for i, name in enumerate(self.names):
-            llh = self._llhs[name]
-            args_i = args[name]
+        # Only recalculate if necessary
+        if self._ns_weights is None:
+            ns_weights = {}
+            ns_weights_sum = 0
+            for name in self.names:
+                llh = self._llhs[name]
+                args_i = args[name]
 
-            src_w_theo = args_i["srcs"]["w_theo"]
-            src_w_dec = llh.expect_weights(args_i["srcs"]["dec"])
+                src_w_theo = args_i["srcs"]["w_theo"]
+                src_w_dec = llh.expect_weights(args_i["srcs"]["dec"])
 
-            ns_weights[i] = np.sum(src_w_dec * src_w_theo)
+                ns_weights[name] = np.sum(src_w_dec * src_w_theo)
+                ns_weights_sum += ns_weights[name]
 
-        # Normalize over all samples
-        ns_weights /= np.sum(ns_weights)
-        return ns_weights
+            # Normalize over all samples
+            self._ns_weights = {name: ns_weights[name] / ns_weights_sum for
+                                name in self.names}
+
+        return self._ns_weights
 
 
 class MaxBurstGRBLLH(GRBLLH):
