@@ -26,7 +26,7 @@ class TransientsAnalysis(object):
 
         Parameters
         ----------
-        srcs : dict or dict of recarrays, shape (nsrcs)
+        srcs : recarray or dict(name, recarray)
             Source properties, must have names:
 
             - 'ra', float: Right-ascension coordinate of each source in radian
@@ -408,14 +408,14 @@ class TransientsAnalysis(object):
             nsig.append(nsig_i)
 
         # Create the CDF values and fit the chi2
-        mu_bf, cdfs, pars = TransientsAnalysis.chi2_performance(ts_val, beta,
-                                                                TS, mus)
+        mu_bf, cdfs, pars = TransientsAnalysis.fit_chi2_cdf(ts_val, beta, TS,
+                                                            mus)
 
         return {"mu_bf": mu_bf, "ts": TS, "ns": ns, "mus": mus, "ninj": nsig,
                 "beta": beta, "tsval": ts_val, "cdfs": cdfs, "pars": pars}
 
     @staticmethod
-    def chi2_performance(ts_val, beta, TS, mus):
+    def fit_chi2_cdf(ts_val, beta, TS, mus):
         """
         Use collection of trials with different numbers injected mean signal
         events to calculate the CDF values above a certain test statistic
@@ -469,6 +469,166 @@ class TransientsAnalysis(object):
 
         return mu_bf, cdfs, pars
 
+    def post_trials(self, n_trials, time_windows, ns0, bg_inj, bg_rate_inj,
+                    minimizer_opts=None, full_out=False, verb=False):
+        """
+        Make trials to create a post trial correction for the selection biased
+        p-value for the following case:
+        On data, we may want to pick the best p-value from multiple tested time
+        ranges with the same set of sources.
+        So we can construct a p-value distribution by making BG only trials by
+        sampling from the largest time window and fitting with all time window
+        PDFs.
+        The we pick and store the best p-value for this trial.
+        Doing this for many trials will yield a best p-value distribtuion
+        against which we can compare the final data p-value.
+
+        Parameters
+        ----------
+        """
+        # Setup minimizer defaults and bounds
+        bounds, minopts = self._setup_minopts(minimizer_opts)
+
+        time_windows = np.atleast_2d(time_windows)
+        if time_windows.shape[1] != 2:
+            raise ValueError("Time window array must have shape (nwindows, 2).")
+
+        # Get maximum time window from which events are injected
+        n_tw = len(time_windows)
+        # Sort ascending
+        time_windows = time_windows[np.argsort(np.diff(time_windows).ravel())]
+        assert np.argmax(np.diff(time_windows)) == len(time_windows) - 1
+        tw_max = time_windows[-1]
+
+        # Prepare fixed source parameters for injectors, use largest time win
+        if self._multi:
+            src_t = {}
+            src_dt = {}
+            for key, src_i in self._srcs.items():
+                src_t[key] = src_i["t"]
+                src_dt[key] = np.repeat(tw_max, repeats=len(src_i), axis=0)
+        else:
+            src_t = self._srcs["t"]
+            src_dt = np.repeat(tw_max, repeats=len(self._srcs), axis=0)
+
+        # Total injection time window in which the time PDF is defined and
+        # nonzero.
+        trange = self._llh.time_pdf_def_range(src_t, src_dt)
+        assert len(trange) == len(self._srcs)
+
+        # Number of expected background events in each given time frame
+        nb = bg_rate_inj.get_nb()
+        assert len(nb) == len(self._srcs)
+
+        # Select iterator depending on `verb` keyword
+        if verb:
+            print("Doing trial fits on {} time windows.".format(n_tw))
+            trial_iter = tqdm(range(n_trials))
+        else:
+            trial_iter = range(n_trials)
+
+        nzeros = 0
+        ns = []
+        TS = []
+        # Copy the src dict, because we change some stuff in there
+        srcs = self._srcs.copy()
+        if self._multi:  # Use multi LLH syntax
+            for i in trial_iter:
+                # Inject events from largest window and then fit with every
+                # given time window. The LLH is cutting of any events outside
+                # the current time window automatically.
+                times = bg_rate_inj.sample(src_t, trange, poisson=True)
+                nevts_split = {n: len(times_i) for n, times_i in times.items()}
+                nevts = np.sum([len(times_i) for times_i in times.values()])
+                if nevts > 0:
+                    X = bg_inj.sample(nevts_split)
+                    for key, arr in X.items():
+                        X[key] = append_fields(arr, "timeMJD", times[key],
+                                               dtypes=np.float, usemask=False)
+                else:
+                    # If we have no events at all, fit will be zero for all tws
+                    nzeros += 1
+                    if full_out:
+                        ns.append(0.)
+                        TS.append(0.)
+                    continue
+
+                # Now do the fit on the same data for all time windows
+                _ns = np.zeros(n_tw, dtype=np.float)
+                _TS = np.zeros(n_tw, dtype=np.float)
+                for i, tw in enumerate(time_windows):
+                    # Setup args with correct time window information
+                    for key, src_i in srcs.items():
+                        src_i["dt0"] = tw[0]
+                        src_i["dt1"] = tw[1]
+                    args = {name: {"nb": nb[name], "srcs": srcs[name]} for name
+                            in self._srcs.keys()}
+
+                    # Data is still from the largest timw window
+                    _ns[i], _TS[i] = self.llh.fit_lnllh_ratio(
+                        X, ns0, args, bounds, minimizer_opts)
+
+                if full_out:
+                    ns.append(_ns)
+                    TS.append(_TS)
+                else:
+                    TS.append(np.amax(_TS))
+                    ns.append(np.amax(_ns))
+        else:  # Use single LLH and injectors
+            raise NotImplementedError("TODO: Single LLH")
+            # for i in trial_iter:
+            #     # Inject events from given injectors
+            #     times = bg_rate_inj.sample(poisson=True)
+            #     times = np.concatenate(times, axis=0)
+            #     nevts = len(times)
+
+            #     if nevts > 0:
+            #         X = bg_inj.sample(nevts)
+            #         X = append_fields(X, "timeMJD", times, dtypes=np.float,
+            #                           usemask=False)
+
+            #     if signal_inj is not None:
+            #         nsig, Xsig, _ = next(signal_inj)
+            #         nsig_all.append(nsig)
+            #         nevts += nsig
+            #     else:
+            #         Xsig = None
+
+            #     # If we have no events at all, fit will be zero
+            #     if nevts == 0:
+            #         nzeros += 1
+            #         if full_out:
+            #             ns.append(0.)
+            #             TS.append(0.)
+            #         continue
+
+            #     # Else ask LLH what value we have
+            #     if Xsig is not None:
+            #         X = stack_arrays((X, Xsig), usemask=False)
+
+            #     # Only store the best fit params and the TS value if nonzero
+            #     _ns, _TS = self.llh.fit_lnllh_ratio(X, ns0, args, bounds,
+            #                                         minimizer_opts)
+            #     if (_ns == 0.) and (_TS == 0.):
+            #         nzeros += 1
+            #         if full_out:
+            #             ns.append(0.)
+            #             TS.append(0.)
+            #     else:
+            #         ns.append(_ns)
+            #         TS.append(_TS)
+
+        # Make output record array for non zero trials
+        if full_out:
+            size = n_trials
+        else:
+            size = n_trials - nzeros
+        res = np.empty((size,), dtype=[("ns", np.float), ("TS", np.float)])
+        res["ns"] = np.array(ns)
+        res["TS"] = np.array(TS)
+
+        return res, nzeros
+
     def unblind(self):
         """
         Get the TS value for unblinded on data.
@@ -487,3 +647,35 @@ class TransientsAnalysis(object):
         significance : float
         """
         raise NotImplementedError("Not done yet.")
+
+    def _setup_minopts(self, minimizer_opts=None):
+        """
+        Setup minimizer options and return refined settings and the parameter
+        bounds specified seperately.
+
+        Parameters
+        ----------
+        minimizer_opts : dict or None
+            See :py:meth:`do_trials`, Parameters.
+
+        Returns
+        -------
+        bounds : list
+            Bounds for the minimizer, specified seperately.
+        minopts : dict
+            Refined settings, with defaults plugged in.
+        """
+        if minimizer_opts is None:
+            minimizer_opts = {}
+
+        bounds = minimizer_opts.pop("bounds", [[0., None]])
+
+        required_keys = []
+        opt_keys = {"ftol": 1e-12,
+                    "gtol": 1e-12,
+                    "maxiter": int(1e3)}
+        minopts = fill_dict_defaults(minimizer_opts, required_keys, opt_keys,
+                                     noleft=False)
+        assert len(minopts) >= len(opt_keys)
+
+        return bounds, minopts
