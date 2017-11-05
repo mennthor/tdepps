@@ -255,7 +255,7 @@ class RateFunction(object):
 
 class SinusRateFunction(RateFunction):
     @docs.dedent
-    def __init__(self, t=None, trange=None, random_state=None):
+    def __init__(self, random_state=None):
         """
         Sinus Rate Function
 
@@ -271,24 +271,14 @@ class SinusRateFunction(RateFunction):
         - c, float: x-axis offset in MJD.
         - d, float: y-axis offset in Hz
 
-        When `t, trange` where given at object creation the function bounds for
-        the rejection sampling step are precalculated in `fit` to save
-        computation time on subsequent calls of `sample`.
-
         Parameters
         ----------
-        t : array-like, shape (nsrcs)
-            MJD times of sources.
-        trange : array-like, shape(nsrcs, 2)
-            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
         %(RateFunction.init.parameters)s
         """
         super(SinusRateFunction, self).__init__(random_state)
-
-        if (t is not None) and (trange is not None):
-            self._t, self._trange = self._transform_trange_mjd(t, trange)
-        else:
-            self._t, self._trange = None, None
+        self._t = None
+        self._trange = None
+        self._dts = None
         self._fmax = None
         return
 
@@ -296,10 +286,6 @@ class SinusRateFunction(RateFunction):
     def fit(self, t, rate, p0=None, w=None, **kwargs):
         """
         %(RateFunction.fit.summary)s
-
-        When `t, trange` where given at object creation the function bounds for
-        the rejection sampling step are precalculated here to save computation
-        time on subsequent calls of `sample`.
 
         Parameters
         ----------
@@ -309,19 +295,7 @@ class SinusRateFunction(RateFunction):
         -------
         %(RateFunction.fit.returns)s
         """
-        # After fitting, cache the maximum of the pdf to avoid recalculating
-        # that in the rejection sampling step
         bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, w, **kwargs)
-
-        if self._t is not None:
-            def negpdf(t):
-                return -1. * self.fun(t, bf_pars)
-
-            _fmax = []
-            for bound in self._trange:
-                _fmax.append(-1. * func_min_in_interval(negpdf, bound))
-            self._fmax = np.concatenate(_fmax, axis=0)
-
         return bf_pars
 
     @docs.dedent
@@ -393,11 +367,20 @@ class SinusRateFunction(RateFunction):
             """Wrapper to have only one argument."""
             return self.fun(t, pars)
 
-        _, dts = self._transform_trange_mjd(t, trange)
+        # If we always get the same t and trange, cache the fmax values for
+        # faster rejection sampling after the first encounter, else reset
+        if not (np.array_equal(t, self._t) and
+                np.array_equal(trange, self._trange)):
+            # Store the raw input otherwise test is always false
+            self._t = t
+            self._trange = trange
+            _, self._dts = self._transform_trange_mjd(t, trange)
+            self._fmax = None
 
         # Samples times for all sources at once
-        times = rejection_sampling(sample_fun, bounds=dts, n_samples=n_samples,
-                                   rndgen=self._rndgen, max_fvals=self._fmax)
+        times, self._fmax = rejection_sampling(
+            sample_fun, bounds=self._dts, n_samples=n_samples,
+            rndgen=self._rndgen, max_fvals=self._fmax)
 
         return times
 
@@ -437,7 +420,7 @@ class SinusRateFunction(RateFunction):
 
 class Sinus1yrRateFunction(SinusRateFunction):
     @docs.dedent
-    def __init__(self, t=None, trange=None, random_state=None):
+    def __init__(self, random_state=None):
         """
         Sinus Rate Function fixing the period to 1 year.
 
@@ -451,10 +434,6 @@ class Sinus1yrRateFunction(SinusRateFunction):
         - c, float: x-axis offset in MJD.
         - d, float: y-axis offset in Hz
 
-        When `t, trange` where given at object creation the function bounds for
-        the rejection sampling step are precalculated in `fit` to save
-        computation time on subsequent calls of `sample`.
-
         Parameters
         ----------
         t : array-like, shape (nsrcs)
@@ -463,7 +442,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
             Time windows `[[t0, t1], ...]` in seconds around each time `t`.
         %(RateFunction.init.parameters)s
         """
-        super(Sinus1yrRateFunction, self).__init__(t, trange, random_state)
+        super(Sinus1yrRateFunction, self).__init__(random_state)
 
         self._b = 2 * np.pi / 365.25
         return
