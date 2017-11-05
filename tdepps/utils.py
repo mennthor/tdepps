@@ -116,6 +116,9 @@ def rejection_sampling(pdf, bounds, n_samples, rndgen, max_fvals=None):
     sample : list of arrays, len (nsrcs)
         Sampled events per source. If n_samples is 0 for a source, an empty
         array is included at that position.
+    max_fvals : array-like, shape(len(bounds))
+        The maximum function values for each region. If ``max_fvals`` was not
+        ``None`` before, the same values are returned.
 
     Notes
     -----
@@ -133,9 +136,11 @@ def rejection_sampling(pdf, bounds, n_samples, rndgen, max_fvals=None):
         raise ValueError("'bounds' shape must be (nsrcs, 2).")
 
     if max_fvals is not None:
-        max_fvals = np.atleast_1d(max_fvals)
-        if len(max_fvals) != bounds.shape[0]:
+        _max_fvals = np.atleast_1d(max_fvals)
+        if len(_max_fvals) != bounds.shape[0]:
             raise ValueError("'max_fvals' must have same length as 'bounds'.")
+    else:
+        _max_fvals = np.empty(bounds.shape[0], dtype=np.float)
 
     def negpdf(x):
         """Wrapper to use scipy.minimize minimization."""
@@ -144,12 +149,10 @@ def rejection_sampling(pdf, bounds, n_samples, rndgen, max_fvals=None):
     sample = []
     # Just loop over all intervals and append sample arrays to output list
     for i, (bound, nsam) in enumerate(zip(bounds, n_samples)):
-        # Get maximum func value in bound to maximize sampling efficiency
+        # Get maximum func value in bound to maximize sampling efficiency, if
+        # no maximum function values were given.
         if max_fvals is None:
-            fmax = -1. * func_min_in_interval(negpdf, bound)
-        else:
-            # Use cached values instead, if given
-            fmax = max_fvals[i]
+            _max_fvals[i] = -1. * func_min_in_interval(negpdf, bound)
 
         # Draw remaining events until all samples per source are created
         _sample = []
@@ -158,7 +161,7 @@ def rejection_sampling(pdf, bounds, n_samples, rndgen, max_fvals=None):
             # Sample x positions r1 and comparators r2, then accept or not
             r1 = (xhig - xlow) * rndgen.uniform(
                 0, 1, size=nsam) + xlow
-            r2 = fmax * rndgen.uniform(0, 1, nsam)
+            r2 = _max_fvals[i] * rndgen.uniform(0, 1, nsam)
 
             accepted = (r2 <= pdf(r1))
             _sample += r1[accepted].tolist()
@@ -167,7 +170,7 @@ def rejection_sampling(pdf, bounds, n_samples, rndgen, max_fvals=None):
 
         sample.append(np.array(_sample))
 
-    return sample
+    return sample, _max_fvals
 
 
 def func_min_in_interval(func, interval, nscan=7):
