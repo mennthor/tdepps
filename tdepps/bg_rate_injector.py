@@ -54,16 +54,10 @@ class BGRateInjector(object):
             sample names mapped to record arrays. Keys must match keys in
             ``MC``. Each record array must have names:
 
-            - 'ra', float: Right-ascension coordinate of each source in
-              radian in intervall :math:`[0, 2\pi]`.
-            - 'dec', float: Declinatiom coordinate of each source in radian
-              in intervall :math:`[-\pi / 2, \pi / 2]`.
             - 't', float: Time of the occurence of the source event in MJD
               days.
             - 'dt0', 'dt1': float: Lower/upper border of the time search
               window in seconds, centered around each source time ``t``.
-            - 'w_theo', float: Theoretical source weight per source, eg. from
-              a known gamma flux.
         rate_func : `rate_function.RateFunction` instance
             Class defining the function to describe the time dependent
             background rate. Must provide functions
@@ -89,7 +83,7 @@ class BGRateInjector(object):
         self.rndgen = random_state
 
         # Setup and check source times and time ranges
-        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
+        required_names = ["t", "dt0", "dt1"]
         for n in required_names:
             if n not in srcs.dtype.names:
                 raise ValueError("`srcs` recarray is missing name " +
@@ -229,10 +223,19 @@ class BGRateInjector(object):
         return self._rate_func.sample(self._t, self._trange, self._best_pars,
                                       n_samples=nevents)
 
-    def get_nb(self):
+    def get_nb(self, t=None, trange=None):
         """
         Return the expected number of events from integrating the rate function
         in the given time ranges from the source array.
+
+        Parameters
+        ----------
+        t : array-like, optional
+            If not ``None``, use the given times to calculate the background
+            expectation, else the source times stored in ``__init__`` are used.
+        trange : array-like, shape (len(t), 2), optional
+            If not ``None``, use the given tanges to calculate the background
+            expectation, else the ones stored in ``__init__`` are used.
 
         Returns
         -------
@@ -242,7 +245,10 @@ class BGRateInjector(object):
         if self._best_pars is None:
             raise RuntimeError("Injector was not fit to data yet.")
 
-        return self._best_estimator_integral(self._t, self._trange)
+        if t is None and trange is None:
+            return self._best_estimator_integral(self._t, self._trange)
+        else:
+            return self._best_estimator_integral(t, trange)
 
     def _set_best_fit(self, pars):
         """
@@ -452,10 +458,10 @@ class RunlistBGRateInjector(BGRateInjector):
 
         evts = np.sum(mask, axis=0)
         tot_evts = np.sum(evts)
-        tot_mask = np.any(mask, axis=0)
         assert tot_evts == np.sum(mask)
 
         # Crosscheck, if we got all events and didn't double count
+        # tot_mask = np.any(mask, axis=0)
         # if not tot_evts == len(T):
         #     t_left = T[~tot_mask]
         #     idx_left = np.where(np.isin(T, t_left))
@@ -606,7 +612,7 @@ class MultiBGRateInjector(object):
 
         return
 
-    def sample(self, t, trange, poisson=True):
+    def sample(self, poisson=True):
         """
         Call each added injector's sample method and wrap the sampled arrays in
         dictionaries for use in ``MultiSampleGRBLLH``.
@@ -630,18 +636,33 @@ class MultiBGRateInjector(object):
         return {key: np.concatenate(inj.sample(poisson)) for
                 key, inj in self._injs.items()}
 
-    def get_nb(self):
+    def get_nb(self, t=None, trange=None):
         """
         Return the expected number of events from integrating the rate function
         in the given time ranges.
 
+        Parameters
+        ----------
+        t : dict of arrays, optional
+            If not ``None``, use the given times to calculate the background
+            expectation, else the source times stored in each injectors
+            ``__init__`` are used.
+        trange : dict of arrays, optional
+            If not ``None``, use the given tanges to calculate the background
+            expectation, else the ones stored in each injectors ``__init__``
+            are used.
+
         Returns
         -------
-        nb : dict of arrays, each shape (nsrcs)
+        nb : dict of arrays
             Expected number of background events for each sources time window
-            per injcetor.
+            fot the corresponding injector.
         """
         if len(self.names) == 0:
             raise ValueError("No injector has been added yet.")
 
-        return {key: inj.get_nb() for key, inj in self._injs.items()}
+        if t is None and trange is None:
+            return {key: inj.get_nb() for key, inj in self._injs.items()}
+        else:
+            return {key: inj.get_nb(t[key], trange[key]) for
+                    key, inj in self._injs.items()}
