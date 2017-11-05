@@ -1428,7 +1428,7 @@ class MultiSampleGRBLLH(object):
         ns_weights = self._get_ns_weights(args)
         sob = []
         sob_dict = {}  # If we fit, we need it unweighted. If not, it's unused
-        for i, name in enumerate(self.names):
+        for name in self.names:
             sob_i = self._llhs[name]._soverb(X[name], args[name])
             sob.append(ns_weights[name] * sob_i)
             if len(sob_i) > 0:
