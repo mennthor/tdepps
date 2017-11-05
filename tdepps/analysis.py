@@ -135,8 +135,8 @@ class TransientsAnalysis(object):
             values are set to:
 
             - 'bounds', array-like, shape (1, 2): Bounds `[[min, max]]` for
-              `ns`. Use None for one of min or max when there is no bound in
-              that direction. (default: `[[0, None]]`)
+              `ns`. Use ``None`` for one of ``min, max`` when there is no bound
+              in that direction. (default: ``[[0, None]]``)
             - 'ftol', float: Minimizer stops when the absolute tolerance of the
               function value is `ftol`. (default: 1e-12)
             - 'gtol', float: Minimizer stops when the absolute tolerance of the
@@ -169,6 +169,29 @@ class TransientsAnalysis(object):
             Only if ``full_out==True`` also return the number of injected signal
             events per trial.
         """
+        # Check that srcs here and in injectors match
+        if self._multi:
+            names = self._srcs.keys()
+            _injt = np.concatenate([bg_rate_inj._injs[n].srcs[0] for
+                                    n in names])
+            _anat = np.concatenate([self._srcs[n]["t"] for n in names])
+            _injtr = np.concatenate([bg_rate_inj._injs[n].srcs[1] for
+                                     n in names])
+            _anatr = np.concatenate([np.vstack((self._srcs[n]["dt0"],
+                                                self._srcs[n]["dt1"])).T for
+                                     n in names])
+        else:
+            _injt = bg_rate_inj.srcs[0]
+            _anat = self._srcs["t"]
+            _injtr = bg_rate_inj.srcs[1]
+            _anatr = np.vstack((self._srcs["dt0"], self._srcs["dt1"])).T
+        if not np.array_equal(_injt, _anat):
+            raise ValueError("Source times in ana and bg rate injector " +
+                             "don't match.")
+        if not np.array_equal(_injtr, _anatr):
+            raise ValueError("Source dts in ana and bg rate injector " +
+                             "don't match.")
+
         # Setup minimizer defaults and bounds
         if minimizer_opts is None:
             minimizer_opts = {}
@@ -223,9 +246,9 @@ class TransientsAnalysis(object):
         if self._multi:  # Use multi LLH syntax
             for i in trial_iter:
                 # Inject events from given injectors
-                times = bg_rate_inj.sample(src_t, trange, poisson=True)
-                nevts_split = {n: len(times_i) for n, times_i in times.items()}
-                nevts = np.sum([len(times_i) for times_i in times.values()])
+                times = bg_rate_inj.sample(poisson=True)
+                nevts_split = {n: len(ti) for n, ti in times.items()}
+                nevts = np.sum(nevts_split.values())
                 if nevts > 0:
                     X = bg_inj.sample(nevts_split)
                     for key, arr in X.items():
@@ -470,7 +493,7 @@ class TransientsAnalysis(object):
         return mu_bf, cdfs, pars
 
     def post_trials(self, n_trials, time_windows, ns0, bg_inj, bg_rate_inj,
-                    minimizer_opts=None, full_out=False, verb=False):
+                    minimizer_opts=None, verb=False):
         """
         Make trials to create a post trial correction for the selection biased
         p-value for the following case:
@@ -482,43 +505,114 @@ class TransientsAnalysis(object):
         The we pick and store the best p-value for this trial.
         Doing this for many trials will yield a best p-value distribtuion
         against which we can compare the final data p-value.
+        Time windows must be fully included in the next bigger ones to make this
+        approach work here.
 
         Parameters
         ----------
+        n_trials : int
+            Number of trials to perform.
+        time_windows : array-like, shape (n_windows, 2)
+            Time windows to fit in.
+        ns0 : float
+            Fitter seed for the fit parameter ns: number of signal events that
+            we expect at the source locations.
+        bg_inj : `tdepps.bg_injector` instance
+            Injector to generate background-like pseudo events.
+        bg_rate_inj : `tdepps.bg_rate_injector` instance
+            Injector to generate the times of background-like pseudo events in
+            the largest (or larger) time window as given in ``time_windows``.
+        minimizer_opts : dict, optional
+            Options passed to `scipy.optimize.minimize` [1] using the 'L-BFGS-B'
+            algorithm. If specific key is not given or argument is None, default
+            values are set to:
+
+            - 'bounds', array-like, shape (1, 2): Bounds `[[min, max]]` for
+              `ns`. Use ``None`` for one of ``min, max`` when there is no bound
+              in that direction. (default: ``[[0, None]]``)
+            - 'ftol', float: Minimizer stops when the absolute tolerance of the
+              function value is `ftol`. (default: 1e-12)
+            - 'gtol', float: Minimizer stops when the absolute tolerance of the
+              gradient component is `gtol`. (default: 1e-12)
+            - maxiter, int: Maximum fit iterations the minimiter performs.
+              (default: 1e3)
+
+            (default: None)
+
+        verb : bool, optional
+            If ``True`` show iteration status with ``tqdm``.
+            (default: ``False``)
         """
         # Setup minimizer defaults and bounds
         bounds, minopts = self._setup_minopts(minimizer_opts)
 
         time_windows = np.atleast_2d(time_windows)
+        n_tw = len(time_windows)
         if time_windows.shape[1] != 2:
             raise ValueError("Time window array must have shape (nwindows, 2).")
 
-        # Get maximum time window from which events are injected
-        n_tw = len(time_windows)
-        # Sort ascending
+        # Test if the large windows include the small ones and that no zero or
+        # negative sized windows are given
         time_windows = time_windows[np.argsort(np.diff(time_windows).ravel())]
+
+        if np.any(np.diff(time_windows, axis=1) <= 0):
+            raise ValueError("Time window lengths must all be > 0.")
+
+        for i, (tw_low, tw_hig) in enumerate(zip(time_windows[:-1],
+                                                 time_windows[1:])):
+            if (tw_low[0] < tw_hig[0]) or (tw_low[1] > tw_hig[1]):
+                raise ValueError("Time window {} ".format(i) +
+                                 "is not included in the next larger one")
+
         assert np.argmax(np.diff(time_windows)) == len(time_windows) - 1
         tw_max = time_windows[-1]
 
-        # Prepare fixed source parameters for injectors, use largest time win
+        if verb:
+            print("Using {:d} time windows.".format(n_tw))
+            print("Sorted time windows are:\n", time_windows)
+            print("Maximum time window used for injection:\n", tw_max)
+
+        # Prepare fixed source parameters for injectors, use largest time
+        # window. Also prepare estimated BG events for each time window
+        nb = []
         if self._multi:
-            src_t = {}
+            src_t = {key: src_i["t"] for key, src_i in self._srcs.items()}
             src_dt = {}
-            for key, src_i in self._srcs.items():
-                src_t[key] = src_i["t"]
-                src_dt[key] = np.repeat(tw_max, repeats=len(src_i), axis=0)
+            for tw in time_windows:
+                for key, src_i in self._srcs.items():
+                    src_dt[key] = np.repeat([tw], repeats=len(src_i), axis=0)
+                nb.append(bg_rate_inj.get_nb(src_t, src_dt))
+            # The last time window should be the largest
+            assert np.all(np.diff(np.concatenate(src_dt.values()), axis=1) ==
+                          np.diff(tw_max))
         else:
             src_t = self._srcs["t"]
-            src_dt = np.repeat(tw_max, repeats=len(self._srcs), axis=0)
+            for tw in time_windows:
+                src_dt = np.repeat([tw], repeats=len(self._srcs), axis=0)
+                nb.append(bg_rate_inj.get_nb(src_t, src_dt))
+            assert np.all(np.diff(src_dt, axis=1) == np.diff(tw_max))
+
+        assert len(nb) == n_tw
+        if verb:
+            print("Estimated background events per time window and src:")
+            print(nb)
+
+        # Make sure bg_rate_injector is using the largest time window correctly
+        if self._multi:
+            names = self._srcs.keys()
+            _injtr = np.concatenate([bg_rate_inj._injs[n].srcs[1] for
+                                     n in names])
+        else:
+            _injtr = bg_rate_inj.srcs[1]
+        if not np.array_equal(_injtr, np.repeat([tw_max], repeats=len(_injtr),
+                                                axis=0)):
+            raise ValueError("Source dts in bg rate injector us not using " +
+                             "the largest time window.")
 
         # Total injection time window in which the time PDF is defined and
-        # nonzero.
-        trange = self._llh.time_pdf_def_range(src_t, src_dt)
-        assert len(trange) == len(self._srcs)
-
-        # Number of expected background events in each given time frame
-        nb = bg_rate_inj.get_nb()
-        assert len(nb) == len(self._srcs)
+        # nonzero for the largest time window.
+        trange_max = self._llh.time_pdf_def_range(src_t, src_dt)
+        assert len(trange_max) == len(self._srcs)
 
         # Select iterator depending on `verb` keyword
         if verb:
@@ -527,9 +621,8 @@ class TransientsAnalysis(object):
         else:
             trial_iter = range(n_trials)
 
-        nzeros = 0
-        ns = []
-        TS = []
+        res = np.empty((n_trials, n_tw), dtype=[("ns", np.float),
+                                                ("TS", np.float)])
         # Copy the src dict, because we change some stuff in there
         srcs = self._srcs.copy()
         if self._multi:  # Use multi LLH syntax
@@ -537,9 +630,9 @@ class TransientsAnalysis(object):
                 # Inject events from largest window and then fit with every
                 # given time window. The LLH is cutting of any events outside
                 # the current time window automatically.
-                times = bg_rate_inj.sample(src_t, trange, poisson=True)
-                nevts_split = {n: len(times_i) for n, times_i in times.items()}
-                nevts = np.sum([len(times_i) for times_i in times.values()])
+                times = bg_rate_inj.sample(poisson=True)
+                nevts_split = {n: len(ti) for n, ti in times.items()}
+                nevts = np.sum(nevts_split.values())
                 if nevts > 0:
                     X = bg_inj.sample(nevts_split)
                     for key, arr in X.items():
@@ -547,33 +640,25 @@ class TransientsAnalysis(object):
                                                dtypes=np.float, usemask=False)
                 else:
                     # If we have no events at all, fit will be zero for all tws
-                    nzeros += 1
-                    if full_out:
-                        ns.append(0.)
-                        TS.append(0.)
+                    res["ns"][i] = np.zeros(n_tw, dtype=np.float)
+                    res["TS"][i] = np.zeros(n_tw, dtype=np.float)
                     continue
 
                 # Now do the fit on the same data for all time windows
-                _ns = np.zeros(n_tw, dtype=np.float)
-                _TS = np.zeros(n_tw, dtype=np.float)
-                for i, tw in enumerate(time_windows):
-                    # Setup args with correct time window information
+                for j, tw in enumerate(time_windows):
+                    # Setup LLH args with correct time window information
                     for key, src_i in srcs.items():
                         src_i["dt0"] = tw[0]
                         src_i["dt1"] = tw[1]
-                    args = {name: {"nb": nb[name], "srcs": srcs[name]} for name
-                            in self._srcs.keys()}
+                    args = {name: {"nb": nb[j][name], "srcs": srcs[name]} for
+                            name in self._srcs.keys()}
 
-                    # Data is still from the largest timw window
-                    _ns[i], _TS[i] = self.llh.fit_lnllh_ratio(
+                    # Data is still from the largest time window
+                    _ns, _TS = self.llh.fit_lnllh_ratio(
                         X, ns0, args, bounds, minimizer_opts)
+                    res["ns"][i, j] = _ns
+                    res["TS"][i, j] = _TS
 
-                if full_out:
-                    ns.append(_ns)
-                    TS.append(_TS)
-                else:
-                    TS.append(np.amax(_TS))
-                    ns.append(np.amax(_ns))
         else:  # Use single LLH and injectors
             raise NotImplementedError("TODO: Single LLH")
             # for i in trial_iter:
@@ -618,16 +703,7 @@ class TransientsAnalysis(object):
             #         ns.append(_ns)
             #         TS.append(_TS)
 
-        # Make output record array for non zero trials
-        if full_out:
-            size = n_trials
-        else:
-            size = n_trials - nzeros
-        res = np.empty((size,), dtype=[("ns", np.float), ("TS", np.float)])
-        res["ns"] = np.array(ns)
-        res["TS"] = np.array(TS)
-
-        return res, nzeros
+        return res, time_windows
 
     def unblind(self):
         """
