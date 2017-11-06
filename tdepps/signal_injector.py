@@ -10,7 +10,7 @@ import numpy as np
 from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
 
-from .utils import rotator, power_law_flux_per_type
+from .utils import rotator, power_law_flux
 
 
 class SignalInjector(object):
@@ -196,10 +196,10 @@ class SignalInjector(object):
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
-            - 'ow', float: Per event, type 'neutrino generator' OneWeight [1]_,
-              so it is already divided by ``nevts * nfiles * type_weight``.
-              Units are ``[GeV sr cm^2]``. Final event weights are obtained by
-              multiplying with desired flux per particle type.
+            - 'ow', float: Per event 'neutrino generator' OneWeight [2]_,
+              so it is already divided by ``nevts * nfiles`.
+              Units are 'GeV sr cm^2'. Final event weights are obtained by
+              multiplying with desired sum flux for nu and anti-nu flux.
 
         exp_names : tuple of strings
             All names in the experimental data record array used for other
@@ -505,7 +505,7 @@ class SignalInjector(object):
                     len(self._mc_arr[enum_mask]))
 
             ev_idx = self._mc_arr[enum_mask]["ev_idx"]
-            flux = power_law_flux_per_type(mc_i["trueE"][ev_idx], self._gamma)
+            flux = power_law_flux(mc_i["trueE"][ev_idx], self._gamma)
             w.append(mc_i["ow"][ev_idx] * flux / omega * w_theo)
             self._raw_flux_per_sample[key] = np.sum(w[-1])
 

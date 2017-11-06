@@ -14,10 +14,10 @@ import scipy.optimize as sco
 from scipy.stats import rv_continuous, chi2, poisson
 
 
-def power_law_flux_per_type(trueE, gamma):
+def power_law_flux(trueE, gamma):
     """
-    Returns the unbroken power law flux :math:`\sim E^{-\gamma} per particle
-    type (nu, anti-nu), without a normalization.
+    Returns the unbroken power law flux :math:`\sim E^{-\gamma} summed over both
+    particle types (nu, anti-nu), without a normalization.
 
     Parameters
     ----------
@@ -29,9 +29,9 @@ def power_law_flux_per_type(trueE, gamma):
     Returns
     -------
     flux : array-like
-        Per particle flux :math:`\phi = 0.5 * E^{-\gamma}`
+        Per nu+anti-nu particle flux :math:`\phi \sim E^{-\gamma}`.
     """
-    return 0.5 * trueE**(-gamma)
+    return trueE**(-gamma)
 
 
 def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):

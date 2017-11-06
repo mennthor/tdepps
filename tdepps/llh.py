@@ -12,7 +12,7 @@ import scipy.optimize as sco
 import scipy.interpolate as sci
 from scipy.ndimage.filters import gaussian_filter
 
-from .utils import fill_dict_defaults, power_law_flux_per_type
+from .utils import fill_dict_defaults, power_law_flux
 import tdepps.backend as backend
 
 
@@ -54,45 +54,45 @@ class GRBLLH(object):
     X : record-array
         Global data set, used to derive per events PDFs. `X` must contain names:
 
-        - "sinDec", float: Per event sinus declination, in `[-1, 1]`.
-        - "logE", float: Per event energy proxy, given in log10(1/GeV).
+        - 'sinDec', float: Per event sinus declination, in ``[-1, 1]``.
+        - 'logE', float: Per event energy proxy, given in log10(1/GeV).
 
     MC : record-array
-        Global Monte Carlo data set, used to derive per event PDFs. `MC` must
-        contain the same names as `X` and additionaly the MC truths:
+        Global Monte Carlo data set, used to derive per event PDFs. ``MC`` must
+        contain the same names as ``X`` and additionaly the MC truths:
 
-        - "trueE", float: True event energy in GeV.
-        - "ow", float: Per event 'neutrino generator' OneWeight [2]_,
-          so it is already divided by `nevts * nfiles * type_weight`.
+        - 'trueE', float: True event energy in GeV.
+        - 'ow', float: Per event 'neutrino generator' OneWeight [2]_,
+          so it is already divided by ``nevts * nfiles``.
           Units are 'GeV sr cm^2'. Final event weights are obtained by
-          multiplying with desired flux per particle type.
+          multiplying with desired sum flux for nu and anti-nu flux.
 
     spatial_pdf_args : dict
         Arguments for the spatial signal and background PDF. Must contain keys:
 
-        - "bins", array-like: Explicit bin edges of the sinus declination
+        - 'bins', array-like: Explicit bin edges of the sinus declination
           histogram used to fit a spline describing the spatial background PDF.
           Bins must be in range ``[-1, 1]``.
           Bins are used for every 1D hist, including BG PDF, detector weight
           histogram and expected events per ``sin_dec`` histogram.
-        - "kent", bool, optional: If ``True``, the signal PDF uses the Kent [3]_
+        - 'kent', bool, optional: If ``True``, the signal PDF uses the Kent [3]_
           distribution. A 2D gaussian PDF is used otherwise. (default: ``True``)
-        - "k", int, optional: Degree of the smoothing spline used to fit the
+        - 'k', int, optional: Degree of the smoothing spline used to fit the
           background histogram. Must be ``1 <= k <= 5``. (default: 3)
 
     energy_pdf_args : dict
         Arguments for the energy PDF ratio. Must contain keys:
 
-        - "bins", array-like: Explicit bin edges of the sinus declination vs
+        - 'bins', array-like: Explicit bin edges of the sinus declination vs
           logE histogram used to interpolate the energy PDF ratio. Must be
           [sin_dec_bins, logE_bins] in ranges [-1, 1] for sinus declination and
           [-inf, +inf] for logE (logspace bins).
-        - "gamma", float, optional: Spectral index of the power law
+        - 'gamma', float, optional: Spectral index of the power law
           :math:`E^{-\gamma}` used to weight MC to an astrophisical flux.
           (default: 2.)
-        - "mc_bg_weights", array-like or None: If not ``None`` also use MC for
+        - 'mc_bg_weights', array-like or None: If not ``None`` also use MC for
           the BG histogram weighted to the given weights. If ``None``, use data.
-        - "fillval", str, optional: What values to use, when the histogram has
+        - 'fillval', str, optional: What values to use, when the histogram has
           MC but no data in a bin. Then the gaps are filled, by assigning values
           to the histogram edges in each sinDec slice for low/high energies
           seprately and then interpolating inside. Can be one of
@@ -104,14 +104,14 @@ class GRBLLH(object):
           + 'min': Only the lowest global ratio value is used at all edges.
 
           Listed in order optimistic -> conservative. (default: 'minmax_col')
-        - "interpol_log", bool, optional: If ``True``, gaps in the signal over
+        - 'interpol_log', bool, optional: If ``True``, gaps in the signal over
           background ratio histogram are interpolated linearly in log. Otherwise
           the interpolation is in linear space. (default: ``False``)
-        - "smooth_sigma": ``[[sin_dec_bg, logE_bg], [sin_dec_sig, logE_sig]]``.
+        - 'smooth_sigma': ``[[sin_dec_bg, logE_bg], [sin_dec_sig, logE_sig]]``.
           Standard deviations for a 2D gaussian smoothing kernel applied to the
           BG and signal histograms in *normal space* before taking the ratio.
           Units are array indices of the corresponding bins arrays.
-        - "logE_asc", bool, optional: If ``True`` assume that in each
+        - 'logE_asc', bool, optional: If ``True`` assume that in each
           ``sin_dec`` bin the energy distribution must be monotonically
           increasing and correct if it is not. This may be justified by the
           shape of the flux PDFs, you should always check the resulting PDF.
@@ -121,12 +121,12 @@ class GRBLLH(object):
     time_pdf_args : dict, optional
         Arguments for the time PDF ratio. Must contain keys:
 
-        - "nsig", float, optional: The truncation of the gaussian edges of the
+        - 'nsig', float, optional: The truncation of the gaussian edges of the
           signal PDF to have finite support. Given in units of sigma, must be
           ``>= 3``. (default: 4.)
-        - "sigma_t_min", float, optional: Minimum sigma in seconds of the
+        - 'sigma_t_min', float, optional: Minimum sigma in seconds of the
           gaussian edges of the time signal PDF. (default: 2.)
-        - "sigma_t_max", float, optional: Maximum sigma in seconds of the
+        - 'sigma_t_max', float, optional: Maximum sigma in seconds of the
           gaussian edges of the time signal PDF. (default: 30.)
 
         (default: None)
@@ -134,10 +134,10 @@ class GRBLLH(object):
     llh_args : dict, optional
         Arguments controlling the LLH calculation. Must contain keys:
 
-        - "sob_rel_eps", float, optional: Realative signal over background
+        - 'sob_rel_eps', float, optional: Realative signal over background
           threshold. Events which have `SoB_i / max(SoB) < sob_rel_eps` are not
           further used in the LLH evluation. (default: 0)
-        - "sob_abs_abs", float: Absolute signal over background threshold.
+        - 'sob_abs_abs', float: Absolute signal over background threshold.
           Events which have `SoB_i < sob_abs_eps` are not further used in the
           LLH evluation. (default: 1e-3)
 
@@ -240,8 +240,8 @@ class GRBLLH(object):
             sin_dec_bg, logE_bg, w_bg = MC["sinDec"], MC["logE"], mc_bg_w
 
         sin_dec_sig, logE_sig = MC["sinDec"], MC["logE"]
-        w_sig = MC["ow"] * power_law_flux_per_type(
-            MC["trueE"], self._energy_pdf_args["gamma"])
+        w_sig = MC["ow"] * power_law_flux(MC["trueE"],
+                                          self._energy_pdf_args["gamma"])
 
         self._energy_pdf_args["bins"][0] = sin_dec_bins
         self._energy_pdf_args["bins"][1] = logE_bins
@@ -1144,8 +1144,7 @@ class GRBLLH(object):
             Must be exponentiated to give the correct values.
         """
         # Not using a normalization: would be global constant for all weigths
-        w_sig = ow * power_law_flux_per_type(trueE,
-                                             self._energy_pdf_args["gamma"])
+        w_sig = ow * power_law_flux(trueE, self._energy_pdf_args["gamma"])
         hist, bins = np.histogram(sin_dec, bins=bins, weights=w_sig,
                                   density=False)
 
