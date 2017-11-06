@@ -583,8 +583,8 @@ class TransientsAnalysis(object):
                     src_dt[key] = np.repeat([tw], repeats=len(src_i), axis=0)
                 nb.append(bg_rate_inj.get_nb(src_t, src_dt))
             # The last time window should be the largest
-            assert np.all(np.diff(np.concatenate(src_dt.values()), axis=1) ==
-                          np.diff(tw_max))
+            assert np.all(np.diff(np.concatenate(list(src_dt.values())),
+                                  axis=1) == np.diff(tw_max))
         else:
             src_t = self._srcs["t"]
             for tw in time_windows:
@@ -632,7 +632,7 @@ class TransientsAnalysis(object):
                 # the current time window automatically.
                 times = bg_rate_inj.sample(poisson=True)
                 nevts_split = {n: len(ti) for n, ti in times.items()}
-                nevts = np.sum(nevts_split.values())
+                nevts = np.sum(list(nevts_split.values()))
                 if nevts > 0:
                     X = bg_inj.sample(nevts_split)
                     for key, arr in X.items():
