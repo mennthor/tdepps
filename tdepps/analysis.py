@@ -193,18 +193,7 @@ class TransientsAnalysis(object):
                              "don't match.")
 
         # Setup minimizer defaults and bounds
-        if minimizer_opts is None:
-            minimizer_opts = {}
-
-        bounds = minimizer_opts.pop("bounds", [[0., None]])
-
-        required_keys = []
-        opt_keys = {"ftol": 1e-12,
-                    "gtol": 1e-12,
-                    "maxiter": int(1e3)}
-        minopts = fill_dict_defaults(minimizer_opts, required_keys, opt_keys,
-                                     noleft=False)
-        assert len(minopts) >= len(opt_keys)
+        bounds, minimizer_opts = self._setup_minopts(minimizer_opts)
 
         # Prepare fixed source parameters for injectors
         if self._multi:
@@ -283,6 +272,7 @@ class TransientsAnalysis(object):
                 # Only store the best fit params and the TS value if nonzero
                 _ns, _TS = self.llh.fit_lnllh_ratio(X, ns0, args, bounds,
                                                     minimizer_opts)
+
                 if (_ns == 0) and (_TS == 0):
                     nzeros += 1
                     if full_out:
@@ -544,7 +534,7 @@ class TransientsAnalysis(object):
             (default: ``False``)
         """
         # Setup minimizer defaults and bounds
-        bounds, minopts = self._setup_minopts(minimizer_opts)
+        bounds, minimizer_opts = self._setup_minopts(minimizer_opts)
 
         time_windows = np.atleast_2d(time_windows)
         n_tw = len(time_windows)

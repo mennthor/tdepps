@@ -467,13 +467,13 @@ class GRBLLH(object):
 
             Returns
             -------
-            lnllh : float
-                See :py:meth:`lnllh_ratio`, Returns
-            lnllh_grad : array-like
-                See :py:meth:`lnllh_ratio`, Returns
+            TS : float
+                Negative TS value for the current ``ns``.
+            ns_grad : array-like
+                Negative TS function gradient in the fit parameter ``ns``.
             """
             lnllh, lnllh_grad = self._lnllh_ratio(ns, sob)
-            return -1. * lnllh, -1. * lnllh_grad
+            return -lnllh, -lnllh_grad
 
         # If no events are given, best fit is always 0, skip all further steps
         if len(X) == 0:
@@ -487,7 +487,7 @@ class GRBLLH(object):
         # Test again, because we applied some threshold cuts
         if nevts == 0:
             return 0., 0.
-        if nevts == 1:
+        elif nevts == 1:
             # Use scalar math functions, they're faster than numpy
             sob = sob[0]
             if sob <= 1.:  # sob <= 1 => ns <= 0, so fit will be 0
@@ -498,7 +498,7 @@ class GRBLLH(object):
             return ns, TS
         elif nevts == 2:
             sum_sob = sob[0] + sob[1]
-            if sum_sob <= 1.:  # Same argument, but a more calc. needed to see
+            if sum_sob <= 1.:  # More complicated to show but same as above
                 return 0., 0.
             else:
                 a = 1. / (sob[0] * sob[1])
@@ -512,8 +512,8 @@ class GRBLLH(object):
                                bounds=bounds, args=(sob,), method="L-BFGS-B",
                                options=minimizer_opts)
 
-        # Return function value with correct sign
-        return res.x[0], -1. * res.fun[0]
+            # Return function value with correct sign
+            return res.x[0], -res.fun[0]
 
     def _lnllh_ratio(self, ns, sob):
         """
@@ -530,9 +530,9 @@ class GRBLLH(object):
 
         Returns
         -------
-        lnllh : float
+        TS : float
             See :py:meth:`lnllh_ratio`, Returns
-        lnllh_grad : array-like
+        ns_grad : array-like
             See :py:meth:`lnllh_ratio`, Returns
         """
         # Teststatistic 2 * ln(LLH-ratio)
@@ -718,7 +718,7 @@ class GRBLLH(object):
         # If mutliple srcs: sum over weighted signal contribution from each src
         # The single src case is automatically included due to broadcasting
         src_w = self.src_weights(src_dec, src_w_theo)
-        # Background expecation per source
+        # Background expectation per source
         sob = np.sum(sob * src_w / nb, axis=0)
 
         # Apply a SoB ratio cut, to save computation time on events that don't
@@ -1392,25 +1392,21 @@ class MultiSampleGRBLLH(object):
 
             Returns
             -------
-            lnllh : float
-                See :py:meth:`lnllh_ratio`, Returns
-            lnllh_grad : array-like
-                See :py:meth:`lnllh_ratio`, Returns
+            TS : float
+                Negative TS value for the current ``ns``.
+            ns_grad : array-like
+                Negative TS function gradient in the fit parameter ``ns``.
             """
-            # lnllh, lnllh_grad = self.lnllh_ratio(X, ns, args)
-            # return -1. * lnllh, -1. * lnllh_grad
             # Use sob directly, repeats some code but saves time
             TS = 0.
             ns_grad = 0.
-            # If sob is empty for a LLH, it would return (0, [0]) anyway, so
-            # just loop the existing ones.
             for name, sob_i in sob.items():
                 TS_i, ns_grad_i = self._llhs[name]._lnllh_ratio(
                     ns * ns_weights[name], sob_i)
-                TS += TS_i
-                ns_grad += ns_grad_i * ns_weights[name]  # Chain rule
+                TS -= TS_i
+                ns_grad -= ns_grad_i * ns_weights[name]  # Chain rule
 
-            return -TS, np.array([-ns_grad])
+            return TS, ns_grad
 
         if len(self.names) == 0:
             raise ValueError("No sample has been added yet.")
@@ -1431,14 +1427,18 @@ class MultiSampleGRBLLH(object):
             sob_i = self._llhs[name]._soverb(X[name], args[name])
             sob.append(ns_weights[name] * sob_i)
             if len(sob_i) > 0:
+                # If sob is empty for a LLH, it would return (0, [0]) anyway,
+                # so just add the existing ones. ns_weights are added in
+                # correctly in the fit function later, so just store pure sob.
                 sob_dict[name] = sob_i
+
         sob = np.concatenate(sob)
         nevts = len(sob)
 
         # Test again, because we may have applied sob threshold cuts per LLH
         if nevts == 0:
             return 0., 0.
-        if nevts == 1:
+        elif nevts == 1:
             # Same case as in single LLH because sob is multi year weighted
             sob = sob[0]
             if sob <= 1.:  # sob <= 1 => ns <= 0, so fit will be 0
@@ -1450,7 +1450,7 @@ class MultiSampleGRBLLH(object):
         elif nevts == 2:
             # Same case as in single LLH because sob is multi year weighted
             sum_sob = sob[0] + sob[1]
-            if sum_sob <= 1.:  # Same argument, but a more calc. needed to see
+            if sum_sob <= 1.:  # More complicated to show but same as above
                 return 0., 0.
             else:
                 a = 1. / (sob[0] * sob[1])
@@ -1462,9 +1462,20 @@ class MultiSampleGRBLLH(object):
             res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True,
                                bounds=bounds, args=(sob_dict, ns_weights),
                                method="L-BFGS-B", options=minimizer_opts)
+            if not res.success:
+                def _neglnllh_numgrad(ns, sob, ns_weights):
+                    """ Use numerical gradient if LINESRCH problem arises. """
+                    return _neglnllh(ns, sob, ns_weights)[0]
+                res = sco.minimize(fun=_neglnllh_numgrad, x0=[ns0], jac=False,
+                                   bounds=bounds, args=(sob_dict, ns_weights),
+                                   method="L-BFGS-B", options=minimizer_opts)
 
-        # Return function value with correct sign
-        return res.x[0], -1. * res.fun[0]
+            # Use `abs`: Very rarely, the minimizer doesn't go the boundary
+            # if the fit should be zero. Then simply negating the function
+            # value would yield a small but negative TS value. `abs` avoids
+            # that accepting the "error" on having a very small positive TS
+            # val instead of a true zero one.
+            return res.x[0], abs(res.fun[0])
 
     def time_pdf_def_range(self, src_t, dt):
         """
