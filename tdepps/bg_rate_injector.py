@@ -219,6 +219,11 @@ class BGRateInjector(object):
         else:  # If one expectation is < 0.5 no event is sampled for that src
             nevents = np.round(expect).astype(int)
 
+        # TODO: Select correct rate function for the srcs declination and
+        #       concatenate sampes so the format is the same as before.
+        # TODO2: Adapt rest of the functions to have correct access to the rate
+        #        models
+
         # Sample all nevents for this trial from the rate function at once
         return self._rate_func.sample(self._t, self._trange, self._best_pars,
                                       n_samples=nevents)
