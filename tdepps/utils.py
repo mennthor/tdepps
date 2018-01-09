@@ -285,6 +285,28 @@ def weighted_cdf(x, val, weights=None):
     return cdf, err
 
 
+def ThetaPhi2DecRa(theta, phi):
+    """
+    Convert healpy theta, phi coordinates to equatorial ra, dec coordinates.
+    ``phi`` and right-ascension are assumed to be the same value, declination is
+    converted with ``dec = pi/2 - theta``.
+
+    Parameters
+    ----------
+    theta, phi : array-like
+        Healpy cooridnates in radian. ``theta ``is i n range ``[0, pi]``,
+        ``phi`` in ``[0, 2pi]``.
+
+    Returns
+    -------
+    dec, ra : array-like
+        Equtorial coordinates declination in ``[-pi/2, pi/2]`` and
+        right-ascension equal to ``phi`` in ``[0, 2pi]``.
+    """
+    theta, phi = map(np.atleast_1d, [theta, phi])
+    return np.pi / 2. - theta, phi
+
+
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
     """
     Rotate vectors pointing to directions given by pairs `(ra3, dec3)` by the
