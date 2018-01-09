@@ -8,9 +8,11 @@ standard_library.install_aliases()
 
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
+import scipy.stats as scs
 from sklearn.utils import check_random_state
+import healpy as hp
 
-from .utils import rotator, power_law_flux
+from .utils import rotator, power_law_flux, ThetaPhi2DecRa
 
 
 class SignalInjector(object):
@@ -681,3 +683,257 @@ class SignalInjector(object):
                                                           srci["dt1"])
 
         return rep
+
+
+class SystematicSignalInjector(SignalInjector):
+    """
+    Inject signal events not at a fixed source position but according to a
+    healpy prior map.
+    If fixed source positions are tested in the analysis, this injection should
+    decrease sensitivity systematically.
+    """
+    def fit(self, srcs, src_maps, MC, exp_names):
+        """
+        Fill injector with Monte Carlo events, preselecting events around the
+        source positions.
+
+        Multiyear compatible when using dicts of samples, see below.
+
+        Parameters
+        -----------
+        srcs : recarray or dict(name, recarray)
+            Source properties as single record array or as dictionary with
+            sample names mapped to record arrays. Keys must match keys in
+            ``MC``. Each record array must have names:
+
+            - 'ra', float: Right-ascension coordinate of each source in
+              radian in intervall :math:`[0, 2\pi]`.
+            - 'dec', float: Declinatiom coordinate of each source in radian
+              in intervall :math:`[-\pi / 2, \pi / 2]`.
+            - 't', float: Time of the occurence of the source event in MJD
+              days.
+            - 'dt0', 'dt1': float: Lower/upper border of the time search
+              window in seconds, centered around each source time ``t``.
+            - 'w_theo', float: Theoretical source weight per source, eg. from
+              a known gamma flux.
+
+        src_maps : array or dict(name, list of array(s))
+            List of valid healpy map array(s) per source per sample, all in same
+            resolution used as spatial priors for injecting source positions
+            each sample step. Maps must be a normal space PDFs normalized to
+            area equals one on the unit sphere from a positional reconstruction
+            to give a probability region of the true source position per source.
+        MC : recarray or dict(name, recarray)
+            Either single structured array describing Monte Carlo events or a
+            dictionary with sample names mapped to record arrays. Keys must
+            match ``srcs``. Each record array must contain names given in
+            ``exp_names`` and additonally:
+
+            - 'trueE', float: True event energy in GeV.
+            - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
+            - 'trueE', float: True event energy in GeV.
+            - 'ow', float: Per event 'neutrino generator' OneWeight [2]_,
+              so it is already divided by ``nevts * nfiles`.
+              Units are 'GeV sr cm^2'. Final event weights are obtained by
+              multiplying with desired sum flux for nu and anti-nu flux.
+
+        exp_names : tuple of strings
+            All names in the experimental data record array used for other
+            classes. Must match with the MC record names. ``exp_names`` is
+            required to have at least the names:
+
+            - 'ra': Per event right-ascension coordinate in :math:`[0, 2\pi]`.
+            - 'sinDec': Per event sinus declination, in :math`[-1, 1]`.
+            - 'logE': Per event energy proxy, given in
+              :math`\log_{10}(1/\text{GeV})`.
+            - 'sigma': Per event positional uncertainty, given in radians.
+            - 'timeMJD': Per event times in MJD days.
+
+        Notes
+        -----
+        .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
+        """
+        # MC structure is the blueprint for all others
+        if not isinstance(MC, dict):  # Work consistently with dicts
+            MC = {-1: MC}
+            self._keymap = {-1: -1}  # Trivial wrappers for consistency
+            self._enummap = {-1: -1}
+        else:  # Map dict names to int keys for use as indices and vice-versa
+            self._keymap = {key: i for key, i in zip(MC.keys(),
+                                                     np.arange(len(MC)))}
+            self._enummap = {enum: key for key, enum in self._keymap.items()}
+
+        # Work consistently with dicts
+        if not isinstance(srcs, dict):
+            srcs = {-1: srcs}
+        if not isinstance(exp_names, dict):
+            exp_names = {-1: exp_names}
+        if not isinstance(src_maps, dict):
+            src_maps = {-1: src_maps}
+
+        # Keys must be equivalent to MC keys
+        if viewkeys(MC) != viewkeys(srcs):
+            raise ValueError("Keys in `MC` and `srcs` don't match.")
+        if viewkeys(MC) != viewkeys(exp_names):
+            raise ValueError("Keys in `MC` and `exp_names` don't match.")
+        if viewkeys(src_maps) != viewkeys(exp_names):
+            raise ValueError("Keys in `MC` and `src_maps` don't match.")
+
+        # Check if each recarray has it's required names
+        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
+        for n in required_names:
+            for key, srcs_i in srcs.items():
+                if n not in srcs_i.dtype.names:
+                    raise ValueError("Source recarray '" +
+                                     "{}' is missing name '{}'.".format(key, n))
+
+        required_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
+        for n in required_names:
+            for key, exp_ni in exp_names.items():
+                if n not in exp_ni:
+                    raise ValueError("`exp_names` is missing name " +
+                                     "'{}' at key '{}'.".format(n, key))
+
+        for key, mc_i in MC.items():
+            MC_names = exp_names[key] + ("trueRa", "trueDec", "trueE", "ow")
+            for n in MC_names:
+                if n not in mc_i.dtype.names:
+                    e = "MC sample '{}' is missing name '{}'.".format(key, n)
+                    raise ValueError(e)
+
+        # Check if prior maps are valid healpy maps and all have same resolution
+        # and if there is a map for every source
+        map_lens = []
+        for key, maps_i in src_maps.items():
+            if hp.maptype(maps_i) == 0:
+                # Always use list of maps, not bare arrays
+                maps_i = [maps_i]
+                src_maps[key] = maps_i
+                print("Wapped single bare map for key '{}'.".format(key))
+            if hp.maptype(maps_i) != len(srcs[key]):
+                raise ValueError("For sample '{}' ".format(key) +
+                                 "there are not as many maps as srcs given.")
+            map_lens.append(map(len, maps_i))
+
+        map_lens = np.concatenate(map_lens)
+        self.NSIDE = len(map_lens[0])
+        if not np.all(map_lens == self.NSIDE):
+            raise ValueError("Not all given 'src_maps' have the same length.")
+        if not hp.isnsideok(self.NSIDE):
+            raise ValueError("Given `src_maps` don't have proper resolution.")
+
+        # Now widen the injection bandwidth to match the 3 sigma band around
+        # each source. Use Wilks' theorem to estimate the 3 sigma value.
+        # We select from the interval [3sig_band-inj, 3sig_band+inj] per src.
+        sigma = scs.chi2.sf(x=3**2, df=2)
+        # Normalize maps to sum P = 1 for np.random.choice and read of pixels
+        # with map(logllh) - sigma to construct injection band
+        pixels = {}
+        for key, maps_i in src_maps.items():
+            for mapi in maps_i:
+                max_idx = np.argmax(mapi)
+                max_llh = mapi[max_idx]
+                pix_idx = np.where(mapi >= max_llh * sigma)
+                # Get max dec coordinate for the selected pixels
+                dec, _ = ThetaPhi2DecRa(*hp.pix2ang(self.NSIDE, pix_idx))
+
+
+
+        super(SystematicSignalInjector, self).__init__(srcs, MC, exp_names)
+        return
+
+    def sample(self, mean_mu, poisson=True):
+        """
+        Generator to get sampled events from MC for each source position.
+        Each time new source positions are sampled from the prior maps.
+
+        Parameters
+        -----------
+        mu : float
+            Expectation value of number of events to sample.
+        poisson : bool, optional
+            If True, sample the actual number of events from a poisson
+            distribution with expectation ``mu``. Otherwise the number of events
+            is constant in each trial. (default: True)
+
+        Returns
+        --------
+        num : int
+            Number of events sampled in total
+        sam_ev : iterator
+            Sampled events for each loop iteration, either as simple array or
+            as dictionary for each sample.
+        idx : array-like
+            Indices mapping the sampled events to the injected MC events in
+            ``self._MC`` for debugging purposes.
+        """
+        if self._mc_arr is None:
+            raise ValueError("Injector has not been filled with MC data yet.")
+
+        # Only one sample, src positions are unambigious
+        if len(self._keymap) == 1:
+            src_ra = self._srcs[-1]["ra"]
+            src_dec = self._srcs[-1]["dec"]
+            src_t = self._srcs[-1]["t"]
+            src_dt = np.vstack((self._srcs[-1]["dt0"], self._srcs[-1]["dt1"])).T
+
+        n = int(np.around(mean_mu))
+        while True:
+            if poisson:
+                n = self._rndgen.poisson(mean_mu, size=None)  # Returns scalar
+
+            # If n=0 (no events get sampled) return None
+            if n < 1:
+                yield n, None, None
+                continue
+
+            # Draw IDs from the whole pool of events
+            sam_idx = self._rndgen.choice(self._mc_arr, size=n,
+                                          p=self._sample_w)
+            enums = np.unique(sam_idx["enum"])
+
+            # If only one sample: return single recarray
+            if len(enums) == 1 and enums[0] < 0:
+                sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
+                src_idx = sam_idx['src_idx']
+                sam_ev, m = self._rot_and_strip(
+                    src_ra[src_idx], src_dec[src_idx], sam_ev, key=-1)
+                sam_ev["timeMJD"] = self._sample_times(
+                    src_t[src_idx], src_dt[src_idx])[m]
+                yield n, sam_ev, sam_idx[m]
+                continue
+
+            # Else return same dict structure as used in `fit`
+            sam_ev = dict()
+            # Total mask to filter out events rotated outside `sin_dec_range`
+            idx_m = np.zeros_like(sam_idx, dtype=bool)
+            for enum in self._enummap.keys():
+                key = self._enummap[enum]
+                if enum in enums:
+                    # Get source positions for the correct sample
+                    _src_ra = self._srcs[key]["ra"]
+                    _src_dec = self._srcs[key]["dec"]
+                    _src_t = self._srcs[key]["t"]
+                    _src_dt = np.vstack((self._srcs[key]["dt0"],
+                                         self._srcs[key]["dt1"])).T
+                    # Select events per sample
+                    enum_m = (sam_idx["enum"] == enum)
+                    idx = sam_idx[enum_m]["ev_idx"]
+                    sam_ev_i = np.copy(self._MC[key][idx])
+                    # Broadcast corresponding sources for correct rotation
+                    src_idx = sam_idx[enum_m]["src_idx"]
+                    sam_ev[key], m = self._rot_and_strip(
+                        _src_ra[src_idx], _src_dec[src_idx], sam_ev_i, key=key)
+                    sam_ev[key]["timeMJD"] = self._sample_times(
+                        _src_t[src_idx], _src_dt[src_idx])[m]
+                    # Build up the mask for the returned indices 'sam_idx'
+                    _idx_m = np.zeros_like(m)
+                    _idx_m[m] = True
+                    idx_m[enum_m] = _idx_m
+                else:
+                    drop_names = [ni for ni in self._MC[key].dtype.names if
+                                  ni not in self._exp_names[key]]
+                    sam_ev[key] = drop_fields(
+                        np.empty((0,), dtype=self._MC[key].dtype), drop_names)
+
+            yield n, sam_ev, sam_idx[idx_m]
