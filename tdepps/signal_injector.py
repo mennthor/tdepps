@@ -75,10 +75,10 @@ class SignalInjector(object):
             raise ValueError("`sin_dec_range` must be range [a, b] in [-1, 1].")
         self._sin_dec_range = sin_dec_range
 
-        self._mc_arr = None
         self.rndgen = random_state
 
-        # Defaults for private class variables (later set ones get None)
+        # Defaults for private class variables
+        self._mc_arr = None
         self._MC = None
         self._exp_names = None
         self._srcs = None
@@ -341,7 +341,7 @@ class SignalInjector(object):
         if self._mc_arr is None:
             raise ValueError("Injector has not been filled with MC data yet.")
 
-        # Only one sample, src positions are unambigious
+        # Only one sample, src memberships are unambigious
         if len(self._keymap) == 1:
             src_ra = self._srcs[-1]["ra"]
             src_dec = self._srcs[-1]["dec"]
@@ -351,7 +351,7 @@ class SignalInjector(object):
         n = int(np.around(mean_mu))
         while True:
             if poisson:
-                n = self._rndgen.poisson(mean_mu, size=None)  # Returns scalar
+                n = self._rndgen.poisson(mean_mu, size=None)
 
             # If n=0 (no events get sampled) return None
             if n < 1:
@@ -494,7 +494,7 @@ class SignalInjector(object):
         calculate the solid angle per source from which events where injected
         to be able to correctly weight the injected events to get a flux.
 
-        Sets up private class varaibles:
+        Sets up private class variables:
 
         - ``_omega``, dict of arrays: Solid angle in radians of each injection
           region for each source sample.
@@ -734,9 +734,10 @@ class HealpySignalInjector(SignalInjector):
     """
     def __init__(self, gamma, inj_width=np.deg2rad(2), inj_sigma=3.,
                  sin_dec_range=[-1., 1.], random_state=None):
-        if (inj_sigma <= 0.) or (inj_sigma > np.pi):
-            raise ValueError("Injection sigma must be in (0, pi].")
+        if inj_sigma <= 0.:
+            raise ValueError("Injection sigma must be >0.")
         self._inj_sigma = inj_sigma
+
         return super(HealpySignalInjector, self).__init__(
             gamma, "band", inj_width, sin_dec_range, random_state)
 
@@ -746,6 +747,12 @@ class HealpySignalInjector(SignalInjector):
         source positions.
 
         Multiyear compatible when using dicts of samples, see below.
+
+        Sets up private class variables:
+
+        - ``_min_dec``, ``_max_dec``, dict of arrays: Upper/lower bounds for
+          each declination band in radians for each source sample. Size of the
+          bands is determined by ``inj_width`` in sigma and the prior width.
 
         Parameters
         -----------
@@ -768,7 +775,7 @@ class HealpySignalInjector(SignalInjector):
         src_maps : array or dict(name, list of array(s))
             List of valid healpy map array(s) per source per sample, all in same
             resolution used as spatial priors for injecting source positions
-            each sample step. Maps must be a normal space PDFs normalized to
+            each sample step. Maps must be normal space PDFs normalized to
             area equals one on the unit sphere from a positional reconstruction
             to give a probability region of the true source position per source.
         MC : recarray or dict(name, recarray)
@@ -824,10 +831,18 @@ class HealpySignalInjector(SignalInjector):
 
         map_lens = np.concatenate(map_lens)
         self._NSIDE = len(map_lens[0])
-        if not np.all(map_lens == self.NSIDE):
+        if not np.all(map_lens == self._NSIDE):
             raise ValueError("Not all given 'src_maps' have the same length.")
-        if not hp.isnsideok(self.NSIDE):
+        if not hp.isnsideok(self._NSIDE):
             raise ValueError("Given `src_maps` don't have proper resolution.")
+
+        # Test if maps are valid PDFs on the unit sphere (m>=0 and sum(m*dA)=1)
+        dA = hp.nside2pixarea(self._NSIDE)
+        for key, maps_i in src_maps.items():
+            areas = np.array(map(np.sum, maps_i)) * dA
+            if not np.allclose(areas, 1.) or np.any(maps_i < 0.):
+                raise ValueError("Not all given maps for key '{}'".format(key) +
+                                 " are valid PDFs on the unit sphere.")
 
         def get_nsigma_dec_band(pdf_map, sigma=3.):
             """
@@ -861,16 +876,26 @@ class HealpySignalInjector(SignalInjector):
         # Now widen the injection bandwidth to match the 3 sigma band around
         # each source. Use Wilks' theorem to estimate the 3 sigma value.
         # We select from the interval [3sig_band-inj, 3sig_band+inj] per src.
-        inj_bws = {}
+        self._min_dec = {}
+        self._max_dec = {}
         for key, maps_i in src_maps.items():
-            inj_bws[key] = []
+            self._min_dec[key] = []
+            self._max_dec[key] = []
             for map_i in maps_i:
                 min_dec, max_dec = get_nsigma_dec_band(map_i, self._inj_sigma)
-                inj_bws.append([min_dec, max_dec])
+                assert min_dec < max_dec
+                self._min_dec[key].append(min_dec)
+                self._max_dec[key].append(max_dec)
+            self._min_dec[key] = np.clip(self._max_dec[key], -np.pi / 2., None)
+            self._max_dec[key] = np.clip(self._max_dec[key], None, np.pi / 2.)
 
-        # Normalize maps to sum P = 1 for np.random.choice
+        # Re-normalize maps to sum P = 1 for np.random.choice sampling
+        for key, maps_i in src_maps.items():
+            for i, map_i in enumerate(maps_i):
+                src_maps[key][i] = map_i / np.sum(map_i)
+                assert np.isclose(np.sum(src_maps[key][i]), 1.)
 
-
+        self._src_maps = src_maps
 
         super(HealpySignalInjector, self).fit(srcs, MC, exp_names)
         return
@@ -903,17 +928,76 @@ class HealpySignalInjector(SignalInjector):
         if self._mc_arr is None:
             raise ValueError("Injector has not been filled with MC data yet.")
 
-        # Only one sample, src positions are unambigious
-        if len(self._keymap) == 1:
-            src_ra = self._srcs[-1]["ra"]
-            src_dec = self._srcs[-1]["dec"]
-            src_t = self._srcs[-1]["t"]
-            src_dt = np.vstack((self._srcs[-1]["dt0"], self._srcs[-1]["dt1"])).T
+        # If poisson is `False`, sample fixed integer number of signal events
+        if poisson is False:
+            n = int(np.around(mean_mu))
+            if n < 1:
+                raise ValueError("`poisson` is False and `int(mean_mu) < 1` " +
+                                 "so there won't be any events sampled.")
 
-        n = int(np.around(mean_mu))
+        # Prepare some repeating tasks beforehand to save time during sampling
+        if len(self._keymap) == 1:
+            # Only one sample, src memberships are unambigious
+            src_t = self._srcs[-1]["t"]
+            src_dt = np.vstack((self._srcs[-1]["dt0"],
+                                self._srcs[-1]["dt1"])).T
+            prior_maps = self._src_maps[-1]
+            idx = np.empty(self._nsrcs[-1])
+        else:
+            src_dt = {}
+            for key in self._srcs.keys():
+                src_dt[key] = np.vstack((self._srcs[key]["dt0"],
+                                         self._srcs[key]["dt1"])).T
+
+        # Prepare fixed pixel index array to choose pixels from
+        pix_ids = np.arange(hp.nside2npix(self._NSIDE))
+        # Precompute pix2ang conversion, directly in ra, dec
+        th, phi = hp.pix2ang(self._NSIDE, pix_ids)
+        pix2ra, pix2dec = ThetaPhi2DecRa(th, phi)
+
+        # Predefine function to sample new source positions from
+        if len(self._keymap) == 1:
+            def sample_src_positions():
+                """
+                Returns a new set of source position sampled from the given
+                prior map PDFs.
+
+                Returns
+                -------
+                ra, dec : array-like
+                    New source positions sampled from each prior map.
+                """
+                for i, prior_map_i in enumerate(prior_maps):
+                    idx[i] = self._rndgen.choice(pix_ids, size=None,
+                                                 replace=False, p=prior_map_i)
+                return pix2ra[idx], pix2dec[idx]
+        else:
+            def sample_src_positions():
+                """
+                Returns a new set of source position sampled from the given
+                prior map PDFs.
+
+                Returns
+                -------
+                ra, dec : dict of arrays
+                    Returns an array of source positions for each key in the
+                    given source map dictionary.
+                """
+                src_ras = {}
+                src_decs = {}
+                for key, maps_i in self._src_maps.items():
+                    for i, prior_map_i in enumerate(prior_maps):
+                        idx[i] = self._rndgen.choice(pix_ids, size=None,
+                                                     replace=False,
+                                                     p=prior_map_i)
+                    src_ras[key] = pix2ra[idx]
+                    src_decs[key] = pix2dec[idx]
+
+                return src_ras, src_decs
+
         while True:
             if poisson:
-                n = self._rndgen.poisson(mean_mu, size=None)  # Returns scalar
+                n = self._rndgen.poisson(mean_mu, size=None)
 
             # If n=0 (no events get sampled) return None
             if n < 1:
@@ -924,6 +1008,9 @@ class HealpySignalInjector(SignalInjector):
             sam_idx = self._rndgen.choice(self._mc_arr, size=n,
                                           p=self._sample_w)
             enums = np.unique(sam_idx["enum"])
+
+            # Also draw new src position from prior maps
+            src_ra, src_dec = sample_src_positions()
 
             # If only one sample: return single recarray
             if len(enums) == 1 and enums[0] < 0:
@@ -944,11 +1031,10 @@ class HealpySignalInjector(SignalInjector):
                 key = self._enummap[enum]
                 if enum in enums:
                     # Get source positions for the correct sample
-                    _src_ra = self._srcs[key]["ra"]
-                    _src_dec = self._srcs[key]["dec"]
+                    _src_ra = src_ras[key]
+                    _src_dec = src_decs[key]
                     _src_t = self._srcs[key]["t"]
-                    _src_dt = np.vstack((self._srcs[key]["dt0"],
-                                         self._srcs[key]["dt1"])).T
+                    _src_dt = src_dt[key]
                     # Select events per sample
                     enum_m = (sam_idx["enum"] == enum)
                     idx = sam_idx[enum_m]["ev_idx"]
@@ -970,3 +1056,27 @@ class HealpySignalInjector(SignalInjector):
                         np.empty((0,), dtype=self._MC[key].dtype), drop_names)
 
             yield n, sam_ev, sam_idx[idx_m]
+
+    def _set_solid_angle(self):
+        """
+        Setup solid angles of injection area for selected MC events and sources.
+
+        Overriden to use only 'band' mode and different upper/lower ranges per
+        source, as set up in ``fit``. Only sets up the solid angle here, band
+        boundaries have been calculated in ``fit`` to not break inheritance.
+
+        Sets up private class variable:
+
+        - ``_omega``, dict of arrays: Solid angle in radians of each injection
+          region for each source sample.
+        """
+        assert self._mode == "band"
+        self._omega = {}
+        for key, _srcs in self._srcs.items():
+            # Solid angles of selected events around each source
+            min_sin_dec = np.sin(self._min_dec[key])
+            max_sin_dec = np.sin(self._min_dec[key])
+            self._omega[key] = 2. * np.pi * (max_sin_dec - min_sin_dec)
+            assert (len(self._min_dec[key]) == len(self._max_dec[key]) ==
+                    len(self._omega[key]) == self._nsrcs[key])
+        return
