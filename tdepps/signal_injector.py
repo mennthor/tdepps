@@ -36,7 +36,7 @@ class SignalInjector(object):
 
         (default: 'band')
 
-    inj_width : float, optinal
+    inj_width : float, optional
         Angular size of the regions from which MC events are injected, in
         radians.
 
@@ -219,50 +219,12 @@ class SignalInjector(object):
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
-        if not isinstance(MC, dict):  # Work consistently with dicts
-            MC = {-1: MC}
-            self._keymap = {-1: -1}  # Trivial wrappers for consistency
-            self._enummap = {-1: -1}
-        else:  # Map dict names to int keys for use as indices and vice-versa
-            self._keymap = {key: i for key, i in zip(srcs.keys(),
-                                                     np.arange(len(srcs)))}
-            self._enummap = {enum: key for key, enum in self._keymap.items()}
-
-        if not isinstance(srcs, dict):  # Work consistently with dicts
-            srcs = {-1: srcs}
-        else:  # Keys must be equivalent to MC keys
-            if viewkeys(MC) != viewkeys(srcs):
-                raise ValueError("Keys in `MC` and `srcs` don't match.")
-
-        # Check each recarray's names
-        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
-        for n in required_names:
-            for key, srcs_i in srcs.items():
-                if n not in srcs_i.dtype.names:
-                    raise ValueError("Source recarray '" +
-                                     "{}' is missing name '{}'.".format(key, n))
-
-        if not isinstance(exp_names, dict):
-            exp_names = {-1: exp_names}
-        required_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
-        for n in required_names:
-            for key, exp_ni in exp_names.items():
-                if n not in exp_ni:
-                    raise ValueError("`exp_names` is missing name " +
-                                     "'{}' at key '{}'.".format(n, key))
-
-        for key, mc_i in MC.items():
-            MC_names = exp_names[key] + ("trueRa", "trueDec", "trueE", "ow")
-            for n in MC_names:
-                if n not in mc_i.dtype.names:
-                    e = "MC sample '{}' is missing name '{}'.".format(key, n)
-                    raise ValueError(e)
-
+        srcs, MC, exp_names = self._check_fit_input(srcs, MC, exp_names)
         self._exp_names = exp_names
-
-        # Set injection solid angles for all sources
         self._srcs = srcs
         self._nsrcs = {key: len(srcs_i) for key, srcs_i in srcs.items()}
+
+        # Set injection solid angles for all sources
         self._set_solid_angle()
 
         # Check if sin_dec_range is OK with the used source positions
@@ -645,6 +607,56 @@ class SignalInjector(object):
 
         return src_t + times_rel / self._SECINDAY
 
+    def _check_fit_input(self, srcs, MC, exp_names):
+        """
+        Check if input to the ``fit`` method is OK. Parameters like in ``fit``.
+        """
+        # MC structure is the blueprint for all others
+        if not isinstance(MC, dict):  # Work consistently with dicts
+            MC = {-1: MC}
+            self._keymap = {-1: -1}  # Trivial wrappers for consistency
+            self._enummap = {-1: -1}
+        else:  # Map dict names to int keys for use as indices and vice-versa
+            self._keymap = {key: i for key, i in zip(MC.keys(),
+                                                     np.arange(len(MC)))}
+            self._enummap = {enum: key for key, enum in self._keymap.items()}
+
+        # Work consistently with dicts
+        if not isinstance(srcs, dict):
+            srcs = {-1: srcs}
+        if not isinstance(exp_names, dict):
+            exp_names = {-1: exp_names}
+
+        # Keys must be equivalent to MC keys
+        if viewkeys(MC) != viewkeys(srcs):
+            raise ValueError("Keys in `MC` and `srcs` don't match.")
+        if viewkeys(MC) != viewkeys(exp_names):
+            raise ValueError("Keys in `MC` and `exp_names` don't match.")
+
+        # Check if each recarray has it's required names
+        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
+        for n in required_names:
+            for key, srcs_i in srcs.items():
+                if n not in srcs_i.dtype.names:
+                    raise ValueError("Source recarray '" +
+                                     "{}' is missing name '{}'.".format(key, n))
+
+        required_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
+        for n in required_names:
+            for key, exp_ni in exp_names.items():
+                if n not in exp_ni:
+                    raise ValueError("`exp_names` is missing name " +
+                                     "'{}' at key '{}'.".format(n, key))
+
+        for key, mc_i in MC.items():
+            MC_names = exp_names[key] + ("trueRa", "trueDec", "trueE", "ow")
+            for n in MC_names:
+                if n not in mc_i.dtype.names:
+                    e = "MC sample '{}' is missing name '{}'.".format(key, n)
+                    raise ValueError(e)
+
+        return srcs, MC, exp_names
+
     def __str__(self):
         """
         Use to print all settings: `>>> print(sig_inj_object)`
@@ -685,13 +697,49 @@ class SignalInjector(object):
         return rep
 
 
-class SystematicSignalInjector(SignalInjector):
+class HealpySignalInjector(SignalInjector):
     """
+    Healpy Signal Injector
+
     Inject signal events not at a fixed source position but according to a
     healpy prior map.
     If fixed source positions are tested in the analysis, this injection should
     decrease sensitivity systematically.
+    Injection mode is constrained to ``band`` here.
+
+    Parameters
+    ----------
+    gamma : float
+        Index of an unbroken power law :math:`E^{-\gamma}` which is used to
+        describe the energy flux of signal events.
+    inj_width : float, optional
+        This is different form the `SignalInjector` behaviour because depending
+        on the prior localization we may select a different bandwidth for each
+        source. ``inj_width`` is the minimum selection bandwidth, preventing the
+        band to become too small for very narrow priors. Is therefore used in
+        combination with the new attribute ``inj_sigma``.
+        (default: ``np.deg2rad(2)``)
+    inj_sigma : float, optional
+        Angular size in sigma around each source region from the prior map from
+        which MC events are injected. Use in combination with ``inj_width``
+        to make sure, the injection band is wide enough. (default: ``3.``)
+    sin_dec_range : array-like, shape (2), optional
+        Boundaries for which injected events are discarded, when their rotated
+        coordinates are outside this bounds. Is useful, when a zenith cut is
+        used and the PDFs are not defined on the whole sky.
+        (default: ``[-1, 1]``)
+    random_state : seed, optional
+        Turn seed into a ``np.random.RandomState`` instance. See
+        ``sklearn.utils.check_random_state``. (default: ``None``)
     """
+    def __init__(self, gamma, inj_width=np.deg2rad(2), inj_sigma=3.,
+                 sin_dec_range=[-1., 1.], random_state=None):
+        if (inj_sigma <= 0.) or (inj_sigma > np.pi):
+            raise ValueError("Injection sigma must be in (0, pi].")
+        self._inj_sigma = inj_sigma
+        return super(HealpySignalInjector, self).__init__(
+            gamma, "band", inj_width, sin_dec_range, random_state)
+
     def fit(self, srcs, src_maps, MC, exp_names):
         """
         Fill injector with Monte Carlo events, preselecting events around the
@@ -753,56 +801,15 @@ class SystematicSignalInjector(SignalInjector):
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
-        # MC structure is the blueprint for all others
-        if not isinstance(MC, dict):  # Work consistently with dicts
-            MC = {-1: MC}
-            self._keymap = {-1: -1}  # Trivial wrappers for consistency
-            self._enummap = {-1: -1}
-        else:  # Map dict names to int keys for use as indices and vice-versa
-            self._keymap = {key: i for key, i in zip(MC.keys(),
-                                                     np.arange(len(MC)))}
-            self._enummap = {enum: key for key, enum in self._keymap.items()}
-
-        # Work consistently with dicts
-        if not isinstance(srcs, dict):
-            srcs = {-1: srcs}
-        if not isinstance(exp_names, dict):
-            exp_names = {-1: exp_names}
-        if not isinstance(src_maps, dict):
-            src_maps = {-1: src_maps}
-
-        # Keys must be equivalent to MC keys
-        if viewkeys(MC) != viewkeys(srcs):
-            raise ValueError("Keys in `MC` and `srcs` don't match.")
-        if viewkeys(MC) != viewkeys(exp_names):
-            raise ValueError("Keys in `MC` and `exp_names` don't match.")
-        if viewkeys(src_maps) != viewkeys(exp_names):
-            raise ValueError("Keys in `MC` and `src_maps` don't match.")
-
-        # Check if each recarray has it's required names
-        required_names = ["ra", "dec", "t", "dt0", "dt1", "w_theo"]
-        for n in required_names:
-            for key, srcs_i in srcs.items():
-                if n not in srcs_i.dtype.names:
-                    raise ValueError("Source recarray '" +
-                                     "{}' is missing name '{}'.".format(key, n))
-
-        required_names = ["ra", "sinDec", "logE", "sigma", "timeMJD"]
-        for n in required_names:
-            for key, exp_ni in exp_names.items():
-                if n not in exp_ni:
-                    raise ValueError("`exp_names` is missing name " +
-                                     "'{}' at key '{}'.".format(n, key))
-
-        for key, mc_i in MC.items():
-            MC_names = exp_names[key] + ("trueRa", "trueDec", "trueE", "ow")
-            for n in MC_names:
-                if n not in mc_i.dtype.names:
-                    e = "MC sample '{}' is missing name '{}'.".format(key, n)
-                    raise ValueError(e)
+        srcs, MC, exp_names = self._check_fit_input(srcs, MC, exp_names)
 
         # Check if prior maps are valid healpy maps and all have same resolution
         # and if there is a map for every source
+        if not isinstance(src_maps, dict):
+            src_maps = {-1: src_maps}
+        if viewkeys(src_maps) != viewkeys(MC):
+            raise ValueError("Keys in `MC` and `src_maps` don't match.")
+
         map_lens = []
         for key, maps_i in src_maps.items():
             if hp.maptype(maps_i) == 0:
@@ -816,30 +823,56 @@ class SystematicSignalInjector(SignalInjector):
             map_lens.append(map(len, maps_i))
 
         map_lens = np.concatenate(map_lens)
-        self.NSIDE = len(map_lens[0])
+        self._NSIDE = len(map_lens[0])
         if not np.all(map_lens == self.NSIDE):
             raise ValueError("Not all given 'src_maps' have the same length.")
         if not hp.isnsideok(self.NSIDE):
             raise ValueError("Given `src_maps` don't have proper resolution.")
 
+        def get_nsigma_dec_band(pdf_map, sigma=3.):
+            """
+            Get the ns sigma declination band around a source position from a
+            prior healpy normal space PDF map.
+
+            Parameters
+            ----------
+            pdf_map : array-like
+                Healpy PDF map.
+            sigma : int, optional
+                How many sigmas the band should measure. For sigmas, Wilk's
+                theorem is assumed
+
+            Returns
+            -------
+            min_dec, max_dec : float
+                Lower / upper border of the n sigma declination band, in radian.
+            """
+            # Get n sigma level from Wilk's theorem
+            level = np.amax(pdf_map) * scs.chi2.sf(sigma**2, df=2)
+            # Select pixels inside contour
+            m = (pdf_map >= level)
+            pix = np.arange(len(pdf_map))[m]
+            # Convert to ra, dec and get min(dec), max(dec) for the band
+            NSIDE = hp.get_nside(pdf_map)
+            th, phi = hp.pix2ang(NSIDE, pix)
+            dec, _ = ThetaPhi2DecRa(th, phi)
+            return np.amin(dec), np.amax(dec)
+
         # Now widen the injection bandwidth to match the 3 sigma band around
         # each source. Use Wilks' theorem to estimate the 3 sigma value.
         # We select from the interval [3sig_band-inj, 3sig_band+inj] per src.
-        sigma = scs.chi2.sf(x=3**2, df=2)
-        # Normalize maps to sum P = 1 for np.random.choice and read of pixels
-        # with map(logllh) - sigma to construct injection band
-        pixels = {}
+        inj_bws = {}
         for key, maps_i in src_maps.items():
-            for mapi in maps_i:
-                max_idx = np.argmax(mapi)
-                max_llh = mapi[max_idx]
-                pix_idx = np.where(mapi >= max_llh * sigma)
-                # Get max dec coordinate for the selected pixels
-                dec, _ = ThetaPhi2DecRa(*hp.pix2ang(self.NSIDE, pix_idx))
+            inj_bws[key] = []
+            for map_i in maps_i:
+                min_dec, max_dec = get_nsigma_dec_band(map_i, self._inj_sigma)
+                inj_bws.append([min_dec, max_dec])
+
+        # Normalize maps to sum P = 1 for np.random.choice
 
 
 
-        super(SystematicSignalInjector, self).__init__(srcs, MC, exp_names)
+        super(HealpySignalInjector, self).fit(srcs, MC, exp_names)
         return
 
     def sample(self, mean_mu, poisson=True):
