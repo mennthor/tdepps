@@ -285,7 +285,7 @@ def weighted_cdf(x, val, weights=None):
     return cdf, err
 
 
-def ThetaPhi2DecRa(theta, phi):
+def ThetaPhiToDecRa(theta, phi):
     """
     Convert healpy theta, phi coordinates to equatorial ra, dec coordinates.
     ``phi`` and right-ascension are assumed to be the same value, declination is
