@@ -96,8 +96,7 @@ class SignalInjector(object):
         self._raw_flux = None
         self._sample_w = None
 
-        self._keymap = None
-        self._enummap = None
+        self._key2enum = None
         self._SECINDAY = 24. * 60. * 60.
 
         # Debug flag. Set True and injection bands get calculated as in skylab
@@ -244,7 +243,7 @@ class SignalInjector(object):
         self._MC = dict()
 
         # Loop all samples
-        for key in self._keymap.keys():
+        for key in self._key2enum.keys():
             _nsrcs = self._nsrcs[key]
             _min_dec = self._min_dec[key]
             _max_dec = self._max_dec[key]
@@ -294,8 +293,8 @@ class SignalInjector(object):
             # Same src id for each selected evt per src (rows in core_mask)
             mc_arr['src_idx'] = np.repeat(np.arange(_nsrcs),
                                           np.sum(core_mask, axis=1))
-            # Repeat enum id for each sample
-            mc_arr["enum"] = self._keymap[key] * np.ones(n_tot, dtype=np.int)
+            # Repeat enum ID for each sample
+            mc_arr["enum"] = self._key2enum[key] * np.ones(n_tot, dtype=np.int)
 
             self._mc_arr = np.append(self._mc_arr, mc_arr)
 
@@ -341,7 +340,7 @@ class SignalInjector(object):
             raise ValueError("Injector has not been filled with MC data yet.")
 
         # Only one sample, src memberships are unambigious
-        if len(self._keymap) == 1:
+        if len(self._key2enum) == 1 and list(self._key2enum.keys())[0] == -1:
             src_ra = self._srcs[-1]["ra"]
             src_dec = self._srcs[-1]["dec"]
             src_t = self._srcs[-1]["t"]
@@ -377,8 +376,7 @@ class SignalInjector(object):
             sam_ev = dict()
             # Total mask to filter out events rotated outside `sin_dec_range`
             idx_m = np.zeros_like(sam_idx, dtype=bool)
-            for enum in self._enummap.keys():
-                key = self._enummap[enum]
+            for key, enum in self._key2enum.items():
                 if enum in enums:
                     # Get source positions for the correct sample
                     _src_ra = self._srcs[key]["ra"]
@@ -454,10 +452,10 @@ class SignalInjector(object):
 
         w = []
         self._raw_flux_per_sample = {}
-        for key in self._keymap.keys():
+        for key in self._key2enum.keys():
             srcs = self._srcs[key]
             mc_i = self._MC[key]
-            enum_mask = (self._mc_arr["enum"] == self._keymap[key])
+            enum_mask = (self._mc_arr["enum"] == self._key2enum[key])
 
             src_idx = self._mc_arr[enum_mask]["src_idx"]
 
@@ -621,13 +619,10 @@ class SignalInjector(object):
         # Setup mapping from keys to integer enums and vice-versa
         if len(MC.keys()) == 1 and list(MC.keys())[0] == -1:
             # Trivial wrappers for consistency
-            self._keymap = {-1: -1}
-            self._enummap = {-1: -1}
+            self._key2enum = {-1: -1}
         else:
-            self._keymap = {key: enum for key, enum in
+            self._key2enum = {key: enum for key, enum in
                             zip(MC.keys(), np.arange(len(MC)))}
-            self._enummap = {enum: key for key, enum in
-                             self._keymap.items()}
 
         # Keys must be equivalent to MC keys
         if viewkeys(MC) != viewkeys(srcs):
@@ -982,7 +977,7 @@ class HealpySignalInjector(SignalInjector):
         pix2dec, pix2ra = ThetaPhiToDecRa(th, phi)
 
         # Prepare other fixed elements to save time during eckersampling
-        if len(self._keymap) == 1 and list(self._keymap.keys())[0] == -1:
+        if len(self._key2enum) == 1 and list(self._key2enum.keys())[0] == -1:
             # Only one sample, src memberships are unambigious
             src_t = self._srcs[-1]["t"]
             src_dt = np.vstack((self._srcs[-1]["dt0"],
@@ -1006,11 +1001,11 @@ class HealpySignalInjector(SignalInjector):
                 return pix2ra[idx], pix2dec[idx]
         else:
             src_dt = {}
-            for key in self._keymap.keys():
+            for key in self._key2enum.keys():
                 src_dt[key] = np.vstack((self._srcs[key]["dt0"],
                                          self._srcs[key]["dt1"])).T
             idx = {key: np.zeros(self._nsrcs[key], dtype=int) - 1
-                   for key in self._keymap.keys()}
+                   for key in self._key2enum.keys()}
 
             def sample_src_positions():
                 """
@@ -1066,8 +1061,7 @@ class HealpySignalInjector(SignalInjector):
             sam_ev = dict()
             # Total mask to filter out events rotated outside `sin_dec_range`
             idx_m = np.zeros_like(sam_idx, dtype=bool)
-            for enum in self._enummap.keys():
-                key = self._enummap[enum]
+            for key, enum in self._key2enum.items():
                 if enum in enums:
                     # Get source positions for the correct sample
                     _src_ra = src_ra[key]
