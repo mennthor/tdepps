@@ -231,13 +231,6 @@ class SignalInjector(object):
         # Set injection solid angles for all sources
         self._set_solid_angle()
 
-        # Check if sin_dec_range is OK with the used source positions
-        for key, srcs_i in srcs.items():
-            if (np.any(np.sin(srcs_i["dec"]) < self._sin_dec_range[0]) |
-                    np.any(np.sin(srcs_i["dec"]) > self._sin_dec_range[1])):
-                raise ValueError("Source position(s) outside `sin_dec_range` " +
-                                 "in `srcs` array for sample {}.".format(key))
-
         # Store selected event ids in mc_arr to sample from a single array
         # ev_idx: event ID per sam., src_idx: src ID per sam., enum: sample ID
         # ev_idx : [ 1, 5,11,47,58,66,70,93, ..., 0, 4, 7,12,24,71,86, ...]
@@ -659,6 +652,13 @@ class SignalInjector(object):
                     e = "MC sample '{}' is missing name '{}'.".format(key, n)
                     raise ValueError(e)
 
+        # Check if `sin_dec_range` is OK with the given source positions
+        for key, srcs_i in srcs.items():
+            if (np.any(np.sin(srcs_i["dec"]) < self._sin_dec_range[0]) |
+                    np.any(np.sin(srcs_i["dec"]) > self._sin_dec_range[1])):
+                raise ValueError("Source position(s) outside `sin_dec_range` " +
+                                 "in `srcs` array for sample {}.".format(key))
+
         return srcs, MC, exp_names
 
     def __str__(self):
@@ -862,34 +862,37 @@ class HealpySignalInjector(SignalInjector):
         self._max_dec = {}
         min_sin_dec_bandwidth = np.sin(self._inj_width)
         A, B = self._sin_dec_range
+        Adec, Bdec = np.arcsin(self._sin_dec_range)
         for key, maps_i in src_maps.items():
             # Get band min / max from n sigma prior contour
             self._min_dec[key] = []
             self._max_dec[key] = []
-            for map_i in maps_i:
+            for i, map_i in enumerate(maps_i):
                 min_dec, max_dec = self.get_nsigma_dec_band(map_i,
                                                             self._inj_sigma)
-                assert min_dec < max_dec
+                assert min_dec <= srcs[key]["dec"][i] <= max_dec
                 self._min_dec[key].append(min_dec)
                 self._max_dec[key].append(max_dec)
-            self._min_dec[key] = np.maximum(self._min_dec[key], A)
-            self._max_dec[key] = np.minimum(self._max_dec[key], B)
+            self._min_dec[key] = np.maximum(self._min_dec[key], Adec)
+            self._max_dec[key] = np.minimum(self._max_dec[key], Bdec)
+            assert not np.any(self._max_dec[key] < srcs[key]["dec"])
+            assert not np.any(srcs[key]["dec"] < self._min_dec[key])
 
             # Check that all bands are larger than requested minimum size
-            # if self._skylab_band:
-            #     m = (A - B + 2. * min_sin_dec_bandwidth) / (A - B)
-            #     b = min_sin_dec_bandwidth * (A + B) / (B - A)
-            #     sin_dec = m * np.sin(srcs[key]["dec"]) + b
-            # else:
-            #     sin_dec = np.sin(srcs[key]["dec"])
-            # min_sin_dec = np.maximum(A, sin_dec - min_sin_dec_bandwidth)
-            # max_sin_dec = np.minimum(B, sin_dec + min_sin_dec_bandwidth)
-            # min_dec = np.arcsin(np.clip(min_sin_dec, -1., 1.))
-            # max_dec = np.arcsin(np.clip(max_sin_dec, -1., 1.))
-            # assert (len(min_dec) == len(max_dec) ==
-            #         len(self._min_dec[key]) == len(self._min_dec[key]))
-            # self._min_dec[key] = np.maximum(self._min_dec[key], min_dec)
-            # self._max_dec[key] = np.minimum(self._max_dec[key], max_dec)
+            if self._skylab_band:
+                m = (A - B + 2. * min_sin_dec_bandwidth) / (A - B)
+                b = min_sin_dec_bandwidth * (A + B) / (B - A)
+                sin_dec = m * np.sin(srcs[key]["dec"]) + b
+            else:
+                sin_dec = np.sin(srcs[key]["dec"])
+            min_sin_dec = np.maximum(A, sin_dec - min_sin_dec_bandwidth)
+            max_sin_dec = np.minimum(B, sin_dec + min_sin_dec_bandwidth)
+            min_dec = np.arcsin(np.clip(min_sin_dec, -1., 1.))
+            max_dec = np.arcsin(np.clip(max_sin_dec, -1., 1.))
+            assert (len(min_dec) == len(max_dec) ==
+                    len(self._min_dec[key]) == len(self._min_dec[key]))
+            self._min_dec[key] = np.minimum(self._min_dec[key], min_dec)
+            self._max_dec[key] = np.maximum(self._max_dec[key], max_dec)
 
         # Re-normalize maps to sum P = 1 for np.random.choice sampling
         for key, maps_i in src_maps.items():
@@ -1062,8 +1065,8 @@ class HealpySignalInjector(SignalInjector):
                 key = self._enummap[enum]
                 if enum in enums:
                     # Get source positions for the correct sample
-                    _src_ra = src_ras[key]
-                    _src_dec = src_decs[key]
+                    _src_ra = src_ra[key]
+                    _src_dec = src_dec[key]
                     _src_t = self._srcs[key]["t"]
                     _src_dt = src_dt[key]
                     # Select events per sample
@@ -1106,8 +1109,10 @@ class HealpySignalInjector(SignalInjector):
         for key, _srcs in self._srcs.items():
             # Solid angles of selected events around each source
             min_sin_dec = np.sin(self._min_dec[key])
-            max_sin_dec = np.sin(self._min_dec[key])
+            max_sin_dec = np.sin(self._max_dec[key])
             self._omega[key] = 2. * np.pi * (max_sin_dec - min_sin_dec)
+            assert np.all(0. < self._omega[key])
+            assert np.all(self._omega[key] <= 4. * np.pi)
             assert (len(self._min_dec[key]) == len(self._max_dec[key]) ==
                     len(self._omega[key]) == self._nsrcs[key])
         return
