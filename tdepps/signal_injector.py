@@ -6,6 +6,7 @@ from future import standard_library
 from future.utils import viewkeys
 standard_library.install_aliases()
 
+from copy import deepcopy
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
 import scipy.stats as scs
@@ -71,8 +72,11 @@ class SignalInjector(object):
             raise ValueError("Injection width must be in (0, pi].")
         self._inj_width = inj_width
 
+        sin_dec_range = np.atleast_1d(sin_dec_range)
         if (sin_dec_range[0] < -1.) or (sin_dec_range[1] > 1.):
             raise ValueError("`sin_dec_range` must be range [a, b] in [-1, 1].")
+        if sin_dec_range[0] >= sin_dec_range[1]:
+            raise ValueError("`sin_dec_range=[low, high]` must be increasing.")
         self._sin_dec_range = sin_dec_range
 
         self.rndgen = random_state
@@ -738,8 +742,16 @@ class HealpySignalInjector(SignalInjector):
             raise ValueError("Injection sigma must be >0.")
         self._inj_sigma = inj_sigma
 
+        # Set private attributes' default values
+        self._NSIDE = None
+        self._NPIX = None
+
         return super(HealpySignalInjector, self).__init__(
             gamma, "band", inj_width, sin_dec_range, random_state)
+
+    @property
+    def inj_sigma(self):
+        return self._inj_sigma
 
     def fit(self, srcs, src_maps, MC, exp_names):
         """
@@ -817,6 +829,7 @@ class HealpySignalInjector(SignalInjector):
         if viewkeys(src_maps) != viewkeys(MC):
             raise ValueError("Keys in `MC` and `src_maps` don't match.")
 
+        src_maps = deepcopy(src_maps)
         map_lens = []
         for key, maps_i in src_maps.items():
             if hp.maptype(maps_i) == 0:
@@ -828,13 +841,13 @@ class HealpySignalInjector(SignalInjector):
                 raise ValueError("For sample '{}' ".format(key) +
                                  "there are not as many maps as srcs given.")
             map_lens.append(map(len, maps_i))
-
         map_lens = np.concatenate(map_lens)
-        self._NSIDE = len(map_lens[0])
-        if not np.all(map_lens == self._NSIDE):
-            raise ValueError("Not all given 'src_maps' have the same length.")
+        self._NPIX = map_lens[0]
+        self._NSIDE = hp.npix2nside(self._NPIX)
         if not hp.isnsideok(self._NSIDE):
             raise ValueError("Given `src_maps` don't have proper resolution.")
+        if not np.all(map_lens == self._NPIX):
+            raise ValueError("Not all given 'src_maps' have the same length.")
 
         # Test if maps are valid PDFs on the unit sphere (m>=0 and sum(m*dA)=1)
         dA = hp.nside2pixarea(self._NSIDE)
@@ -844,50 +857,39 @@ class HealpySignalInjector(SignalInjector):
                 raise ValueError("Not all given maps for key '{}'".format(key) +
                                  " are valid PDFs on the unit sphere.")
 
-        def get_nsigma_dec_band(pdf_map, sigma=3.):
-            """
-            Get the ns sigma declination band around a source position from a
-            prior healpy normal space PDF map.
-
-            Parameters
-            ----------
-            pdf_map : array-like
-                Healpy PDF map.
-            sigma : int, optional
-                How many sigmas the band should measure. For sigmas, Wilk's
-                theorem is assumed
-
-            Returns
-            -------
-            min_dec, max_dec : float
-                Lower / upper border of the n sigma declination band, in radian.
-            """
-            # Get n sigma level from Wilk's theorem
-            level = np.amax(pdf_map) * scs.chi2.sf(sigma**2, df=2)
-            # Select pixels inside contour
-            m = (pdf_map >= level)
-            pix = np.arange(len(pdf_map))[m]
-            # Convert to ra, dec and get min(dec), max(dec) for the band
-            NSIDE = hp.get_nside(pdf_map)
-            th, phi = hp.pix2ang(NSIDE, pix)
-            dec, _ = ThetaPhi2DecRa(th, phi)
-            return np.amin(dec), np.amax(dec)
-
-        # Now widen the injection bandwidth to match the 3 sigma band around
-        # each source. Use Wilks' theorem to estimate the 3 sigma value.
-        # We select from the interval [3sig_band-inj, 3sig_band+inj] per src.
+        # Select the injection band depending on the given source prior maps
         self._min_dec = {}
         self._max_dec = {}
+        min_sin_dec_bandwidth = np.sin(self._inj_width)
+        A, B = self._sin_dec_range
         for key, maps_i in src_maps.items():
+            # Get band min / max from n sigma prior contour
             self._min_dec[key] = []
             self._max_dec[key] = []
             for map_i in maps_i:
-                min_dec, max_dec = get_nsigma_dec_band(map_i, self._inj_sigma)
+                min_dec, max_dec = self.get_nsigma_dec_band(map_i,
+                                                            self._inj_sigma)
                 assert min_dec < max_dec
                 self._min_dec[key].append(min_dec)
                 self._max_dec[key].append(max_dec)
-            self._min_dec[key] = np.clip(self._max_dec[key], -np.pi / 2., None)
-            self._max_dec[key] = np.clip(self._max_dec[key], None, np.pi / 2.)
+            self._min_dec[key] = np.maximum(self._min_dec[key], A)
+            self._max_dec[key] = np.minimum(self._max_dec[key], B)
+
+            # Check that all bands are larger than requested minimum size
+            # if self._skylab_band:
+            #     m = (A - B + 2. * min_sin_dec_bandwidth) / (A - B)
+            #     b = min_sin_dec_bandwidth * (A + B) / (B - A)
+            #     sin_dec = m * np.sin(srcs[key]["dec"]) + b
+            # else:
+            #     sin_dec = np.sin(srcs[key]["dec"])
+            # min_sin_dec = np.maximum(A, sin_dec - min_sin_dec_bandwidth)
+            # max_sin_dec = np.minimum(B, sin_dec + min_sin_dec_bandwidth)
+            # min_dec = np.arcsin(np.clip(min_sin_dec, -1., 1.))
+            # max_dec = np.arcsin(np.clip(max_sin_dec, -1., 1.))
+            # assert (len(min_dec) == len(max_dec) ==
+            #         len(self._min_dec[key]) == len(self._min_dec[key]))
+            # self._min_dec[key] = np.maximum(self._min_dec[key], min_dec)
+            # self._max_dec[key] = np.minimum(self._max_dec[key], max_dec)
 
         # Re-normalize maps to sum P = 1 for np.random.choice sampling
         for key, maps_i in src_maps.items():
@@ -897,8 +899,37 @@ class HealpySignalInjector(SignalInjector):
 
         self._src_maps = src_maps
 
-        super(HealpySignalInjector, self).fit(srcs, MC, exp_names)
-        return
+        return super(HealpySignalInjector, self).fit(srcs, MC, exp_names)
+
+    @staticmethod
+    def get_nsigma_dec_band(pdf_map, sigma=3.):
+        """
+        Get the ns sigma declination band around a source position from a
+        prior healpy normal space PDF map.
+
+        Parameters
+        ----------
+        pdf_map : array-like
+            Healpy PDF map.
+        sigma : int, optional
+            How many sigmas the band should measure. For sigmas, Wilk's
+            theorem is assumed
+
+        Returns
+        -------
+        min_dec, max_dec : float
+            Lower / upper border of the n sigma declination band, in radian.
+        """
+        # Get n sigma level from Wilk's theorem
+        level = np.amax(pdf_map) * scs.chi2.sf(sigma**2, df=2)
+        # Select pixels inside contour
+        m = (pdf_map >= level)
+        pix = np.arange(len(pdf_map))[m]
+        # Convert to ra, dec and get min(dec), max(dec) for the band
+        NSIDE = hp.get_nside(pdf_map)
+        th, phi = hp.pix2ang(NSIDE, pix)
+        dec, _ = ThetaPhi2DecRa(th, phi)
+        return np.amin(dec), np.amax(dec)
 
     def sample(self, mean_mu, poisson=True):
         """
