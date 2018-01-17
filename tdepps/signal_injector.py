@@ -1,7 +1,7 @@
 # coding: utf-8
 
 from __future__ import division, print_function, absolute_import
-from builtins import dict, int, zip
+from builtins import dict, zip
 from future import standard_library
 from future.utils import viewkeys
 standard_library.install_aliases()
@@ -13,7 +13,7 @@ import scipy.stats as scs
 from sklearn.utils import check_random_state
 import healpy as hp
 
-from .utils import rotator, power_law_flux, ThetaPhi2DecRa
+from .utils import rotator, power_law_flux, ThetaPhiToDecRa
 
 
 class SignalInjector(object):
@@ -96,6 +96,8 @@ class SignalInjector(object):
         self._raw_flux = None
         self._sample_w = None
 
+        self._keymap = None
+        self._enummap = None
         self._SECINDAY = 24. * 60. * 60.
 
         # Debug flag. Set True and injection bands get calculated as in skylab
@@ -608,21 +610,24 @@ class SignalInjector(object):
         """
         Check if input to the ``fit`` method is OK. Parameters like in ``fit``.
         """
-        # MC structure is the blueprint for all others
-        if not isinstance(MC, dict):  # Work consistently with dicts
+        # Work consistently with dict. MC is the blueprint for all others
+        if not isinstance(MC, dict):
             MC = {-1: MC}
-            self._keymap = {-1: -1}  # Trivial wrappers for consistency
-            self._enummap = {-1: -1}
-        else:  # Map dict names to int keys for use as indices and vice-versa
-            self._keymap = {key: i for key, i in zip(MC.keys(),
-                                                     np.arange(len(MC)))}
-            self._enummap = {enum: key for key, enum in self._keymap.items()}
-
-        # Work consistently with dicts
         if not isinstance(srcs, dict):
             srcs = {-1: srcs}
         if not isinstance(exp_names, dict):
             exp_names = {-1: exp_names}
+
+        # Setup mapping from keys to integer enums and vice-versa
+        if len(MC.keys()) == 1 and list(MC.keys())[0] == -1:
+            # Trivial wrappers for consistency
+            self._keymap = {-1: -1}
+            self._enummap = {-1: -1}
+        else:
+            self._keymap = {key: enum for key, enum in
+                            zip(MC.keys(), np.arange(len(MC)))}
+            self._enummap = {enum: key for key, enum in
+                             self._keymap.items()}
 
         # Keys must be equivalent to MC keys
         if viewkeys(MC) != viewkeys(srcs):
@@ -842,7 +847,7 @@ class HealpySignalInjector(SignalInjector):
                                  "there are not as many maps as srcs given.")
             map_lens.append(map(len, maps_i))
         map_lens = np.concatenate(map_lens)
-        self._NPIX = map_lens[0]
+        self._NPIX = int(map_lens[0])
         self._NSIDE = hp.npix2nside(self._NPIX)
         if not hp.isnsideok(self._NSIDE):
             raise ValueError("Given `src_maps` don't have proper resolution.")
@@ -931,7 +936,7 @@ class HealpySignalInjector(SignalInjector):
         # Convert to ra, dec and get min(dec), max(dec) for the band
         NSIDE = hp.get_nside(pdf_map)
         th, phi = hp.pix2ang(NSIDE, pix)
-        dec, _ = ThetaPhi2DecRa(th, phi)
+        dec, _ = ThetaPhiToDecRa(th, phi)
         return np.amin(dec), np.amax(dec)
 
     def sample(self, mean_mu, poisson=True):
@@ -969,28 +974,22 @@ class HealpySignalInjector(SignalInjector):
                 raise ValueError("`poisson` is False and `int(mean_mu) < 1` " +
                                  "so there won't be any events sampled.")
 
-        # Prepare some repeating tasks beforehand to save time during sampling
-        if len(self._keymap) == 1:
+        # Prepare fixed pixel index array to choose pixels from
+        pix_ids = np.arange(self._NPIX, dtype=int)
+        pix_ids = pix_ids
+        # Precompute pix2ang conversion, directly in ra, dec
+        th, phi = hp.pix2ang(self._NSIDE, pix_ids)
+        pix2dec, pix2ra = ThetaPhiToDecRa(th, phi)
+
+        # Prepare other fixed elements to save time during eckersampling
+        if len(self._keymap) == 1 and list(self._keymap.keys())[0] == -1:
             # Only one sample, src memberships are unambigious
             src_t = self._srcs[-1]["t"]
             src_dt = np.vstack((self._srcs[-1]["dt0"],
                                 self._srcs[-1]["dt1"])).T
             prior_maps = self._src_maps[-1]
-            idx = np.empty(self._nsrcs[-1])
-        else:
-            src_dt = {}
-            for key in self._srcs.keys():
-                src_dt[key] = np.vstack((self._srcs[key]["dt0"],
-                                         self._srcs[key]["dt1"])).T
+            idx = np.zeros(self._nsrcs[-1], dtype=int) - 1
 
-        # Prepare fixed pixel index array to choose pixels from
-        pix_ids = np.arange(hp.nside2npix(self._NSIDE))
-        # Precompute pix2ang conversion, directly in ra, dec
-        th, phi = hp.pix2ang(self._NSIDE, pix_ids)
-        pix2ra, pix2dec = ThetaPhi2DecRa(th, phi)
-
-        # Predefine function to sample new source positions from
-        if len(self._keymap) == 1:
             def sample_src_positions():
                 """
                 Returns a new set of source position sampled from the given
@@ -1006,6 +1005,13 @@ class HealpySignalInjector(SignalInjector):
                                                  replace=False, p=prior_map_i)
                 return pix2ra[idx], pix2dec[idx]
         else:
+            src_dt = {}
+            for key in self._keymap.keys():
+                src_dt[key] = np.vstack((self._srcs[key]["dt0"],
+                                         self._srcs[key]["dt1"])).T
+            idx = {key: np.zeros(self._nsrcs[key], dtype=int) - 1
+                   for key in self._keymap.keys()}
+
             def sample_src_positions():
                 """
                 Returns a new set of source position sampled from the given
@@ -1019,13 +1025,12 @@ class HealpySignalInjector(SignalInjector):
                 """
                 src_ras = {}
                 src_decs = {}
-                for key, maps_i in self._src_maps.items():
-                    for i, prior_map_i in enumerate(prior_maps):
-                        idx[i] = self._rndgen.choice(pix_ids, size=None,
-                                                     replace=False,
-                                                     p=prior_map_i)
-                    src_ras[key] = pix2ra[idx]
-                    src_decs[key] = pix2dec[idx]
+                for key, prior_maps_i in self._src_maps.items():
+                    for i, prior_map_i in enumerate(prior_maps_i):
+                        idx[key][i] = self._rndgen.choice(
+                            pix_ids, size=None, replace=False, p=prior_map_i)
+                    src_ras[key] = pix2ra[idx[key]]
+                    src_decs[key] = pix2dec[idx[key]]
 
                 return src_ras, src_decs
 
@@ -1047,7 +1052,7 @@ class HealpySignalInjector(SignalInjector):
             src_ra, src_dec = sample_src_positions()
 
             # If only one sample: return single recarray
-            if len(enums) == 1 and enums[0] < 0:
+            if len(enums) == 1 and enums[0] == -1:
                 sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
                 src_idx = sam_idx['src_idx']
                 sam_ev, m = self._rot_and_strip(
