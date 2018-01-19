@@ -203,43 +203,6 @@ def func_min_in_interval(func, interval, nscan=7):
     return func(xmin)
 
 
-def make_ns_poisson_weights(mu, ns):
-    """
-    The values of ns are drawn from poisson PDF with a specific mu.
-    To reuse trials generated from a different mu, we can reweight the ns
-    values to match the current mu.
-
-    Parameters
-    ----------
-    mu : float
-        Possion expectation value, >= 0.
-    ns : array-like
-        ns values from various trials.
-
-    Returns
-    -------
-    weights : array-like
-        Weights to reweights ns values to the poissnian with expectaion mu.
-    hist : array-like
-        Number of events falling in each ns bin.
-    """
-    if mu < 0.:
-        raise ValueError("Poisson expectation 'mu' must be >= 0.")
-    # Bin ns values to assign proper weight
-    hist = np.bincount(ns)
-    nbins = len(hist)
-    bins = np.arange(nbins)
-    # Get probability per bin for current mu
-    pmf = poisson.pmf(bins, mu)
-    # Get weights, split equally per bin
-    weights = np.zeros(nbins)
-    mask = hist > 0.
-    weights[mask] = pmf[mask] / hist[mask]
-    # Reassign weight to per trial ns
-    idx = np.digitize(ns, bins, right=True)
-    return weights[idx], hist
-
-
 def weighted_cdf(x, val, weights=None):
     """
     Calculate the weighted CDF of data ``x`` with weights ``weights``.
@@ -305,6 +268,30 @@ def ThetaPhiToDecRa(theta, phi):
     """
     theta, phi = map(np.atleast_1d, [theta, phi])
     return np.pi / 2. - theta, phi
+
+
+def cos_angdist(ra1, dec1, ra2, dec2):
+    """
+    Great circle angular distance in equatorial coordinates.
+
+    Parameters
+    ----------
+    ra1, dec1 : array-like
+        Position(s) of the source point(s)
+    ra2, dec2 : array-like
+        Position(s) of the target point(s)
+
+    Returns
+    -------
+    cos_dist : array-like
+        Cosine of angular distances from point(s) (ra1, dec1) to (ra2, dec2).
+        Shape depends onn input shapes. If both arrays are 1D they must have the
+        same length and output is 1D too. General broadcasting rules up to 2D
+        should apply.
+    """
+    cos_dist = (np.cos(ra1 - ra2) * np.cos(dec1) * np.cos(dec2) +
+                np.sin(dec1) * np.sin(dec2))
+    return np.clip(cos_dist, -1., 1.)
 
 
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
@@ -481,10 +468,10 @@ def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
         # Norm rotation axis for proper quaternion normalization
         ax = norm(np.cross(p0[:, 1:], p1[:, 1:]))
 
-        cos_ang = np.clip((np.cos(ra1 - ra2) * np.cos(dec1) * np.cos(dec2) +
+        cos_dist = np.clip((np.cos(ra1 - ra2) * np.cos(dec1) * np.cos(dec2) +
                            np.sin(dec1) * np.sin(dec2)), -1., 1.)
 
-        ang = np.arccos(cos_ang).reshape(cos_ang.shape[0], 1)
+        ang = np.arccos(cos_dist).reshape(cos_dist.shape[0], 1)
         ang /= 2.
         a = np.cos(ang)
         ax = ax * np.sin(ang)
