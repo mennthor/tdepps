@@ -12,10 +12,8 @@ import scipy.stats as scs
 import scipy.optimize as sco
 
 from tdepps.llh import GRBLLH, MultiSampleGRBLLH
-from tdepps.utils import (fill_dict_defaults, weighted_cdf,
-                          make_ns_poisson_weights)
+from tdepps.utils import fill_dict_defaults, weighted_cdf
 
-import sys
 from tqdm import tqdm
 
 
