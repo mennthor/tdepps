@@ -94,9 +94,10 @@ class SignalInjector(object):
         self._omega = None
 
         self._raw_flux = None
-        self._sample_w = None
+        self._sample_w_CDF = None
 
         self._key2enum = None
+        self._enum2key = None  # Handy for debugging, not actually used
         self._SECINDAY = 24. * 60. * 60.
 
         # Debug flag. Set True and injection bands get calculated as in skylab
@@ -266,7 +267,7 @@ class SignalInjector(object):
                             np.cos(src_dec) * np.cos(mc_true_dec) +
                             np.sin(src_dec) * np.sin(mc_true_dec))
                 cos_r = np.cos(self._inj_width)
-                inj_mask = cos_dist > cos_r
+                inj_mask = (cos_dist > cos_r)
 
             if not np.any(inj_mask):
                 print("Sample '{:d}': No events were selected!".format(key))
@@ -281,16 +282,16 @@ class SignalInjector(object):
 
             # Total number of selected events, including overlap
             core_mask = (inj_mask.T[total_mask]).T  # Remove all non-selected
-            n_tot = np.count_nonzero(core_mask)  # Equal to count inj_mask
+            n_tot = np.count_nonzero(core_mask)     # Equal to count inj_mask
 
-            # Append all events to sampling array
+            # Append all event IDs (include double selceted) to sampling array
             mc_arr = np.empty(n_tot, dtype=dtype)
 
-            # Bookkeeping: Create id to access the events in the sampling step
-            _core = core_mask.ravel()
-            # Unique id for selected events per sample and per src
+            # Bookkeeping: Create IDs to access the events in the sampling step
+            _core = core_mask.ravel()  # [src1_mask, src2_mask, ...]
+            # Unique IDs regarding all selected events per MC sample
             mc_arr["ev_idx"] = np.tile(np.arange(N_unique), _nsrcs)[_core]
-            # Same src id for each selected evt per src (rows in core_mask)
+            # Same src IDs for each selected evt per src (rows in core_mask)
             mc_arr['src_idx'] = np.repeat(np.arange(_nsrcs),
                                           np.sum(core_mask, axis=1))
             # Repeat enum ID for each sample
@@ -357,14 +358,22 @@ class SignalInjector(object):
                 continue
 
             # Draw IDs from the whole pool of events
-            sam_idx = self._rndgen.choice(self._mc_arr, size=n,
-                                          p=self._sample_w)
+            # Stripped version to avoid `choice` checks on the sampling weights,
+            # which are set up correctly already in `_set_sampling_weights`
+            u = np.random.uniform(size=n)
+            sam_idx = np.searchsorted(self._sample_w_CDF, u, side="right")
+            sam_idx = self._mc_arr[sam_idx]
+
+            # Check which samples have been injected
             enums = np.unique(sam_idx["enum"])
 
+            # TODO: This is unnecessary to do in the while loop, because once
+            # the iterator is built, we already know if we have a single or
+            # multiple samples
             # If only one sample: return single recarray
-            if len(enums) == 1 and enums[0] < 0:
+            if len(enums) == 1 and enums[0] == -1:
                 sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
-                src_idx = sam_idx['src_idx']
+                src_idx = sam_idx["src_idx"]
                 sam_ev, m = self._rot_and_strip(
                     src_ra[src_idx], src_dec[src_idx], sam_ev, key=-1)
                 sam_ev["timeMJD"] = self._sample_times(
@@ -477,9 +486,12 @@ class SignalInjector(object):
         assert np.isclose(np.sum(list(self._raw_flux_per_sample.values())),
                           self._raw_flux)
 
-        # Sampling weights used for injecting events from the whole selection
-        self._sample_w = w / self._raw_flux
-        assert np.isclose(np.sum(self._sample_w), 1.)
+        # Sampling weight CDF used for injecting events from the whole selection
+        self._sample_w_CDF = np.cumsum(w)
+        self._sample_w_CDF = self._sample_w_CDF / self._sample_w_CDF[-1]
+        assert np.isclose(self._sample_w_CDF[-1], 1.)
+        assert np.allclose(self._sample_w_CDF,
+                           np.cumsum(w / np.sum(self._raw_flux)))
 
         return
 
@@ -622,7 +634,9 @@ class SignalInjector(object):
             self._key2enum = {-1: -1}
         else:
             self._key2enum = {key: enum for key, enum in
-                            zip(MC.keys(), np.arange(len(MC)))}
+                              zip(MC.keys(), np.arange(len(MC)))}
+        # For debugging it's handy to simply get the key from an enum
+        self._enum2key = {val: key for key, val in self._key2enum.items()}
 
         # Keys must be equivalent to MC keys
         if viewkeys(MC) != viewkeys(srcs):
@@ -743,8 +757,13 @@ class HealpySignalInjector(SignalInjector):
         self._inj_sigma = inj_sigma
 
         # Set private attributes' default values
+        self._src_map_CDFs = None
         self._NSIDE = None
         self._NPIX = None
+
+        # Debug attributes
+        self._src_ra = None
+        self._src_dec = None
 
         return super(HealpySignalInjector, self).__init__(
             gamma, "band", inj_width, sin_dec_range, random_state)
@@ -894,13 +913,17 @@ class HealpySignalInjector(SignalInjector):
             self._min_dec[key] = np.minimum(self._min_dec[key], min_dec)
             self._max_dec[key] = np.maximum(self._max_dec[key], max_dec)
 
-        # Re-normalize maps to sum P = 1 for np.random.choice sampling
+        # Pre-compute normalized sampling CDFs from the maps for fast sampling
+        self._src_map_CDFs = {}
         for key, maps_i in src_maps.items():
+            self._src_map_CDFs[key] = []
             for i, map_i in enumerate(maps_i):
-                src_maps[key][i] = map_i / np.sum(map_i)
-                assert np.isclose(np.sum(src_maps[key][i]), 1.)
-
-        self._src_maps = src_maps
+                CDF = np.cumsum(map_i)
+                self._src_map_CDFs[key].append(CDF / CDF[-1])
+                assert np.isclose(self._src_map_CDFs[key][i][-1], 1.)
+                assert np.allclose(self._src_map_CDFs[key][i],
+                                   np.cumsum(map_i / np.sum(map_i)))
+                assert len(self._src_map_CDFs[key][i]) == self._NPIX
 
         return super(HealpySignalInjector, self).fit(srcs, MC, exp_names)
 
@@ -969,21 +992,18 @@ class HealpySignalInjector(SignalInjector):
                 raise ValueError("`poisson` is False and `int(mean_mu) < 1` " +
                                  "so there won't be any events sampled.")
 
-        # Prepare fixed pixel index array to choose pixels from
-        pix_ids = np.arange(self._NPIX, dtype=int)
-        pix_ids = pix_ids
         # Precompute pix2ang conversion, directly in ra, dec
-        th, phi = hp.pix2ang(self._NSIDE, pix_ids)
+        th, phi = hp.pix2ang(self._NSIDE, np.arange(self._NPIX))
         pix2dec, pix2ra = ThetaPhiToDecRa(th, phi)
 
-        # Prepare other fixed elements to save time during eckersampling
+        # Prepare other fixed elements to save time during sampling
         if len(self._key2enum) == 1 and list(self._key2enum.keys())[0] == -1:
             # Only one sample, src memberships are unambigious
+            src_map_CDFs = self._src_map_CDFs[-1]
             src_t = self._srcs[-1]["t"]
             src_dt = np.vstack((self._srcs[-1]["dt0"],
                                 self._srcs[-1]["dt1"])).T
-            prior_maps = self._src_maps[-1]
-            idx = np.zeros(self._nsrcs[-1], dtype=int) - 1
+            src_idx = np.zeros(self._nsrcs[-1], dtype=int) - 1
 
             def sample_src_positions():
                 """
@@ -995,17 +1015,17 @@ class HealpySignalInjector(SignalInjector):
                 ra, dec : array-like
                     New source positions sampled from each prior map.
                 """
-                for i, prior_map_i in enumerate(prior_maps):
-                    idx[i] = self._rndgen.choice(pix_ids, size=None,
-                                                 replace=False, p=prior_map_i)
-                return pix2ra[idx], pix2dec[idx]
+                for i, src_map_CDF_i in enumerate(src_map_CDFs):
+                    u = np.random.uniform(size=None)
+                    src_idx[i] = np.searchsorted(src_map_CDF_i, u, side='right')
+                return pix2ra[src_idx], pix2dec[src_idx]
         else:
             src_dt = {}
+            src_idx = {}
             for key in self._key2enum.keys():
                 src_dt[key] = np.vstack((self._srcs[key]["dt0"],
                                          self._srcs[key]["dt1"])).T
-            idx = {key: np.zeros(self._nsrcs[key], dtype=int) - 1
-                   for key in self._key2enum.keys()}
+                src_idx[key] = np.zeros(self._nsrcs[key], dtype=int) - 1
 
             def sample_src_positions():
                 """
@@ -1020,15 +1040,17 @@ class HealpySignalInjector(SignalInjector):
                 """
                 src_ras = {}
                 src_decs = {}
-                for key, prior_maps_i in self._src_maps.items():
-                    for i, prior_map_i in enumerate(prior_maps_i):
-                        idx[key][i] = self._rndgen.choice(
-                            pix_ids, size=None, replace=False, p=prior_map_i)
-                    src_ras[key] = pix2ra[idx[key]]
-                    src_decs[key] = pix2dec[idx[key]]
+                for key, src_map_CDFs_i in self._src_map_CDFs.items():
+                    for i, src_map_CDF_i in enumerate(src_map_CDFs_i):
+                        u = np.random.uniform(size=None)
+                        src_idx[key][i] = np.searchsorted(src_map_CDF_i, u,
+                                                          side='right')
+                    src_ras[key] = pix2ra[src_idx[key]]
+                    src_decs[key] = pix2dec[src_idx[key]]
 
                 return src_ras, src_decs
 
+        # Create the generator part
         while True:
             if poisson:
                 n = self._rndgen.poisson(mean_mu, size=None)
@@ -1039,21 +1061,26 @@ class HealpySignalInjector(SignalInjector):
                 continue
 
             # Draw IDs from the whole pool of events
-            sam_idx = self._rndgen.choice(self._mc_arr, size=n,
-                                          p=self._sample_w)
+            u = np.random.uniform(size=n)
+            sam_idx = np.searchsorted(self._sample_w_CDF, u, side="right")
+            sam_idx = self._mc_arr[sam_idx]
+
+            # Check which samples have been injected
             enums = np.unique(sam_idx["enum"])
 
             # Also draw new src position from prior maps
             src_ra, src_dec = sample_src_positions()
+            # Debug attributes
+            self._src_ra, self._src_dec = src_ra, src_dec
 
             # If only one sample: return single recarray
             if len(enums) == 1 and enums[0] == -1:
                 sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
-                src_idx = sam_idx['src_idx']
+                _src_idx = sam_idx['src_idx']
                 sam_ev, m = self._rot_and_strip(
-                    src_ra[src_idx], src_dec[src_idx], sam_ev, key=-1)
+                    src_ra[_src_idx], src_dec[_src_idx], sam_ev, key=-1)
                 sam_ev["timeMJD"] = self._sample_times(
-                    src_t[src_idx], src_dt[src_idx])[m]
+                    src_t[_src_idx], src_dt[_src_idx])[m]
                 yield n, sam_ev, sam_idx[m]
                 continue
 
@@ -1073,11 +1100,11 @@ class HealpySignalInjector(SignalInjector):
                     idx = sam_idx[enum_m]["ev_idx"]
                     sam_ev_i = np.copy(self._MC[key][idx])
                     # Broadcast corresponding sources for correct rotation
-                    src_idx = sam_idx[enum_m]["src_idx"]
+                    _src_idx = sam_idx[enum_m]["src_idx"]
                     sam_ev[key], m = self._rot_and_strip(
-                        _src_ra[src_idx], _src_dec[src_idx], sam_ev_i, key=key)
+                        _src_ra[_src_idx], _src_dec[_src_idx], sam_ev_i, key)
                     sam_ev[key]["timeMJD"] = self._sample_times(
-                        _src_t[src_idx], _src_dt[src_idx])[m]
+                        _src_t[_src_idx], _src_dt[_src_idx])[m]
                     # Build up the mask for the returned indices 'sam_idx'
                     _idx_m = np.zeros_like(m)
                     _idx_m[m] = True
