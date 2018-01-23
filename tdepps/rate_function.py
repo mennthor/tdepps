@@ -418,33 +418,61 @@ class SinusRateFunction(RateFunction):
         return (a0, b0, c0, d0)
 
 
-class Sinus1yrRateFunction(SinusRateFunction):
+class SinusFixedRateFunction(SinusRateFunction):
     @docs.dedent
-    def __init__(self, random_state=None):
+    def __init__(self, p_fix=None, t0_fix=None, random_state=None):
         """
-        Sinus Rate Function fixing the period to 1 year.
+        Sinus Rate Function but with a-priori fixed period.
 
         Function describes time dependent background rate with fixed period:
 
-        .. math:: f(t|a,c,d) = a \sin((2\pi/\mathrm{365.25}) (t - c)) + d
+        .. math:: f(t|a,b,c,d) = a \sin((2\pi/\mathrm{b}_\mathrm{fix}) (t-c))+d
 
-        depending on 3 parameters:
+        depending on 4 parameters:
 
         - a, float: Amplitude in Hz.
+        - b, float: Period in MJD.
         - c, float: x-axis offset in MJD.
         - d, float: y-axis offset in Hz
+
+        Here we can fix the parameters ``b`` and / or ``c`` and only fit the
+        other ones.
 
         Parameters
         ----------
         t : array-like, shape (nsrcs)
             MJD times of sources.
+        p_fix : float or None
+            Fixed period in MJD days for the sine function. If ``None``, the
+            parameter is not fixed and fitted. If a float is given, the
+            parameter stays fied on that value. (Default: None)
+        t0_fix : float
+            Fixed start time in MJD days for the sine function. If ``None``, the
+            parameter is not fixed and fitted. If a float is given, the
+            parameter stays fied on that value. (Default: None)
         trange : array-like, shape(nsrcs, 2)
             Time windows `[[t0, t1], ...]` in seconds around each time `t`.
         %(RateFunction.init.parameters)s
         """
-        super(Sinus1yrRateFunction, self).__init__(random_state)
+        super(SinusFixedRateFunction, self).__init__(random_state)
 
-        self._b = 2 * np.pi / 365.25
+        # Process which parameters are fixed and which get fitted
+        self._fit_idx = np.ones(4, dtype=bool)
+        self._b = None
+        self._c = None
+
+        if p_fix is not None:
+            if p_fix <= 0.:
+                raise ValueError("Fixed period must be >0 days.")
+            self._fit_idx[1] = False
+            self._b = 2 * np.pi / p_fix
+
+        if t0_fix is not None:
+            self._fit_idx[2] = False
+            self._c = t0_fix
+
+        self._fit_idx = np.arange(4)[self._fit_idx]
+
         return
 
     @docs.dedent
@@ -456,15 +484,14 @@ class Sinus1yrRateFunction(SinusRateFunction):
         ----------
         %(RateFunction.fun.parameters)s
 
-            See :class:`Sinus1yrRateFunction`, Summary
+            See :class:`SinusFixedRateFunction`, Summary
 
         Returns
         -------
         %(RateFunction.fun.returns)s
         """
-        a, c, d = pars
-        pars = (a, self._b, c, d)  # Just inject the fixed par in the super func
-        return super(Sinus1yrRateFunction, self).fun(t, pars)
+        pars = self._make_params(pars)
+        return super(SinusFixedRateFunction, self).fun(t, pars)
 
     @docs.dedent
     def integral(self, t, trange, pars):
@@ -475,15 +502,14 @@ class Sinus1yrRateFunction(SinusRateFunction):
         ----------
         %(RateFunction.integral.parameters)s
 
-            See :class:`Sinus1yrRateFunction`, Summary
+            See :class:`SinusFixedRateFunction`, Summary
 
         Returns
         -------
         %(RateFunction.integral.returns)s
         """
-        a, c, d = pars
-        pars = (a, self._b, c, d)  # Just inject the fixed par in the super func
-        return super(Sinus1yrRateFunction, self).integral(t, trange, pars)
+        pars = self._make_params(pars)
+        return super(SinusFixedRateFunction, self).integral(t, trange, pars)
 
     def _get_default_seed(self, t, rate, w):
         """
@@ -492,6 +518,7 @@ class Sinus1yrRateFunction(SinusRateFunction):
         Motivation for default seed:
 
         - a0 : Using the maximum amplitude in variation of rate bins.
+        - b0 : :math:`2\pi / 365`
         - c0 : Earliest time in `t`.
         - d0 : Weighted averaged rate, which is the best fit value for a
            constant target function.
@@ -504,26 +531,54 @@ class Sinus1yrRateFunction(SinusRateFunction):
         -------
         p0 : tuple, shape (3)
 
-            See :class:`Sinus1yrRateFunction._get_default_seed`, Returns.
-            Here `b` is fixed, so only `(a0, c0, d0)` are returned.
+            See :class:`SinusFixedRateFunction._get_default_seed`, Returns.
+            Here ``b`` and / or ``c`` may be fixed, so only the actual fit
+            parameter seeds are returned.
         """
-        seed = super(Sinus1yrRateFunction, self)._get_default_seed(t, rate, w)
-        # Drop b0 seed, as it's fixed to 1yr here
-        return tuple(seed[i] for i in [0, 2, 3])
+        seed = super(SinusFixedRateFunction,
+                     self)._get_default_seed(t, rate, w)
+        # Drop b0 and / or c0 seed, when it's marked as fixed
+        return tuple(seed[i] for i in self._fit_idx)
+
+    def _make_params(self, pars):
+        """
+        Check which parameters are fixed and insert them where needed to build
+        a full parameter set.
+
+        Parameters
+        ----------
+        pars : tuple
+            See See :py:meth:`fun`, Parameters
+
+        Returns
+        -------
+        pars : tuple
+            Fixed parameters inserted in the full argument list.
+        """
+        if len(pars) != len(self._fit_idx):
+            raise ValueError("Given number of parameters does not match the " +
+                             "number of free parameters here.")
+        # Explicit here, but OK, because we have only 4 combinations
+        if self._b is None:
+            if self._c is None:
+                pars = pars
+            pars = (pars[0], pars[1], self._c, pars[3])
+        elif self._c is None:
+            pars = (pars[0], self._b, pars[2], pars[3])
+        else:
+            pars = (pars[0], self._b, self._c, pars[3])
+        return pars
 
 
-class Sinus1yrConstRateFunction(Sinus1yrRateFunction):
+class SinusFixedConstRateFunction(SinusFixedRateFunction):
     @docs.dedent
     def __init__(self, random_state=None):
         """
-        Same as Sinus1yrRateFunction, but sampling uniform in each interval.
+        Same as SinusFixedRateFunction, but sampling uniform times in each time
+        interval instead of rejection sampling the sine function.
 
-        The difference to ConstantRateFunction is, that the number of events
-        to sample fluctuate with the actual positions of the time windows,
-        because the underlying function is a sinus and not a constant.
-
-        So the number of expected events is still following the seasonal
-        fluctuations, but in the time windows we sample uniformly (step
+        Here the number of expected events is still following the seasonal
+        fluctuations, but within the time windows we sample uniformly (step
         function like). Perfect for small time windows, avoiding rejection
         sampling and thus giving a speed boost.
 
@@ -531,7 +586,7 @@ class Sinus1yrConstRateFunction(Sinus1yrRateFunction):
         ----------
         %(RateFunction.init.parameters)s
         """
-        super(Sinus1yrConstRateFunction, self).__init__(random_state)
+        super(SinusFixedConstRateFunction, self).__init__(random_state)
         return
 
     @docs.dedent
@@ -562,7 +617,8 @@ class ConstantRateFunction(RateFunction):
     @docs.dedent
     def __init__(self, random_state=None):
         """
-        Uses a constant rate in Hz at a given time in MJD.
+        Uses a constant rate in Hz at a given time in MJD. This one models no
+        seasonal fluctuations but describes the rate as a constant.
 
         Uses one parameter:
 
@@ -591,8 +647,7 @@ class ConstantRateFunction(RateFunction):
         -------
         %(RateFunction.fun.returns)s
         """
-        (rate,) = pars
-        return np.ones_like(t) * rate
+        return np.ones_like(t) * pars[0]
 
     @docs.dedent
     def integral(self, t, trange, pars):
