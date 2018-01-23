@@ -198,7 +198,7 @@ class RateFunction(object):
         # t, rate and w are fixed
         args = (t, rate, w)
         res = sco.minimize(fun=self._lstsq, x0=p0, args=args, **kwargs)
-
+        self._res = res
         return res.x
 
     def _lstsq(self, pars, *args):
@@ -280,6 +280,8 @@ class SinusRateFunction(RateFunction):
         self._trange = None
         self._dts = None
         self._fmax = None
+
+        self._names = ["amplitude", "period", "toff", "baseline"]
         return
 
     @docs.dedent
@@ -391,11 +393,14 @@ class SinusRateFunction(RateFunction):
 
         Motivation for default seed:
 
-        - a0 : Using the maximum amplitude in variation of rate bins.
+        - a0 : Using the width of the central 50\% percentile of the rate
+               distribtion (for rates > 0). The sign is determined based on
+               wether the average rates in the first two octants based on the
+               period seed decrese or increase.
         - b0 : The expected seasonal variation is 1 year.
-        - c0 : Earliest time in `t`.
+        - c0 : Earliest time in ``t``.
         - d0 : Weighted averaged rate, which is the best fit value for a
-          constant target function.
+               constant target function.
 
         Parameters
         ----------
@@ -406,16 +411,25 @@ class SinusRateFunction(RateFunction):
         p0 : tuple, shape (4)
             Seed values `(a0, b0, c0, d0)`:
 
-            - a0 : :math:`(\max(\text{rate}) + \min(\text{rate})) / 2`
+            - a0 : ``-np.diff(np.percentile(rate[w > 0], q=[0.25, 0.75])) / 2``
             - b0 : :math:`2\pi / 365`
             - c0 : :math:`\min(t)`
-            - d0 : `np.average(rate, weights=w)`
+            - d0 : ``np.average(rate, weights=w)``
         """
-        a0 = 0.5 * (np.amax(rate) - np.amin(rate))
+        a0 = 0.5 * np.diff(np.percentile(rate[w > 0], q=[0.25, 0.75]))[0]
         b0 = 2. * np.pi / 365.
         c0 = np.amin(t)
         d0 = np.average(rate, weights=w)
-        return (a0, b0, c0, d0)
+
+        # Get the sign of the amplitude a0 depending on wether the average
+        # falls or rises in the first 2 octants of the whole period.
+        m0 = (c0 <= t) & (t <= c0 + 365. / 8.)
+        oct0 = np.average(rate[m0], weights=w[m0])
+        m1 = (c0 <= t + 365. / 8.) & (t <= c0 + 365. / 4.)
+        oct1 = np.average(rate[m1], weights=w[m1])
+        sign = np.sign(oct1 - oct0)
+
+        return (sign * a0, b0, c0, d0)
 
 
 class SinusFixedRateFunction(SinusRateFunction):
@@ -562,11 +576,11 @@ class SinusFixedRateFunction(SinusRateFunction):
         if self._b is None:
             if self._c is None:
                 pars = pars
-            pars = (pars[0], pars[1], self._c, pars[3])
+            pars = (pars[0], pars[1], self._c, pars[2])
         elif self._c is None:
-            pars = (pars[0], self._b, pars[2], pars[3])
+            pars = (pars[0], self._b, pars[1], pars[2])
         else:
-            pars = (pars[0], self._b, self._c, pars[3])
+            pars = (pars[0], self._b, self._c, pars[1])
         return pars
 
 
@@ -628,6 +642,7 @@ class ConstantRateFunction(RateFunction):
         ----------
         %(RateFunction.init.parameters)s
         """
+        self._names = ["baseline"]
         super(ConstantRateFunction, self).__init__(random_state)
         return
 
