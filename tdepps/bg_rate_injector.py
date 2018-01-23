@@ -1,7 +1,7 @@
 # coding: utf-8
 
 from __future__ import print_function, division, absolute_import
-from builtins import dict, open, filter, zip, super
+from builtins import dict, filter, zip, super
 from future import standard_library
 standard_library.install_aliases()
 
@@ -329,6 +329,9 @@ class RunlistBGRateInjector(BGRateInjector):
 
         self._goodrun_dict = self.create_goodrun_dict(runlist, filter_runs)
 
+        # Init private attributes
+        self._rate_rec = None
+
         return
 
     @docs.dedent
@@ -361,14 +364,16 @@ class RunlistBGRateInjector(BGRateInjector):
         # Put data into run bins to fit them
         h = self._create_runtime_hist(T, self._goodrun_dict, remove_zero_runs)
 
-        rate = h["rate"]
-        # Use relativ poisson error as LSQ weights, but ignore empty bins
-        w = np.zeros_like(rate)
-        m = (rate > 0)
-        w[m] = np.sqrt(h["nevts"][m])
+        # Use relativ poisson error as LSQ weights, so more stats means a better
+        # weight in the fit. Empty runs are excluded by zero weights
+        # w = np.sqrt(h["nevts"])
+
+        w = np.zeros_like(h["rate"])
+        m = (h["rate"] > 0)
+        w[m] = 1. / h["rate_std"][m]
         binmids = 0.5 * (h["start_mjd"] + h["stop_mjd"])
 
-        resx = self._rate_func.fit(binmids, rate, p0=x0, w=w, **kwargs)
+        resx = self._rate_func.fit(binmids, h["rate"], p0=x0, w=w, **kwargs)
 
         # Set wrappers for functions with best fit pars plugged in and livetime
         # class variables as promised
@@ -399,6 +404,12 @@ class RunlistBGRateInjector(BGRateInjector):
 
         # This is a list of dicts (one dict per run)
         goodrun_list = runlist["runs"]
+        required_names = ["good_tstart", "good_tstop", "run"]
+        for idx, val in enumerate(goodrun_list):
+            for key in required_names:
+                if key not in val.keys():
+                    raise KeyError("Runlist item '{}'' ".format(idx) +
+                                   "is missing required key '{}'.".format(key))
 
         # Filter to remove unwanted runs
         goodrun_list = list(filter(filter_runs, goodrun_list))
@@ -465,6 +476,8 @@ class RunlistBGRateInjector(BGRateInjector):
         tot_evts = np.sum(evts)
         assert tot_evts == np.sum(mask)
 
+        # Commented out for now, because the runlists given for the used samples
+        # don't seem to include all events correctly...
         # Crosscheck, if we got all events and didn't double count
         # tot_mask = np.any(mask, axis=0)
         # if not tot_evts == len(T):
@@ -499,8 +512,8 @@ class RunlistBGRateInjector(BGRateInjector):
         runtime = stop_mjd - start_mjd
         rate = evts / (runtime * self._SECINDAY)
 
-        # Calculate 1 / sqrt(N) stddev for scaled rates
-        rate_std = np.sqrt(rate) / np.sqrt(runtime * self._SECINDAY)
+        # Calculate poisson sqrt(N) stddev for scaled rates
+        rate_std = np.sqrt(evts) / (runtime * self._SECINDAY)
 
         # Create record-array
         names = ["run", "rate", "runtime", "start_mjd",
