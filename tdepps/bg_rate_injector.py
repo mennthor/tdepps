@@ -335,7 +335,7 @@ class RunlistBGRateInjector(BGRateInjector):
         return
 
     @docs.dedent
-    def fit(self, T, x0=None, remove_zero_runs=False, **kwargs):
+    def fit(self, T, x0=None, ignore_zero_runs=False, **kwargs):
         """
         %(BGRateInjector.fit.summary)s
 
@@ -343,16 +343,19 @@ class RunlistBGRateInjector(BGRateInjector):
         normalizes to a rate in HZ and fits a RateFunction over the whole
         time span to it. This function serves as a rate per time model.
 
-
         Parameters
         ----------
         %(BGRateInjector.fit.parameters)s
         x0 : array-like, optional
             Seed values for the fit function as described above. If None,
             defaults from `RateFunction` are used. (default: None)
-        remove_zero_runs : bool, optional
-            If True, remove all runs with zero events and adapt the livetime.
-            (default: False)
+        ignore_zero_runs : bool, optional
+            If ``True`` runs with zero events are ignored by setting the fit
+            weight to zero. Otherwise they receive the minimum weight.
+            This method of BG estimation doesn't work well, if we have many zero
+            events runs because the baseline gets biased towards zero. If this
+            is a wanted effect of the event selection and many runs have no
+            events, then a different method should be used. (Default: False)
         kwargs
             Other arguments are passed to the `scipy.optimize.minimize` method.
 
@@ -362,7 +365,7 @@ class RunlistBGRateInjector(BGRateInjector):
             Rate function with the best fit parameters plugged in.
         """
         # Put data into run bins to fit them
-        h = self._create_runtime_hist(T, self._goodrun_dict, remove_zero_runs)
+        h = self._create_runtime_hist(T, self._goodrun_dict)
 
         # Use relativ poisson error as LSQ weights, so more stats means a better
         # weight in the fit. Empty runs are excluded by zero weights
@@ -371,6 +374,8 @@ class RunlistBGRateInjector(BGRateInjector):
         w = np.zeros_like(h["rate"])
         m = (h["rate"] > 0)
         w[m] = 1. / h["rate_std"][m]
+        if not ignore_zero_runs:
+            w[~m] = np.amin(w[m])
         binmids = 0.5 * (h["start_mjd"] + h["stop_mjd"])
 
         resx = self._rate_func.fit(binmids, h["rate"], p0=x0, w=w, **kwargs)
@@ -436,14 +441,14 @@ class RunlistBGRateInjector(BGRateInjector):
         return goodrun_dict
 
     # Private Methods
-    def _create_runtime_hist(self, T, goodrun_dict, remove_zero_runs=False):
+    def _create_runtime_hist(self, T, goodrun_dict):
         """
         Creates time bins [start_MJD_i, stop_MJD_i] for each run i and bins the
         experimental data to calculate the rate for each run.
 
         Parameters
         ----------
-        T, remove_zero_runs
+        T, ignore_zero_runs
             See :py:meth:`RunlistBGRateInjector.fit`, Parameters
         goodrun_dict
             See :py:meth:`RunlistBGRateInjector.create_goodrun_dict`, Returns
@@ -492,21 +497,6 @@ class RunlistBGRateInjector(BGRateInjector):
         #     err += "  Indices:\n    {}".format(", ".join(
         #         ["{}".format(i) for i in idx_left]))
         #     raise ValueError(err)
-
-        if remove_zero_runs:
-            # Remove all zero event runs
-            m = (evts > 0)
-            if np.sum(~m) > 0:
-                _livetime = np.sum(stop_mjd[~m] - start_mjd[~m])
-                evts, run = evts[m], run[m]
-                start_mjd, stop_mjd = start_mjd[m], stop_mjd[m]
-                print("Removing runs with zero events")
-                print("  Number of runs with 0 events : " +
-                      "{:d}".format(np.sum(~m)))
-                print("  Total livetime of those runs : " +
-                      "{:.3f} d".format(_livetime))
-            else:
-                print("No runs with zero events found.")
 
         # Normalize to rate in Hz
         runtime = stop_mjd - start_mjd
