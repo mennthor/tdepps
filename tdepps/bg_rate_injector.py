@@ -5,8 +5,6 @@ from builtins import dict, filter, zip, super
 from future import standard_library
 standard_library.install_aliases()
 
-import os
-import json
 import numpy as np
 from astropy.time import Time as astrotime
 from sklearn.utils import check_random_state
@@ -14,6 +12,226 @@ from sklearn.utils import check_random_state
 import abc     # Abstract Base Class
 import docrep  # Reuse docstrings
 docs = docrep.DocstringProcessor()
+
+
+def create_goodrun_dict(runlist_dict, filter_runs):
+    """
+    Create a dict of lists from a runlist of dicts.
+
+    Parameters
+    ----------
+    runlist_dict : dict
+        Dict made from a goodrunlist snapshot from [1]_ loaded from JSON format.
+        Must have key 'runs' at top level which has a list that lists all runs
+        as dictionaries::
+
+            {
+              "runs":[
+                    { ...,
+                      "good_tstart": "YYYY-MM-DD HH:MM:SS",
+                      "good_tstop": "YYYY-MM-DD HH:MM:SS",
+                      "run": 123456,
+                      ... },
+                    {...}, ..., {...}
+                ]
+            }
+
+        Each run dict must at least have keys 'good_tstart', 'good_tstop' and
+        'run'. Times are given in iso formatted strings and run numbers as
+        integers as shown above.
+    filter_runs : function, optional
+        Filter function to remove unwanted runs from the goodrun list. Called
+        as `filter_runs(run)`. Function must operate on a single run dictionary
+        element. If None, every run is used. (default: None)
+
+    Returns
+    -------
+    goodrun_dict : dict
+        Dictionary with run attributes as keys. The values are stored in arrays
+        in each key.
+    """
+    if "runs" not in runlist_dict.keys():
+        raise ValueError("Runlist misses key 'runs' on top level")
+
+    # This is a list of dicts (one dict per run)
+    goodrun_list = runlist_dict["runs"]
+    required_names = ["good_tstart", "good_tstop", "run"]
+    for idx, val in enumerate(goodrun_list):
+        for key in required_names:
+            if key not in val.keys():
+                raise KeyError("Runlist item '{}'' ".format(idx) +
+                               "is missing required key '{}'.".format(key))
+
+    # Filter to remove unwanted runs
+    goodrun_list = list(filter(filter_runs, goodrun_list))
+
+    # Convert the run list of dicts to a dict of arrays for easier handling
+    goodrun_dict = dict(zip(goodrun_list[0].keys(),
+                            zip(*[r.values() for r in goodrun_list])))
+
+    # dicts aren't necessarly sorted, so sort after run id for convenience
+    idx = np.argsort(goodrun_dict["run"])
+    for k in goodrun_dict.keys():
+        goodrun_dict[k] = np.asarray(goodrun_dict[k])[idx]
+
+    # Add start, stop and runtimes in MJD day floats
+    goodrun_dict["good_start_mjd"] = astrotime(
+        goodrun_dict["good_tstart"], format="iso").mjd
+    goodrun_dict["good_stop_mjd"] = astrotime(
+        goodrun_dict["good_tstop"], format="iso").mjd
+    goodrun_dict["runtime_days"] = (goodrun_dict["good_stop_mjd"] -
+                                    goodrun_dict["good_start_mjd"])
+
+    return goodrun_dict
+
+
+def create_runtime_rec(T, goodrun_dict):
+    """
+    Creates time bins ``[start_MJD_i, stop_MJD_i]`` for each run i and bins the
+    experimental data to calculate the rate for each run.
+
+    Parameters
+    ----------
+    T : array_like, shape (n_samples)
+            Per event times in MJD days of experimental data.
+    goodrun_dict : dict
+        Dictionary with run attributes as keys. The values are stored in arrays
+        in each key.
+
+    Returns
+    -------
+    rate_rec : recarray, shape(nruns)
+        Record array with names:
+
+        - "run" : int, ID of the run.
+        - "rate" : float, rate in Hz in this run.
+        - "runtime" : float, livetime of this run in MJD days.
+        - "start_mjd" : float, MJD start time of the run.
+        - "stop_mjd" : float, MJD end time of the run.
+        - "nevts" : int, numver of events in this run.
+        - "rates_std" : float, sqrt(N) stddev of the rate in Hz in this run.
+    """
+    SECINDAY = 24. * 60. * 60.
+    # Store events in bins with run borders, broadcast for fast masking
+    start_mjd = goodrun_dict["good_start_mjd"]
+    stop_mjd = goodrun_dict["good_stop_mjd"]
+    run = goodrun_dict["run"]
+
+    # Histogram time values in each run manually
+    eps = 1. / SECINDAY  # 1 second to account for float errors
+    mask = ((T[:, None] >= start_mjd[None, :] - eps) &
+            (T[:, None] <= stop_mjd[None, :] + eps))
+    evts = np.sum(mask, axis=0)
+    tot_evts = np.sum(evts)
+    assert tot_evts == np.sum(mask)
+
+    # Commented out for now, because the runlists given for the used samples
+    # don't seem to include all events correctly...
+    # Crosscheck, if we got all events and didn't double count
+    # tot_mask = np.any(mask, axis=0)
+    # if not tot_evts == len(T):
+    #     t_left = T[~tot_mask]
+    #     idx_left = np.where(np.isin(T, t_left))
+    #     err = ("Not all events in 'T' were sorted in bins. If this is " +
+    #            "intended, please remove them beforehand.\n")
+    #     err += "  Events selected : {}\n".format(tot_evts)
+    #     err += "  Events in T     : {}\n".format(len(T))
+    #     err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
+    #         ["{}".format(ti) for ti in t_left]))
+    #     err += "  Indices:\n    {}".format(", ".join(
+    #         ["{}".format(i) for i in idx_left]))
+    #     raise ValueError(err)
+
+    # Normalize to rate in Hz, calculate poisson sqrt(N) stddev for scaled rates
+    runtime = stop_mjd - start_mjd
+    rate = evts / (runtime * SECINDAY)
+    rate_std = np.sqrt(evts) / (runtime * SECINDAY)
+
+    # Create record-array
+    names = ["run", "rate", "runtime", "start_mjd",
+             "stop_mjd", "nevts", "rate_std"]
+    types = [int, np.float, np.float, np.float, np.float, int, np.float]
+    dtype = [(n, t) for n, t in zip(names, types)]
+
+    a = np.vstack((run, rate, runtime, start_mjd, stop_mjd, evts, rate_std))
+    rate_rec = np.core.records.fromarrays(a, dtype=dtype)
+
+    return rate_rec
+
+
+def rebin_rate_rec(rate_rec, bins, ignore_zero_runs=True):
+    """
+    Rebin rate per run information. The binning is right exclusice on the start
+    time of an run:
+      ``bins[i] <= rate_rec["start_mjd"] < bins[i+1]``.
+    Therefore the bin borders are not 100% exact, but the included rates are.
+    New bin borders adjustet to start at the first included run are returned, to
+    miniimize the error, but we still shouldn't calculate the event numbers by
+    multiplying bin widths with rates.
+
+    Parameters
+    ----------
+    rate_rec : record-array
+        Rate information as coming out of ``create_runtime_hist``. Needs names
+        ``'start_mjd', 'stop_mjd', 'rate', 'nevts'``.
+    bins : array-like or int
+        New time binning used to rebin the rates.
+    ignore_zero_runs : bool, optional
+        If ``True`` runs with zero events are ignored. This method of BG
+        estimation doesn't work well, if we have many zero events runs because
+        the baseline gets biased towards zero. If this is an effect of the
+        events selection then a different method should be used. (Default: True)
+
+    Returns
+    -------
+    rec : record-array
+        New record array with names:
+
+        - "rate" : float, rebinned rate in Hz in the new bins.
+        - "runtime" : float, real livetime included in the bin in days. This may
+          be less than the binwidth because runs do not immediately follow one
+          another.
+        - "nevts" : int, numver of events in the new bins.
+        - "rates_std" : float, sqrt(N) stddev of the rates in Hz.
+
+    bins : array-like
+        Adjusted bins so that the left borders always start at the first
+        included run and the last right bin at the end of the last included run.
+    """
+    SECINDAY = 24. * 60. * 60.
+    rates, nevts = rate_rec["rate"], rate_rec["nevts"]
+    start, stop = rate_rec["start_mjd"], rate_rec["stop_mjd"]
+    assert np.allclose(nevts, rates * (stop - start) * SECINDAY)
+
+    bins = np.atleast_1d(bins)
+    if len(bins) == 1:  # Use min/max and equidistant bins if only an int given
+        bins = np.linspace(np.amin(start), np.amax(stop), int(bins[0]) + 1)
+
+    new_bins = np.empty_like(bins)
+    rate = np.empty(len(bins) - 1, dtype=float)
+    rate_std = np.empty_like(rate)
+    nevt = np.empty_like(rate)
+    runtime = np.empty_like(rate)
+
+    for i, (lo, hi) in enumerate(zip(bins[:-1], bins[1:])):
+        mask = (lo <= start) & (start < hi)
+        if ignore_zero_runs:
+            mask = mask & (rates > 0)
+        runtime[i] = np.sum(stop[mask] - start[mask])
+        # New mean rate: sum(all events in runs) / sum(real livetimes in runs)
+        nevt[i] = np.sum(nevts[mask])
+        rate[i] = nevt[i] / runtime[i]
+        rate_std[i] = np.sqrt(nevts * SECINDAY) / (runtime[i] * SECINDAY)
+        # Adapt bin edges for output bins
+        new_bins[i] = np.amin(start[mask])
+    new_bins[-1] = np.amax(stop[mask])
+
+    names = ["rate", "runtime", "nevts", "rate_std"]
+    types = [float, float, int, float]
+    dtype = [(n, t) for n, t in zip(names, types)]
+    a = np.vstack((rate, runtime, nevt, rate_std))
+    rate_rec = np.core.records.fromarrays(a, dtype=dtype)
+    return rate_rec, new_bins
 
 
 class BGRateInjector(object):
@@ -75,7 +293,7 @@ class BGRateInjector(object):
         >>>
         >>> # Chose a rate function and a path to a goodrunlist
         >>> rate_func = RateFunc.Sinus1yrRateFunction()
-        >>> runlist = "/path/to/goodrunlist.json"
+        >>> runlist = json.load(open("/path/to/goodrunlist.json"))
         >>> runlist_inj = BGRateInj.RunlistBGRateInjector(runlist, filter_runs,
                                                           rate_func)
         """
@@ -93,7 +311,6 @@ class BGRateInjector(object):
         self._trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
         self._nsrcs = len(srcs)
 
-        self._SECINDAY = 24. * 60. * 60.
         self._livetime = None
         self._best_pars = None
         self._best_estimator = None
@@ -176,10 +393,10 @@ class BGRateInjector(object):
 
         Additionally creates new class attributes:
 
-        - livetime, float: Livetime in days of the given data.
-        - best_pars, tuple: Best fit parameters.
-        - best_estimator, callable: Rate function with `best_pars` plugged in.
-        - best_estimator_integral, callable: Rate function integral with
+        - _livetime, float: Livetime in days of the given data.
+        - _best_pars, tuple: Best fit parameters.
+        - _best_estimator, callable: Rate function with `best_pars` plugged in.
+        - _best_estimator_integral, callable: Rate function integral with
           `best_pars` plugged in.
 
         Parameters
@@ -327,7 +544,7 @@ class RunlistBGRateInjector(BGRateInjector):
             def filter_runs(run):
                 return True
 
-        self._goodrun_dict = self.create_goodrun_dict(runlist, filter_runs)
+        self._goodrun_dict = create_goodrun_dict(runlist, filter_runs)
 
         # Init private attributes
         self._rate_rec = None
@@ -365,157 +582,27 @@ class RunlistBGRateInjector(BGRateInjector):
             Rate function with the best fit parameters plugged in.
         """
         # Put data into run bins to fit them
-        h = self._create_runtime_hist(T, self._goodrun_dict)
+        rate_rec = create_runtime_rec(T, self._goodrun_dict)
+        self._rate_rec = rate_rec
 
         # Use relativ poisson error as LSQ weights, so more stats means a better
         # weight in the fit. Empty runs are excluded by zero weights
-        # w = np.sqrt(h["nevts"])
+        w = np.sqrt(rate_rec["nevts"])
+        # w = np.zeros_like(rate_rec["rate"])
+        # m = (rate_rec["rate"] > 0)
+        # w[m] = 1. / rate_rec["rate_std"][m]
+        # if not ignore_zero_runs:
+        #     w[~m] = np.amin(w[m])
 
-        w = np.zeros_like(h["rate"])
-        m = (h["rate"] > 0)
-        w[m] = 1. / h["rate_std"][m]
-        if not ignore_zero_runs:
-            w[~m] = np.amin(w[m])
-        binmids = 0.5 * (h["start_mjd"] + h["stop_mjd"])
+        binmids = 0.5 * (rate_rec["start_mjd"] + rate_rec["stop_mjd"])
 
-        resx = self._rate_func.fit(binmids, h["rate"], p0=x0, w=w, **kwargs)
+        resx = self._rate_func.fit(binmids, rate_rec["rate"], p0=x0, w=w,
+                                   **kwargs)
 
         # Set wrappers for functions with best fit pars plugged in and livetime
         # class variables as promised
-        self._livetime = np.sum(h["runtime"])
+        self._livetime = np.sum(rate_rec["runtime"])
         return self._set_best_fit(resx)
-
-    @staticmethod
-    def create_goodrun_dict(runlist, filter_runs):
-        """
-        Create a dict of lists from a runlist in JSON format.
-
-        Each entry in each list is one run. Also make sure that the lists are
-        sorted ascending by run number.
-
-        Parameters
-        ----------
-        runlist, filter_runs
-            See :py:meth:`RunlistBGRateInjector`, Parameters
-
-        Returns
-        -------
-        goodrun_dict : dict
-            Dictionary with run attributes as keys. The values are stored in
-            arrays in each key.
-        """
-        if "runs" not in runlist.keys():
-            raise ValueError("Runlist misses key 'runs' on top level")
-
-        # This is a list of dicts (one dict per run)
-        goodrun_list = runlist["runs"]
-        required_names = ["good_tstart", "good_tstop", "run"]
-        for idx, val in enumerate(goodrun_list):
-            for key in required_names:
-                if key not in val.keys():
-                    raise KeyError("Runlist item '{}'' ".format(idx) +
-                                   "is missing required key '{}'.".format(key))
-
-        # Filter to remove unwanted runs
-        goodrun_list = list(filter(filter_runs, goodrun_list))
-
-        # Convert the run list of dicts to a dict of arrays for easier handling
-        goodrun_dict = dict(zip(goodrun_list[0].keys(),
-                                zip(*[r.values() for r in goodrun_list])))
-
-        # Dicts are not necessarly sorted, so sort lists after run id
-        idx = np.argsort(goodrun_dict["run"])
-        for k in goodrun_dict.keys():
-            goodrun_dict[k] = np.asarray(goodrun_dict[k])[idx]
-
-        # Add times to MJD floats
-        goodrun_dict["good_start_mjd"] = astrotime(
-            goodrun_dict["good_tstart"], format="iso").mjd
-        goodrun_dict["good_stop_mjd"] = astrotime(
-            goodrun_dict["good_tstop"], format="iso").mjd
-
-        # Add runtimes in MJD days
-        goodrun_dict["runtime_days"] = (goodrun_dict["good_stop_mjd"] -
-                                        goodrun_dict["good_start_mjd"])
-
-        return goodrun_dict
-
-    # Private Methods
-    def _create_runtime_hist(self, T, goodrun_dict):
-        """
-        Creates time bins [start_MJD_i, stop_MJD_i] for each run i and bins the
-        experimental data to calculate the rate for each run.
-
-        Parameters
-        ----------
-        T, ignore_zero_runs
-            See :py:meth:`RunlistBGRateInjector.fit`, Parameters
-        goodrun_dict
-            See :py:meth:`RunlistBGRateInjector.create_goodrun_dict`, Returns
-
-        Returns
-        -------
-        rate_rec : recarray, shape(nruns)
-            Record array with keys:
-
-            - "run" : int, ID of the run.
-            - "rate" : float, rate in Hz in this run.
-            - "runtime" : float, livetime of this run in MJD days.
-            - "start_mjd" : float, MJD start time of the run.
-            - "stop_mjd" : float, MJD end time of the run.
-            - "nevts" : int, numver of events in this run.
-            - "rates_std" : float, sqrt(N) stddev of the rate in Hz in this run.
-        """
-        # Store events in bins with run borders, broadcast for fast masking
-        start_mjd = goodrun_dict["good_start_mjd"]
-        stop_mjd = goodrun_dict["good_stop_mjd"]
-        run = goodrun_dict["run"]
-
-        # Histogram time values in each run manually
-        eps = 1. / self._SECINDAY  # 1 second to account for float errors
-
-        mask = ((T[:, None] >= start_mjd[None, :] - eps) &
-                (T[:, None] <= stop_mjd[None, :] + eps))
-
-        evts = np.sum(mask, axis=0)
-        tot_evts = np.sum(evts)
-        assert tot_evts == np.sum(mask)
-
-        # Commented out for now, because the runlists given for the used samples
-        # don't seem to include all events correctly...
-        # Crosscheck, if we got all events and didn't double count
-        # tot_mask = np.any(mask, axis=0)
-        # if not tot_evts == len(T):
-        #     t_left = T[~tot_mask]
-        #     idx_left = np.where(np.isin(T, t_left))
-        #     err = ("Not all events in 'T' were sorted in bins. If this is " +
-        #            "intended, please remove them beforehand.\n")
-        #     err += "  Events selected : {}\n".format(tot_evts)
-        #     err += "  Events in T     : {}\n".format(len(T))
-        #     err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
-        #         ["{}".format(ti) for ti in t_left]))
-        #     err += "  Indices:\n    {}".format(", ".join(
-        #         ["{}".format(i) for i in idx_left]))
-        #     raise ValueError(err)
-
-        # Normalize to rate in Hz
-        runtime = stop_mjd - start_mjd
-        rate = evts / (runtime * self._SECINDAY)
-
-        # Calculate poisson sqrt(N) stddev for scaled rates
-        rate_std = np.sqrt(evts) / (runtime * self._SECINDAY)
-
-        # Create record-array
-        names = ["run", "rate", "runtime", "start_mjd",
-                 "stop_mjd", "nevts", "rate_std"]
-        types = [int, np.float, np.float, np.float, np.float, int, np.float]
-        dtype = [(n, t) for n, t in zip(names, types)]
-
-        a = np.vstack((run, rate, runtime, start_mjd, stop_mjd, evts, rate_std))
-        rate_rec = np.core.records.fromarrays(a, dtype=dtype)
-
-        self._rate_rec = rate_rec
-        return rate_rec
 
 
 class BinnedBGRateInjector(BGRateInjector):
