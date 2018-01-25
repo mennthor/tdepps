@@ -1,5 +1,14 @@
 # coding: utf-8
 
+"""
+This is a collection of different function and / or classes that can be used in
+a modular way to create a PDF and injection model class which can be used in the
+LLH analysis.
+When creating a new function it should only work on public interfaces provided
+by the model class. If this can't be realized due to performance / caching
+reasons, then consider coding the functionality directly into a model.
+"""
+
 from __future__ import print_function, division, absolute_import
 from builtins import zip, super
 from future import standard_library
