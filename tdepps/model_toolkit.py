@@ -22,7 +22,7 @@ from sklearn.utils import check_random_state
 
 from awkde import GaussianKDE as KDE
 
-from .utils import rejection_sampling, random_choice
+from .utils import rejection_sampling, random_choice, fill_dict_defaults
 
 
 ##############################################################################
@@ -466,7 +466,7 @@ class Binned3DKDEGeneralPurposeInjector(GeneralPurposeInjector):
 
 
 ##############################################################################
-# Rate functions to fit a BG rate model
+# Rate function classes to fit a BG rate model
 ##############################################################################
 class RateFunction(object):
     """
@@ -497,10 +497,14 @@ class RateFunction(object):
         ``sklearn.utils.check_random_state``. (default: None)
     """
     __metaclass__ = abc.ABCMeta
+    _SECINDAY = 24. * 60. * 60.
 
     def __init__(self, random_state=None):
         self.rndgen = random_state
-        self._SECINDAY = 24. * 60. * 60.
+        # Get set when fitted
+        self._bf_pars = None
+        self._bf_fun = None
+        self._bf_int = None
 
     @property
     def rndgen(self):
@@ -509,6 +513,18 @@ class RateFunction(object):
     @rndgen.setter
     def rndgen(self, random_state):
         self._rndgen = check_random_state(random_state)
+
+    @property
+    def bf_pars(self):
+        return self._bf_pars
+
+    @property
+    def bf_fun(self):
+        return self._bf_fun
+
+    @property
+    def bf_int(self):
+        return self._bf_int
 
     @abc.abstractmethod
     def fun(self, t, pars):
@@ -551,27 +567,28 @@ class RateFunction(object):
         pass
 
     @abc.abstractmethod
-    def sample(self, t, trange, pars, n_samples):
+    def sample(self, n_samples, t, trange, pars):
         """
         Generate random samples from the rate function for multiple source times
         and time windows.
 
         Parameters
         ----------
+        n_samples : array-like, shape (nsrcs)
+            Number of events to sample per source.
         t : array-like, shape (nsrcs)
-            MJD times of sources.
+            MJD times of sources to sample around.
         trange : array-like, shape(nsrcs, 2)
             Time windows ``[[t0, t1], ...]`` in seconds around each time ``t``.
         pars : tuple
-            Further parameters :py:meth:`fun` depends on.
-        n_samples : array-like, shape (nsrcs)
-            Number of events to sample per source.
+            Parameters :py:meth:`fun` depends on.
 
         Returns
         -------
         times : list of arrays, len (nsrcs)
-            Sampled times in MJD of background events per source. If `n_samples`
-            is 0 for a source, an empty arrays is placed at that position.
+            Sampled times in MJD of background events per source. If
+            ``n_samples`` is 0 for a source, an empty array is placed at that
+            position.
         """
         pass
 
@@ -593,11 +610,12 @@ class RateFunction(object):
         Returns
         -------
         p0 : tuple
-            Seed values for each parameter the specific `RateFunction` uses.
+            Seed values for each parameter the specific :py:class:`RateFunction`
+            uses as a staerting point in the :py:meth:`fit`.
         """
         pass
 
-    def fit(self, t, rate, p0=None, w=None, **kwargs):
+    def fit(self, t, rate, p0=None, w=None, minopts=None):
         """
         Fits the function parameters to experimental data using a weighted
         least squares fit.
@@ -614,8 +632,11 @@ class RateFunction(object):
         w : array-like, shape(len(t)), optional
             Weights for least squares fit: :math:`\sum_i (w_i * (y_i - f_i))^2`.
             (default: None)
-        kwargs
-            Other keywords are passed to `scipy.optimize.minimize`.
+        minopts : dict, optional
+            Minimizer options passed to
+            ``scipy.optimize.minimize(method='L-BFGS-B')``. Default settings if
+            given as ``None`` or for missing keys are
+            ``{'ftol': 1e-15, 'gtol': 1e-10, 'maxiter': int(1e3)}``.
 
         Returns
         -------
@@ -628,10 +649,16 @@ class RateFunction(object):
         if p0 is None:
             p0 = self._get_default_seed(t, rate, w)
 
-        # t, rate and w are fixed
-        args = (t, rate, w)
-        res = sco.minimize(fun=self._lstsq, x0=p0, args=args, **kwargs)
-        self._res = res
+        # Setup minimizer options
+        required_keys = []
+        opt_keys = {"ftol": 1e-15, "gtol": 1e-10, "maxiter": int(1e3)}
+        minopts = fill_dict_defaults(minopts, required_keys, opt_keys)
+
+        res = sco.minimize(fun=self._lstsq, x0=p0, args=(t, rate, w),
+                           method="L-BFGS-B", options=minopts)
+        self._bf_fun = (lambda t: self.fun(t, res.x))
+        self._bf_int = (lambda t, trange: self.integral(t, trange, res.x))
+        self._bf_pars = res.x
         return res.x
 
     def _lstsq(self, pars, *args):
@@ -703,17 +730,38 @@ class SinusRateFunction(RateFunction):
     - d, float: y-axis offset in Hz
     """
     # Just to have some info encoded in the class which params we have
-    _param_names = ["amplitude", "period", "toff", "baseline"]
+    _PARAMS = ["amplitude", "period", "toff", "baseline"]
 
     def __init__(self, random_state=None):
         super(SinusRateFunction, self).__init__(random_state)
-        self._t = None
-        self._trange = None
-        self._dts = None
+        # Cached in `fit` for faster rejection sampling
         self._fmax = None
+        self._trange = None
 
-    def fit(self, t, rate, p0=None, w=None, **kwargs):
-        bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, w, **kwargs)
+    def fit(self, t, rate, srcs, p0=None, w=None, minopts=None):
+        """
+        Fit the rate model to discrete points ``(t, rate)``. Cache source values
+        for fast sampling.
+
+        Parameters
+        ----------
+        srcs : record-array
+            Must have names ``'t', 'dt0', 'dt1'`` describing the time intervals
+            around the source times to sample from.
+        """
+        bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, w, minopts)
+
+        # Cache max function values in the fixed source intervals for sampling
+        required_names = ["t", "dt0", "dt1"]
+        for n in required_names:
+            if n not in srcs.dtype.names:
+                raise ValueError("`srcs` recarray is missing name " +
+                                 "'{}'.".format(n))
+        _dts = np.vstack((srcs["dt0"], srcs["dt1"])).T
+        _, _trange = self._transform_trange_mjd(srcs["t"], _dts)
+        self._fmax = self._calc_fmax(_trange[:, 0], _trange[:, 1], pars=bf_pars)
+        self._trange = _trange
+
         return bf_pars
 
     def fun(self, t, pars):
@@ -737,30 +785,38 @@ class SinusRateFunction(RateFunction):
         #     [a / b] = Hz * MJD; [d * (t1 - t0)] = HZ * MJD
         return (per + lin) * self._SECINDAY
 
-    def sample(self, t, trange, pars, n_samples):
-        """ Rejection sample from sinus function """
+    def sample(self, n_samples):
+        """
+        Rejection sample from the fitted sinus function
+
+        Parameters
+        ----------
+        n_samples : array-like
+            How many events to sample per source. Length must match length of
+            cached source positions if any.
+        """
         n_samples = np.atleast_1d(n_samples)
+        if self._bf_pars is None:
+            raise RuntimeError("Rate function was not fit yet.")
+        if len(n_samples) != len(self._fmax):
+            raise ValueError("Requested to sample a different number of " +
+                             "sources than have been fit")
 
-        def sample_fun(t):
-            """ Wrapper to have only one argument. """
-            return self.fun(t, pars)
+        # Just loop over all intervals and rejection sample the src regions
+        for i, (bound, nsam) in enumerate(zip(self._trange, n_samples)):
+            # Draw remaining events until all samples per source are created
+            sample = []
+            while nsam > 0:
+                t = self._rndgen.uniform(bound[0], bound[1], size=nsam)
+                y = self._fmax[i] * self._rndgen.uniform(0, 1, size=nsam)
 
-        # If we always get the same t and trange, cache the fmax values for
-        # faster rejection sampling after the first encounter, else reset
-        if not (np.array_equal(t, self._t) and
-                np.array_equal(trange, self._trange)):
-            # Store the raw input otherwise test is always false
-            self._t = t
-            self._trange = trange
-            _, self._dts = self._transform_trange_mjd(t, trange)
-            self._fmax = None
+                accepted = (y <= self._bf_fun(t))
+                sample += t[accepted].tolist()
+                nsam = np.sum(~accepted)  # Number of remaining samples to draw
 
-        # Samples times for all sources at once
-        times, self._fmax = rejection_sampling(
-            sample_fun, bounds=self._dts, n_samples=n_samples,
-            rndgen=self._rndgen, max_fvals=self._fmax)
+            sample.append(np.array(sample))
 
-        return times
+        return sample
 
     def _get_default_seed(self, t, rate, w):
         """
@@ -801,6 +857,31 @@ class SinusRateFunction(RateFunction):
         sign = np.sign(oct1 - oct0)
 
         return (sign * a0, b0, c0, d0)
+
+    def _calc_fmax(self, t0, t1, pars):
+        """
+        Get the analytic maximum function value in interval ``[t0, t1]`` cached
+        for rejection sampling.
+        """
+        a, b, c, d = pars
+        L = 2. * np.pi / b  # Period length
+        # If we start with a negative sine, then the first max is after 3/4 L
+        if np.sign(a) == 1:
+            step = 1.
+        else:
+            step = 3.
+        # Get dist to first max > c and count how many periods k it is away
+        k = np.ceil((t0 - (c + step * L / 4.)) / L)
+        # Get the closest next maximum to t0 with t0 <= tmax_k
+        tmax_gg_t0 = L / 4. * (step + 4. * k) + c
+
+        # If the next max is <= t1, then fmax must be the global max, else the
+        # highest border
+        fmax = np.zeros_like(t0) + (np.abs(a) + d)
+        m = (tmax_gg_t0 > t1)
+        fmax[m] = np.maximum(self.fun(t0[m], pars), self.fun(t1[m], pars))
+
+        return fmax
 
 
 class SinusFixedRateFunction(SinusRateFunction):
@@ -881,13 +962,26 @@ class SinusFixedConstRateFunction(SinusFixedRateFunction):
     def __init__(self, random_state=None):
         super(SinusFixedConstRateFunction, self).__init__(random_state)
 
-    def sample(self, t, trange, pars, n_samples):
-        """ Just sample uniformly in MJD time windows here. """
-        _, dts = self._transform_trange_mjd(t, trange)
+    def sample(self, n_samples):
+        """
+        Just sample uniformly in MJD time windows here.
+
+        Parameters
+        ----------
+        n_samples : array-like
+            How many events to sample per source. Length must match length of
+            cached source positions if any.
+        """
+        n_samples = np.atleast_1d(n_samples)
+        if self._fmax is None:
+            raise RuntimeError("Rate function was not fit yet.")
+        if len(n_samples) != len(self._fmax):
+            raise ValueError("Requested to sample a different number of " +
+                             "sources than have been fit")
 
         # Samples times for all sources at once
         sample = []
-        for dt, nsam in zip(dts, n_samples):
+        for dt, nsam in zip(self._trange, n_samples):
             sample.append(self._rndgen.uniform(dt[0], dt[1], size=nsam))
 
         return sample
@@ -895,64 +989,80 @@ class SinusFixedConstRateFunction(SinusFixedRateFunction):
 
 class ConstantRateFunction(RateFunction):
     """
-    Uses a constant rate in Hz at a given time in MJD. This one models no
-    seasonal fluctuations but describes the average rate as a constant.
+    Uses a constant rate in Hz at any given time in MJD. This models no seasonal
+    fluctuations but uses the constant average rate.
 
     Uses one parameter:
 
     - rate, float: Constant rate in Hz.
     """
-    _param_names = ["baseline"]
+    _PARAMS = ["baseline"]
 
     def __init__(self, random_state=None):
-        super(ConstantRateFunction, self).__init__(random_state)
-        return
+        self.rndgen = random_state
+        self._trange = None
+
+    def fit(self, rate, srcs, w=None):
+        """ Cache source values for sampling. Fit is the weighted average """
+        if w is None:
+            w = np.ones_like(rate)
+
+        required_names = ["t", "dt0", "dt1"]
+        for n in required_names:
+            if n not in srcs.dtype.names:
+                raise ValueError("`srcs` recarray is missing name " +
+                                 "'{}'.".format(n))
+        _dts = np.vstack((srcs["dt0"], srcs["dt1"])).T
+        _, self._trange = self._transform_trange_mjd(srcs["t"], _dts)
+
+        # Analytic solution to fit
+        bf_pars = self._get_default_seed(rate, w)
+        self._bf_fun = (lambda t: self.fun(t, bf_pars))
+        self._bf_int = (lambda t, trange: self.integral(t, trange, bf_pars))
+        self._bf_pars = bf_pars
+        return bf_pars
 
     def fun(self, t, pars):
-        """
-        Returns a constant rate Hz at any given time in MJD by simply
-        broadcasting the input rate.
-        """
+        """ Returns constant rate Hz at any given time in MJD """
         return np.ones_like(t) * pars[0]
 
     def integral(self, t, trange, pars):
         """
         Analytic integral of the rate function in interval trange. Because the
-        rate function is constant, integral is simply `trange * rate`.
+        rate function is constant, the integral is simply ``trange * rate``.
         """
         t, dts = self._transform_trange_mjd(t, trange)
-        # Multiply first then diff to avoid roundoff errors
+        # Multiply first then diff to avoid roundoff errors(?)
         return (np.diff(dts * self._SECINDAY, axis=1) *
                 self.fun(t, pars)).ravel()
 
-    def sample(self, t, trange, pars, n_samples):
-        """ Sample is exact for this model uniformly in MJD time windows. """
-        _, dts = self._transform_trange_mjd(t, trange)
+    def sample(self, n_samples):
+        n_samples = np.atleast_1d(n_samples)
+        if len(n_samples) != len(self._trange):
+            raise ValueError("Requested to sample a different number of " +
+                             "sources than have been fit")
 
         # Samples times for all sources at once
         sample = []
-        for dt, nsam in zip(dts, n_samples):
+        for dt, nsam in zip(self._trange, n_samples):
             sample.append(self._rndgen.uniform(dt[0], dt[1], size=nsam))
 
         return sample
 
-    def _get_default_seed(self, t, rate, w):
+    def _get_default_seed(self, rate, w):
         """
-        %(RateFunction._get_default_seed.summary)s
-
         Motivation for default seed:
 
         - rate0 : Mean of the given rates. This is the anlytic solution to the
-                  fit, so we seed with the best fit.
+                  fit, so we seed with the best fit. Weights must be squared
+                  though, to get the same result.
 
         Returns
         -------
         p0 : tuple, shape(1)
-            Seed values (rate0):
-
-            - rate0 : ``np.mean(rate)``
+            Seed values ``rate0 = np.average(rate, weights=w**2)``
         """
-        return (np.mean(rate), )
+        return (np.average(rate, weights=w**2), )
 
 
 ##############################################################################
