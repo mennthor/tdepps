@@ -15,7 +15,7 @@ import scipy.optimize as sco
 from scipy.stats import rv_continuous, chi2
 
 
-def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
+def fill_dict_defaults(d, required_keys=None, opt_keys=None, noleft=True):
     """
     Populate dictionary with data from a given dict ``d``, and check if ``d``
     has required and optional keys. Set optionals with default if not present.
@@ -25,31 +25,40 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
 
     Parameters
     ----------
-    d : dict
-        Input dictionary containing the data to be checked.
-    required_keys : list, optional
-        Keys that must be present in ``d``. (default: [])
-    opt_keys : dict, optional
-        Keys that are optional. ``opt_keys`` provides optional keys and the
-        default values, if not present in ``d``. (default: {})
+    d : dict or None
+        Input dictionary containing the data to be checked. If is ``None``, then
+        a copy of ``opt_keys`` is returned. If ``opt_keys`` is ``None``, a
+        ``TypeError`` is raised. If ``d``is ``None`` and ``required_keys`` is
+        not, then a ``ValueError`` israised.
+    required_keys : list or None, optional
+        Keys that must be present  and set in ``d``. (default: None)
+    opt_keys : dict or None, optional
+        Keys that are optional. ``opt_keys`` provides optional keys and default
+        values ``d`` is filled with if not present in ``d``. (default: None)
     noleft : bool, optional
-        If True, raises a KeyError, when ``d`` contains more keys, than given in
-        ``required_keys`` and ``opt_keys``. (default: True)
+        If True, raises a ``KeyError``, when ``d`` contains etxra keys, other
+        than those given in ``required_keys`` and ``opt_keys``. (default: True)
 
     Returns
     -------
     out : dict
-        Contains all required and optional keys with default values, where
-        optional keys where missing.
-        If ``d`` is None, returns only the ``opt_keys`` dict.
+        Contains all required and optional keys, using default values, where
+        optional keys were missing. If ``d`` was None, a copy of ``opt_keys`` is
+        returned, if ``opt_keys`` was not ``None``.
     """
+    if required_keys is None:
+        required_keys = []
+    if opt_keys is None:
+        opt_keys = {}
     if d is None:
         if not required_keys:
-            return opt_keys
+            if opt_keys is None:
+                raise TypeError("`d` and òpt_keys` are both None.")
+            return opt_keys.copy()
         else:
-            raise ValueError("Dict is None, but 'required_keys' is not empty.")
+            raise ValueError("`d` is None, but `required_keys` is not empty.")
 
-    d = d.copy()  # Copy to not destroy the original dict
+    d = d.copy()
     out = {}
     # Set required keys
     for key in required_keys:
@@ -62,7 +71,7 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
         out[key] = d.pop(key, val)
     # Complain when extra keys are left and noleft is True
     if d and noleft:
-        raise KeyError("Keys ['{}'] not used in dict `d`.".format(
+        raise KeyError("Leftover keys ['{}'].".format(
             "', '".join(list(d.keys()))))
     return out
 
