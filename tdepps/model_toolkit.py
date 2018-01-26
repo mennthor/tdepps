@@ -4,9 +4,10 @@
 This is a collection of different function and / or classes that can be used in
 a modular way to create a PDF and injection model class which can be used in the
 LLH analysis.
-When creating a new function it should only work on public interfaces provided
-by the model class. If this can't be realized due to performance / caching
-reasons, then consider coding the functionality directly into a model.
+When creating a new function it should only work on public interfaces and data
+provided by the model class. If this can't be realized due to performance /
+caching reasons, then consider coding the functionality directly into a model to
+benefit from direct class attributes.
 """
 
 from __future__ import print_function, division, absolute_import
@@ -14,50 +15,490 @@ from builtins import zip, super
 from future import standard_library
 standard_library.install_aliases()
 
+import abc
 import numpy as np
 import scipy.optimize as sco
 from sklearn.utils import check_random_state
 
-from .utils import rejection_sampling, func_min_in_interval
+from awkde import GaussianKDE as KDE
 
-import abc     # Abstract Base Class
-import docrep  # Reuse docstrings
-docs = docrep.DocstringProcessor()
+from .utils import rejection_sampling, random_choice
 
 
-class RateFunction(object):
+##############################################################################
+# Background injector methods
+##############################################################################
+class GeneralPurposeInjector(object):
+    """
+    General Purpose Injector Base Class
+
+    Base class for generating events from a given record array.
+    Classes must implement methods:
+
+    - ``fun``
+    - ``sample``
+
+    Class object then provides public methods:
+
+    - ``fun``
+    - ``sample``
+
+    Parameters
+    ----------
+    random_state : None, int or np.random.RandomState, optional
+        Turn seed into a ``np.random.RandomState`` instance. (default: None)
+
+    Example
+    -------
+    >>> # Example for a special class which resamples directly from an array
+    >>> from tdepps.model_toolkit import DataGPInjector as inj
+    >>> # Generate some test data
+    >>> n_evts, n_features = 100, 3
+    >>> X = np.random.uniform(0, 1, size=(n_evts, n_features))
+    >>> X = np.core.records.fromarrays(X.T, names=["logE", "dec", "sigma"])
+    >>> # Fit injector and let it resample from the pool of testdata
+    >>> inj.fit(X)
+    >>> sample = inj.sample(n_samples=1000)
+    """
     __metaclass__ = abc.ABCMeta
 
-    @docs.get_sectionsf("RateFunction.init", sections=["Parameters"])
-    @docs.dedent
     def __init__(self, random_state=None):
+        self.rndgen = random_state
+        # Setup private defaults
+        self._X_names = None
+        self._n_features = None
+
+    @property
+    def rndgen(self):
+        return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
+
+    @abc.abstractmethod
+    def fit(self, X):
         """
-        Rate Function Base Class
-
-        Base class for rate functions describing time dependent background
-        rates. Rate function must be interpretable as a PDF and must not be
-        negative.
-
-        Classes must implement methods:
-
-        - `fun`
-        - `integral`
-        - `sample`
-        - `_get_default_seed`
-
-        Class object then provides public methods:
-
-        - `fun`
-        - `integral`
-        - `fit`
-        - `sample`
+        Build the injection model with the provided data.
 
         Parameters
         ----------
-        random_state : seed, optional
-            Turn seed into a `np.random.RandomState` instance. See
-            `sklearn.utils.check_random_state`. (default: None)
+        X : record-array
+            Data named array.
         """
+        pass
+
+    @abc.abstractmethod
+    def sample(self, n_samples=1):
+        """
+        Generate random samples from the fitted model.
+
+        Parameters
+        ----------
+        n_samples : int, optional
+            Number of samples to generate. (default: 1)
+
+        Returns
+        -------
+        X : record-array
+            Generated samples from the fitted model. Has the same names as the
+            given record-array X in `fit`.
+        """
+        pass
+
+    def _check_bounds(self, bounds):
+        """
+        Check if bounds are OK. Create numerical values when None is given.
+
+        Returns
+        -------
+        bounds : array-like, shape (n_features, 2)
+            Boundary conditions for each dimension. Unconstrained axes have
+            bounds ``[-np.inf, +np.inf]``.
+        """
+        if bounds is None:
+            bounds = np.repeat([[-np.inf, np.inf], ],
+                               repeats=self._n_features, axis=0)
+
+        bounds = np.array(bounds)
+        if bounds.shape[1] != 2 or (bounds.shape[0] != len(self._X_names)):
+            raise ValueError("Invalid `bounds`. Must be shape (n_features, 2).")
+
+        # Convert None to +-np.inf depnding on low/hig bound
+        bounds[:, 0][bounds[:, 0] == np.array(None)] = -np.inf
+        bounds[:, 1][bounds[:, 1] == np.array(None)] = +np.inf
+
+        return bounds
+
+    def _check_X_names(self, X):
+        """ Check if given input ``X`` is valid and extract names. """
+        try:
+            _X_names = X.dtype.names
+        except AttributeError:
+            raise AttributeError("`X` must be a record array with dtype.names.")
+
+        self._n_features = len(_X_names)
+        self._X_names = _X_names
+
+        return X
+
+
+class KDEGeneralPurposeInjector(GeneralPurposeInjector):
+    """
+    Adaptive Bandwidth Kernel Density Background Injector.
+
+    Parameters
+    ----------
+    kde : awkde.GaussianKDE
+        Adaptive width KDE model. If an already fitted model is given,
+        th ``fit`` step can be called with ``X=None`` to avoid refitting,
+        which can take some time when many points with adaptive kernels are
+        used.
+    random_state : None, int or np.random.RandomState, optional
+        Turn seed into a ``np.random.RandomState`` instance. (default: None)
+    """
+    def __init__(self, kde, random_state=None):
+        super(KDEGeneralPurposeInjector, self).__init__(random_state)
+        self.kde_model = kde
+
+    @property
+    def kde_model(self):
+        return self._kde_model
+
+    @kde_model.setter
+    def kde_model(self, kde_model):
+        if not isinstance(kde_model, KDE):
+            raise TypeError("`kde_model` must be an instance of " +
+                            "`awkde.GaussianKDE`")
+        self._kde_model = kde_model
+
+    # PUBLIC
+    def fit(self, X, bounds=None):
+        """
+        Fit a KDE model to the given data.
+
+        Parameters
+        ----------
+        X : record-array or list
+            Data named array. If list it is checked if the given KDE model is
+            already fitted and usable and fits to the given names. This can be
+            used to reuse an already existing KDE model for injection. Be
+            careful that the fitted model has the data stored in the same order
+            as in the list ``X``.
+        bounds : None or array-like, shape (n_features, 2)
+            Boundary conditions for each dimension. If ``None``,
+            ``[-np.inf, +np.inf]`` is used in each dimension.
+            (default: ``None``)
+        """
+        # TODO: Use advanced bounds via mirror method in KDE class.
+        # Currently bounds are used to resample events that fall outside
+        if hasattr(X, "__iter__"):
+            if self._kde_model._std_X is None:
+                raise ValueError("Given KDE model is not ready to use and " +
+                                 "must be fitted first. Give an explicit " +
+                                 "to fit the model.")
+            if len(X) != self._kde_model._std_X.shape[1]:
+                raise ValueError("Given names `X` do not have the same " +
+                                 "dimension as the given KDE instance.")
+            if not all(map(lambda s: isinstance(s, str), X)):
+                raise TypeError("`X` is not a list of string names.")
+            self._n_features = len(X)
+            self._X_names = np.array(X)
+        elif isinstance(X, np.ndarray):
+            X = self._check_X_names(X)
+            # Turn record-array in normal 2D array for more general KDE class
+            X = np.vstack((X[n] for n in self._X_names)).T
+            self._kde_model.fit(X)
+        else:
+            raise ValueError("`X` is neither None  nor a record array to " +
+                             "fit a the given KDE model to.")
+
+        assert (self._n_features == self._kde_model._std_X.shape[1])
+        self._bounds = self._check_bounds(bounds)
+
+    def sample(self, n_samples=1):
+        """ Sample from a KDE model that has been build on given data. """
+        if self._n_features is None:
+            raise RuntimeError("Injector was not fit to data yet.")
+
+        # Return empty recarray with all keys, when n_samples < 1
+        dtype = [(n, float) for n, f in self._X_names]
+        if n_samples < 1:
+            return np.empty(0, dtype=dtype)
+
+        # Resample until all sample points are inside bounds
+        X = []
+        bounds = self._bounds
+        while n_samples > 0:
+            gen = self._kde_model.sample(n_samples, self._rndgen)
+            accepted = np.all(np.logical_and(gen >= bounds[:, 0],
+                                             gen <= bounds[:, 1]), axis=1)
+            n_samples = np.sum(~accepted)
+            # Append accepted to final sample
+            X.append(gen[accepted])
+
+        # Concat sampled array list and convert to single record-array
+        return np.core.records.fromarrays(np.concatenate(X).T, dtype=dtype)
+
+
+class DataGeneralPurposeInjector(GeneralPurposeInjector):
+    """
+    Data injector selecting random data events from the given sample.
+    """
+    def __init__(self, random_state=None):
+        super(DataGeneralPurposeInjector, self).__init__(random_state)
+
+    def fit(self, X, weights=None):
+        """
+        Build the injection model with the provided data. Here the model is
+        simply the data itself.
+
+        Parameters
+        ----------
+        X : record-array
+            Data named array.
+        weights : array-like, shape(len(X)), optional
+            Weights used to sample from ``X``. If ``None`` all weights are
+            equal. (default: ``None``)
+        """
+        self._X = self._check_X_names(X)
+        nevts = len(self._X)
+        if weights is None:
+            weights = np.ones(nevts, dtype=float) / float(nevts)
+        elif len(weights) != nevts:
+            raise ValueError("'weights' must have same length as `X`.")
+        # Normalize sampling weights and create sampling CDF
+        CDF = np.cumsum(weights)
+        self._CDF = CDF / CDF[-1]
+
+    def sample(self, n_samples=1):
+        """
+        Sample by choosing random events from the given data.
+        """
+        if self._n_features is None:
+            raise RuntimeError("Injector was not fit to data yet.")
+
+        # Return empty array with all keys, when n_samples < 1
+        dtype = [(n, float) for n, f in self._X_names]
+        if n_samples < 1:
+            return np.empty(0, dtype=dtype)
+
+        # Choose uniformly from given data
+        idx = random_choice(rndgen=self._rndgen, CDF=self._CDF, n=n_samples)
+        return self._X[idx]
+
+
+class Binned3DKDEGeneralPurposeInjector(GeneralPurposeInjector):
+    """
+    Injector binning up data space in `[a x b x c]` bins with equal statistics
+    and then sampling uniformly from those bins. Only works with 3 dimensional
+    data arrays.
+    """
+    def __init__(self, random_state=None):
+        super(Binned3DKDEGeneralPurposeInjector, self).__init__(random_state)
+
+    def fit(self, X, nbins=10, minmax=False):
+        """
+        Build the injection model with the provided data, dimension fixed to 3.
+
+        Parameters
+        ----------
+        X : record-array
+            Experimental data named array.
+        nbins : int or array-like, shape(n_features), optional
+
+            - If int, same number of bins is used for all dimensions.
+            - If array-like, number of bins for each dimension is used.
+
+            (default: 10)
+
+        minmax : bool or array-like, optional
+            Defines the outermost bin edges for the 2nd and 3rd feature:
+
+                - If False, use the min/max values in the current 1st (2nd)
+                  feature bin.
+                - If True, use the global min/max values per feature.
+                - If array-like: Use the given edges as global min/max values
+                  per feature. Must then have shape (3, 2):
+                  ``[[min1, max1], [min2, max2], [min3, max3]]``.
+
+            (default: False)
+
+        Returns
+        -------
+        ax0_bins : array-like, shape (nbins[0] + 1)
+            The bin borders for the first dimension.
+        ax1_bins : array-like, shape (nbins[0], nbins[1] + 1)
+            The bin borders for the second dimension.
+        ax2_bins : array-like, shape (nbins[0], nbins[1], nbins[2] + 1)
+            The bin borders for the third dimension.
+        """
+        def bin_equal_stats(data, nbins, minmax=None):
+            """
+            Bin with nbins of equal statistics by using percentiles.
+
+            Parameters
+            ----------
+            data : array-like, shape(n_samples)
+                The data to bin.
+            nbins : int
+                How many bins to create, must be smaller than len(data).
+            minmax : array-like, shape (2), optional
+                If [min, max] these values are used for the outer bin edges. If
+                None, the min/max of the given data is used. (default: None)
+
+            Returns
+            -------
+            bins : array-like
+                (nbins + 1) bin edges for the given data.
+            """
+            if nbins > len(data):
+                raise ValueError("Cannot create more bins than datapoints.")
+            nbins += 1  # We need 1 more edge than bins
+            if minmax is not None:
+                # Use global min/max for outermost bin edges
+                bins = np.percentile(data, np.linspace(0, 100, nbins)[1:-1])
+                return np.hstack((minmax[0], bins, minmax[1]))
+            else:
+                # Else just use the bounds from the given data
+                return np.percentile(data, np.linspace(0, 100, nbins))
+
+        # Turn record-array in normal 2D array as it is easier to handle here
+        X = self._check_X_names(X)
+        if self._n_features != 3:
+            raise ValueError("Only 3 dimensions supported here.")
+        X = np.vstack((X[n] for n in self._X_names)).T
+
+        # Repeat bins, if only int was given
+        nbins = np.atleast_1d(nbins)
+        if (len(nbins) == 1) and (len(nbins) != self._n_features):
+            nbins = np.repeat(nbins, repeats=self._n_features)
+        elif len(nbins) != self._n_features:
+            raise ValueError("Given 'nbins' does not match dim of data.")
+        self._nbins = nbins
+
+        # Get bounding box, we sample the maximum distance in each direction
+        if minmax is True:
+            minmax = np.vstack((np.amin(X, axis=0), np.amax(X, axis=0))).T
+        elif isinstance(minmax, np.ndarray):
+            if minmax.shape != (self._n_features, 2):
+                raise ValueError("'minmax' must have shape (3, 2) if edges " +
+                                 "are given explicitely.")
+        else:
+            minmax = self._n_features * [None]
+
+        # First axis is the main binning and only an 1D array
+        ax0_dat = X[:, 0]
+        ax0_bins = bin_equal_stats(ax0_dat, nbins[0], minmax[0])
+
+        # 2nd axis array has bins[1] bins per bin in ax0_bins, so it's 2D
+        ax1_bins = np.zeros((nbins[0], nbins[1] + 1))
+        # 3rd axis is 3D: nbins[2] bins per bin in ax0_bins and ax1_bins
+        ax2_bins = np.zeros((nbins[0], nbins[0], nbins[2] + 1))
+
+        # Fill bins by looping over all possible combinations
+        for i in range(nbins[0]):
+            # Bin left inclusive, except last bin
+            m = (ax0_dat >= ax0_bins[i]) & (ax0_dat < ax0_bins[i + 1])
+            if (i == nbins[1] - 1):
+                m = (ax0_dat >= ax0_bins[i]) & (ax0_dat <= ax0_bins[i + 1])
+
+            # Bin ax1 subset of data in current ax0 bin
+            _X = X[m]
+            ax1_dat = _X[:, 1]
+            ax1_bins[i] = bin_equal_stats(ax1_dat, nbins[1], minmax[1])
+
+            # Directly proceed to axis 2 and repeat procedure
+            for k in range(nbins[1]):
+                m = ((ax1_dat >= ax1_bins[i, k]) &
+                     (ax1_dat < ax1_bins[i, k + 1]))
+                if (k == nbins[2] - 1):
+                    m = ((ax1_dat >= ax1_bins[i, k]) &
+                         (ax1_dat <= ax1_bins[i, k + 1]))
+
+                # Bin ax2 subset of data in current ax0 & ax1 bin
+                ax2_bins[i, k] = bin_equal_stats(_X[m][:, 2],
+                                                 nbins[2], minmax[2])
+
+        self._ax0_bins = ax0_bins
+        self._ax1_bins = ax1_bins
+        self._ax2_bins = ax2_bins
+        return ax0_bins, ax1_bins, ax2_bins
+
+    def sample(self, n_samples=1):
+        """
+        Sample pseudo events uniformly from each bin.
+        """
+        if self._n_features is None:
+            raise RuntimeError("Injector was not fit to data yet.")
+
+        # Return empty array with all keys, when n_samples < 1
+        dtype = [(n, float) for n, f in self._X_names]
+        if n_samples < 1:
+            return np.empty(0, dtype=dtype)
+
+        # Sample indices to select from which bin is injected
+        ax0_idx = self._rndgen.randint(0, self._nbins[0], size=n_samples)
+        ax1_idx = self._rndgen.randint(0, self._nbins[1], size=n_samples)
+        ax2_idx = self._rndgen.randint(0, self._nbins[2], size=n_samples)
+
+        # Sample uniform in [0, 1] to decide where each point lies in the bins
+        r = self._rndgen.uniform(0, 1, size=(n_samples, self._n_features))
+
+        # Get edges of each bin
+        ax0_edges = np.vstack((self._ax0_bins[ax0_idx],
+                               self._ax0_bins[ax0_idx + 1])).T
+
+        ax1_edges = np.vstack((self._ax1_bins[ax0_idx, ax1_idx],
+                               self._ax1_bins[ax0_idx, ax1_idx + 1])).T
+
+        ax2_edges = np.vstack((self._ax2_bins[ax0_idx, ax1_idx, ax2_idx],
+                               self._ax2_bins[ax0_idx, ax1_idx, ax2_idx + 1])).T
+
+        # Sample uniformly between selected bin edges
+        ax0_pts = ax0_edges[:, 0] + r[:, 0] * np.diff(ax0_edges, axis=1).T
+        ax1_pts = ax1_edges[:, 0] + r[:, 1] * np.diff(ax1_edges, axis=1).T
+        ax2_pts = ax2_edges[:, 0] + r[:, 2] * np.diff(ax2_edges, axis=1).T
+
+        # Combine and convert to record-array
+        return np.core.records.fromarrays(np.vstack((ax0_pts, ax1_pts,
+                                                     ax2_pts)).T, dtype=dtype)
+
+
+##############################################################################
+# Rate functions to fit a BG rate model
+##############################################################################
+class RateFunction(object):
+    """
+    Rate Function Base Class
+
+    Base class for rate functions describing time dependent background
+    rates. Rate function must be interpretable as a PDF and must not be
+    negative.
+
+    Classes must implement methods:
+
+    - ``fun``
+    - ``integral``
+    - ``sample``
+    - ``_get_default_seed``
+
+    Class object then provides public methods:
+
+    - ``fun``
+    - ``integral``
+    - ``fit``
+    - ``sample``
+
+    Parameters
+    ----------
+    random_state : seed, optional
+        Turn seed into a ``np.random.RandomState`` instance. See
+        ``sklearn.utils.check_random_state``. (default: None)
+    """
+    __metaclass__ = abc.ABCMeta
+
+    def __init__(self, random_state=None):
         self.rndgen = random_state
         self._SECINDAY = 24. * 60. * 60.
 
@@ -69,8 +510,6 @@ class RateFunction(object):
     def rndgen(self, random_state):
         self._rndgen = check_random_state(random_state)
 
-    @docs.get_sectionsf("RateFunction.fun", sections=["Parameters", "Returns"])
-    @docs.dedent
     @abc.abstractmethod
     def fun(self, t, pars):
         """
@@ -86,13 +525,10 @@ class RateFunction(object):
         Returns
         -------
         rate : array-like
-            Rate in Hz for each time `t`.
+            Rate in Hz for each time ``t``.
         """
         pass
 
-    @docs.get_sectionsf("RateFunction.integral",
-                        sections=["Parameters", "Returns"])
-    @docs.dedent
     @abc.abstractmethod
     def integral(self, t, trange, pars):
         """
@@ -103,21 +539,17 @@ class RateFunction(object):
         t : array-like, shape (nsrcs)
             MJD times of sources.
         trange : array-like, shape(nsrcs, 2)
-            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
+            Time windows ``[[t0, t1], ...]`` in seconds around each time ``t``.
         pars : tuple
-            Further parameters `self.fun` depends on.
+            Further parameters :py:meth:`fun` depends on.
 
         Returns
         -------
         integral : array-like, shape (nsrcs)
-            Integral of `self.fun` within given time windows `trange`.
+            Integral of :py:meth:`fun` within given time windows ``trange``.
         """
         pass
 
-    @docs.get_summaryf("RateFunction.sample")
-    @docs.get_sectionsf("RateFunction.sample",
-                        sections=["Parameters", "Returns"])
-    @docs.dedent
     @abc.abstractmethod
     def sample(self, t, trange, pars, n_samples):
         """
@@ -129,9 +561,9 @@ class RateFunction(object):
         t : array-like, shape (nsrcs)
             MJD times of sources.
         trange : array-like, shape(nsrcs, 2)
-            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
+            Time windows ``[[t0, t1], ...]`` in seconds around each time ``t``.
         pars : tuple
-            Further parameters `self.fun` depends on.
+            Further parameters :py:meth:`fun` depends on.
         n_samples : array-like, shape (nsrcs)
             Number of events to sample per source.
 
@@ -143,10 +575,6 @@ class RateFunction(object):
         """
         pass
 
-    @docs.get_summaryf("RateFunction._get_default_seed")
-    @docs.get_sectionsf("RateFunction._get_default_seed",
-                        sections=["Parameters"])
-    @docs.dedent
     @abc.abstractmethod
     def _get_default_seed(self, t, trange, w):
         """
@@ -169,10 +597,6 @@ class RateFunction(object):
         """
         pass
 
-    @docs.get_summaryf("RateFunction.fit")
-    @docs.get_sectionsf("RateFunction.fit",
-                        sections=["Parameters", "Returns"])
-    @docs.dedent
     def fit(self, t, rate, p0=None, w=None, **kwargs):
         """
         Fits the function parameters to experimental data using a weighted
@@ -217,7 +641,7 @@ class RateFunction(object):
         Parameters
         ----------
         pars : tuple
-            Fitparameter for `self.fun` that gets fitted.
+            Fitparameter for :py:meth:`fun` that gets fitted.
         args : tuple
             Fixed values `(t, rate, w)` for the loss function:
 
@@ -263,92 +687,48 @@ class RateFunction(object):
 
 
 class SinusRateFunction(RateFunction):
-    @docs.dedent
+    """
+    Sinus Rate Function
+
+    Describes time dependent background rate. Used function is a sinus with:
+
+    .. math:: f(t|a,b,c,d) = a \sin(b (t - c)) + d
+
+    depending on 4 parameters:
+
+    - a, float: Amplitude in Hz.
+    - b, float: Angular frequency, ``b = 2*pi / T`` with period ``T`` given in
+                1 / (MJD days).
+    - c, float: x-axis offset in MJD.
+    - d, float: y-axis offset in Hz
+    """
+    # Just to have some info encoded in the class which params we have
+    _param_names = ["amplitude", "period", "toff", "baseline"]
+
     def __init__(self, random_state=None):
-        """
-        Sinus Rate Function
-
-        Describes time dependent background rate. Used function is a sinus with:
-
-        .. math:: f(t|a,b,c,d) = a \sin(b (t - c)) + d
-
-        depending on 4 parameters:
-
-        - a, float: Amplitude in Hz.
-        - b, float: Angular frequency, :math:`\omega = 2\pi/T` with period
-          :math:`T` given in 1/MJD.
-        - c, float: x-axis offset in MJD.
-        - d, float: y-axis offset in Hz
-
-        Parameters
-        ----------
-        %(RateFunction.init.parameters)s
-        """
         super(SinusRateFunction, self).__init__(random_state)
         self._t = None
         self._trange = None
         self._dts = None
         self._fmax = None
 
-        self._names = ["amplitude", "period", "toff", "baseline"]
-        return
-
-    @docs.dedent
     def fit(self, t, rate, p0=None, w=None, **kwargs):
-        """
-        %(RateFunction.fit.summary)s
-
-        Parameters
-        ----------
-        %(RateFunction.fit.parameters)s
-
-        Returns
-        -------
-        %(RateFunction.fit.returns)s
-        """
         bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, w, **kwargs)
         return bf_pars
 
-    @docs.dedent
     def fun(self, t, pars):
-        """
-        Returns the rate at a given time in MJD from a sinusodial function.
-
-        Parameters
-        ----------
-        %(RateFunction.fun.parameters)s
-
-            See :class:`SinusRateFunction`, Summary
-
-        Returns
-        -------
-        %(RateFunction.fun.returns)s
-        """
+        """ Full 4 parameter sinus rate function """
         a, b, c, d = pars
         return a * np.sin(b * (t - c)) + d
 
-    @docs.dedent
     def integral(self, t, trange, pars):
-        """
-        Analytic integral of the sinusodial rate function in interval trange.
-
-        Parameters
-        ----------
-        %(RateFunction.integral.parameters)s
-
-            See :class:`SinusRateFunction`, Summary
-
-        Returns
-        -------
-        %(RateFunction.integral.returns)s
-        """
+        """ Analytic integral, full 4 parameter sinus """
         a, b, c, d = pars
 
         # Transform time windows to MJD
         _, dts = self._transform_trange_mjd(t, trange)
         t0, t1 = dts[:, 0], dts[:, 1]
 
-        # Split analytic expression for readability only
         per = a / b * (np.cos(b * (t0 - c)) - np.cos(b * (t1 - c)))
         lin = d * (t1 - t0)
 
@@ -357,25 +737,12 @@ class SinusRateFunction(RateFunction):
         #     [a / b] = Hz * MJD; [d * (t1 - t0)] = HZ * MJD
         return (per + lin) * self._SECINDAY
 
-    @docs.dedent
     def sample(self, t, trange, pars, n_samples):
-        """
-        %(RateFunction.sample.summary)s
-
-        For `pars`, see :class:`SinusRateFunction`, summary.
-
-        Parameters
-        ----------
-        %(RateFunction.sample.parameters)s
-
-        Returns
-        -------
-        %(RateFunction.sample.returns)s
-        """
+        """ Rejection sample from sinus function """
         n_samples = np.atleast_1d(n_samples)
 
         def sample_fun(t):
-            """Wrapper to have only one argument."""
+            """ Wrapper to have only one argument. """
             return self.fun(t, pars)
 
         # If we always get the same t and trange, cache the fmax values for
@@ -395,25 +762,20 @@ class SinusRateFunction(RateFunction):
 
         return times
 
-    @docs.dedent
     def _get_default_seed(self, t, rate, w):
         """
-        %(RateFunction._get_default_seed.summary)s
+        Default seed values for the specifiv RateFunction fit.
 
         Motivation for default seed:
 
         - a0 : Using the width of the central 50\% percentile of the rate
                distribtion (for rates > 0). The sign is determined based on
                wether the average rates in the first two octants based on the
-               period seed decrese or increase.
+               period seed decrease or increase.
         - b0 : The expected seasonal variation is 1 year.
         - c0 : Earliest time in ``t``.
         - d0 : Weighted averaged rate, which is the best fit value for a
                constant target function.
-
-        Parameters
-        ----------
-        %(RateFunction._get_default_seed.parameters)s
 
         Returns
         -------
@@ -421,8 +783,8 @@ class SinusRateFunction(RateFunction):
             Seed values `(a0, b0, c0, d0)`:
 
             - a0 : ``-np.diff(np.percentile(rate[w > 0], q=[0.25, 0.75])) / 2``
-            - b0 : :math:`2\pi / 365`
-            - c0 : :math:`\min(t)`
+            - b0 : ``2 * pi / 365``
+            - c0 : ``np.amin(t)``
             - d0 : ``np.average(rate, weights=w)``
         """
         a0 = 0.5 * np.diff(np.percentile(rate[w > 0], q=[0.25, 0.75]))[0]
@@ -442,41 +804,11 @@ class SinusRateFunction(RateFunction):
 
 
 class SinusFixedRateFunction(SinusRateFunction):
-    @docs.dedent
+    """
+    Same a sinus Rate Function but period and time offset can be fixed for the
+    fit and stays constant.
+    """
     def __init__(self, p_fix=None, t0_fix=None, random_state=None):
-        """
-        Sinus Rate Function but with a-priori fixed period.
-
-        Function describes time dependent background rate with fixed period:
-
-        .. math:: f(t|a,b,c,d) = a \sin((2\pi/\mathrm{b}_\mathrm{fix}) (t-c))+d
-
-        depending on 4 parameters:
-
-        - a, float: Amplitude in Hz.
-        - b, float: Period in MJD.
-        - c, float: x-axis offset in MJD.
-        - d, float: y-axis offset in Hz
-
-        Here we can fix the parameters ``b`` and / or ``c`` and only fit the
-        other ones.
-
-        Parameters
-        ----------
-        t : array-like, shape (nsrcs)
-            MJD times of sources.
-        p_fix : float or None
-            Fixed period in MJD days for the sine function. If ``None``, the
-            parameter is not fixed and fitted. If a float is given, the
-            parameter stays fied on that value. (Default: None)
-        t0_fix : float
-            Fixed start time in MJD days for the sine function. If ``None``, the
-            parameter is not fixed and fitted. If a float is given, the
-            parameter stays fied on that value. (Default: None)
-        trange : array-like, shape(nsrcs, 2)
-            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
-        %(RateFunction.init.parameters)s
-        """
         super(SinusFixedRateFunction, self).__init__(random_state)
 
         # Process which parameters are fixed and which get fitted
@@ -496,68 +828,16 @@ class SinusFixedRateFunction(SinusRateFunction):
 
         self._fit_idx = np.arange(4)[self._fit_idx]
 
-        return
-
-    @docs.dedent
     def fun(self, t, pars):
-        """
-        Returns the rate at a given time in MJD from a sinusodial function.
-
-        Parameters
-        ----------
-        %(RateFunction.fun.parameters)s
-
-            See :class:`SinusFixedRateFunction`, Summary
-
-        Returns
-        -------
-        %(RateFunction.fun.returns)s
-        """
         pars = self._make_params(pars)
         return super(SinusFixedRateFunction, self).fun(t, pars)
 
-    @docs.dedent
     def integral(self, t, trange, pars):
-        """
-        Analytic integral of the sinusodial rate function in interval trange.
-
-        Parameters
-        ----------
-        %(RateFunction.integral.parameters)s
-
-            See :class:`SinusFixedRateFunction`, Summary
-
-        Returns
-        -------
-        %(RateFunction.integral.returns)s
-        """
         pars = self._make_params(pars)
         return super(SinusFixedRateFunction, self).integral(t, trange, pars)
 
     def _get_default_seed(self, t, rate, w):
-        """
-        %(RateFunction._get_default_seed.summary)s
-
-        Motivation for default seed:
-
-        - a0 : Using the maximum amplitude in variation of rate bins.
-        - b0 : :math:`2\pi / 365`
-        - c0 : Earliest time in `t`.
-        - d0 : Weighted averaged rate, which is the best fit value for a
-           constant target function.
-
-        Parameters
-        ----------
-        %(RateFunction._get_default_seed.parameters)s
-
-        Returns
-        -------
-        p0 : tuple, shape (3)
-
-            See :class:`SinusFixedRateFunction._get_default_seed`, Returns.
-            Here ``b`` and / or ``c`` may be fixed, so only the actual fit
-            parameter seeds are returned.
-        """
+        """ Same default seeds as SinusRateFunction, but drop fixed params. """
         seed = super(SinusFixedRateFunction,
                      self)._get_default_seed(t, rate, w)
         # Drop b0 and / or c0 seed, when it's marked as fixed
@@ -568,11 +848,6 @@ class SinusFixedRateFunction(SinusRateFunction):
         Check which parameters are fixed and insert them where needed to build
         a full parameter set.
 
-        Parameters
-        ----------
-        pars : tuple
-            See See :py:meth:`fun`, Parameters
-
         Returns
         -------
         pars : tuple
@@ -581,7 +856,7 @@ class SinusFixedRateFunction(SinusRateFunction):
         if len(pars) != len(self._fit_idx):
             raise ValueError("Given number of parameters does not match the " +
                              "number of free parameters here.")
-        # Explicit here, but OK, because we have only 4 combinations
+        # Explicit handling OK here, because we have only 4 combinations
         if self._b is None:
             if self._c is None:
                 pars = pars
@@ -594,38 +869,20 @@ class SinusFixedRateFunction(SinusRateFunction):
 
 
 class SinusFixedConstRateFunction(SinusFixedRateFunction):
-    @docs.dedent
+    """
+    Same as SinusFixedRateFunction, but sampling uniform times in each time
+    interval instead of rejection sampling the sine function.
+
+    Here the number of expected events is still following the seasonal
+    fluctuations, but within the time windows we sample uniformly (step function
+    like). Perfect for small time windows, avoiding rejection sampling and thus
+    giving a speed boost.
+    """
     def __init__(self, random_state=None):
-        """
-        Same as SinusFixedRateFunction, but sampling uniform times in each time
-        interval instead of rejection sampling the sine function.
-
-        Here the number of expected events is still following the seasonal
-        fluctuations, but within the time windows we sample uniformly (step
-        function like). Perfect for small time windows, avoiding rejection
-        sampling and thus giving a speed boost.
-
-        Parameters
-        ----------
-        %(RateFunction.init.parameters)s
-        """
         super(SinusFixedConstRateFunction, self).__init__(random_state)
-        return
 
-    @docs.dedent
     def sample(self, t, trange, pars, n_samples):
-        """
-        %(RateFunction.sample.summary)s
-
-        Parameters
-        ----------
-        %(RateFunction.sample.parameters)s
-
-        Returns
-        -------
-        %(RateFunction.sample.returns)s
-        """
-        # Just sample uniformly in MJD time windows
+        """ Just sample uniformly in MJD time windows here. """
         _, dts = self._transform_trange_mjd(t, trange)
 
         # Samples times for all sources at once
@@ -637,77 +894,39 @@ class SinusFixedConstRateFunction(SinusFixedRateFunction):
 
 
 class ConstantRateFunction(RateFunction):
-    @docs.dedent
+    """
+    Uses a constant rate in Hz at a given time in MJD. This one models no
+    seasonal fluctuations but describes the average rate as a constant.
+
+    Uses one parameter:
+
+    - rate, float: Constant rate in Hz.
+    """
+    _param_names = ["baseline"]
+
     def __init__(self, random_state=None):
-        """
-        Uses a constant rate in Hz at a given time in MJD. This one models no
-        seasonal fluctuations but describes the rate as a constant.
-
-        Uses one parameter:
-
-        - rate, float: Constant rate in Hz.
-
-        Parameters
-        ----------
-        %(RateFunction.init.parameters)s
-        """
-        self._names = ["baseline"]
         super(ConstantRateFunction, self).__init__(random_state)
         return
 
-    @docs.dedent
     def fun(self, t, pars):
         """
         Returns a constant rate Hz at any given time in MJD by simply
         broadcasting the input rate.
-
-        Parameters
-        ----------
-        %(RateFunction.fun.parameters)s
-
-            See :class:`ConstantRateFunction`, Summary
-
-        Returns
-        -------
-        %(RateFunction.fun.returns)s
         """
         return np.ones_like(t) * pars[0]
 
-    @docs.dedent
     def integral(self, t, trange, pars):
         """
         Analytic integral of the rate function in interval trange. Because the
         rate function is constant, integral is simply `trange * rate`.
-
-        Parameters
-        ----------
-        %(RateFunction.integral.parameters)s
-
-            See :class:`ConstantRateFunction`, Summary
-
-        Returns
-        -------
-        %(RateFunction.integral.returns)s
         """
         t, dts = self._transform_trange_mjd(t, trange)
         # Multiply first then diff to avoid roundoff errors
         return (np.diff(dts * self._SECINDAY, axis=1) *
                 self.fun(t, pars)).ravel()
 
-    @docs.dedent
     def sample(self, t, trange, pars, n_samples):
-        """
-        %(RateFunction.sample.summary)s
-
-        Parameters
-        ----------
-        %(RateFunction.sample.parameters)s
-
-        Returns
-        -------
-        %(RateFunction.sample.returns)s
-        """
-        # Just sample uniformly in MJD time windows
+        """ Sample is exact for this model uniformly in MJD time windows. """
         _, dts = self._transform_trange_mjd(t, trange)
 
         # Samples times for all sources at once
@@ -717,7 +936,6 @@ class ConstantRateFunction(RateFunction):
 
         return sample
 
-    @docs.dedent
     def _get_default_seed(self, t, rate, w):
         """
         %(RateFunction._get_default_seed.summary)s
@@ -725,17 +943,36 @@ class ConstantRateFunction(RateFunction):
         Motivation for default seed:
 
         - rate0 : Mean of the given rates. This is the anlytic solution to the
-          fit, so we seed with the best fit.
-
-        Parameters
-        ----------
-        %(RateFunction._get_default_seed.parameters)s
+                  fit, so we seed with the best fit.
 
         Returns
         -------
         p0 : tuple, shape(1)
             Seed values (rate0):
 
-            - rate0 : `np.mean(rate)`
+            - rate0 : ``np.mean(rate)``
         """
         return (np.mean(rate), )
+
+
+##############################################################################
+# Misc helper methods
+##############################################################################
+def power_law_flux(trueE, gamma):
+    """
+    Returns the unbroken power law flux :math:`\sim E^{-\gamma} summed over both
+    particle types (nu, anti-nu), without a normalization.
+
+    Parameters
+    ----------
+    trueE : array-like
+        True particle energy in GeV.
+    gamma : float
+        Positive power law index.
+
+    Returns
+    -------
+    flux : array-like
+        Per nu+anti-nu particle flux :math:`\phi \sim E^{-\gamma}`.
+    """
+    return trueE**(-gamma)
