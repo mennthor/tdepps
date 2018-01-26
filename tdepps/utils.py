@@ -1,7 +1,8 @@
 # coding: utf-8
 
 """
-Collection of repetedly used or large helper functions.
+Collection of repetedly used or large helper functions more or less indepent
+of the use as building blocks for the model classes.
 """
 
 from __future__ import print_function, division, absolute_import
@@ -11,55 +12,36 @@ standard_library.install_aliases()
 
 import numpy as np
 import scipy.optimize as sco
-from scipy.stats import rv_continuous, chi2, poisson
-
-
-def power_law_flux(trueE, gamma):
-    """
-    Returns the unbroken power law flux :math:`\sim E^{-\gamma} summed over both
-    particle types (nu, anti-nu), without a normalization.
-
-    Parameters
-    ----------
-    trueE : array-like
-        True particle energy in GeV.
-    gamma : float
-        Positive power law index.
-
-    Returns
-    -------
-    flux : array-like
-        Per nu+anti-nu particle flux :math:`\phi \sim E^{-\gamma}`.
-    """
-    return trueE**(-gamma)
+from scipy.stats import rv_continuous, chi2
 
 
 def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
     """
-    Populate dictionary with data from a given dict `d`, and check if `d` has
-    required and optional keys. Set optionals with default if not present.
+    Populate dictionary with data from a given dict ``d``, and check if ``d``
+    has required and optional keys. Set optionals with default if not present.
 
-    If input `d` is None and `required_keys` is empty, just return `opt_keys`.
+    If input ``d`` is None and ``required_keys`` is empty, just return
+    ``opt_keys``.
 
     Parameters
     ----------
     d : dict
         Input dictionary containing the data to be checked.
     required_keys : list, optional
-        Keys that must be present in `d`. (default: [])
+        Keys that must be present in ``d``. (default: [])
     opt_keys : dict, optional
-        Keys that are optional. `opt_keys` provides optional keys and the
-        default values, if not present in `d`. (default: {})
+        Keys that are optional. ``opt_keys`` provides optional keys and the
+        default values, if not present in ``d``. (default: {})
     noleft : bool, optional
-        If True, raises a KeyError, when `d` contains more keys, than given in
-        `required_keys` and `opt_keys`. (default: True)
+        If True, raises a KeyError, when ``d`` contains more keys, than given in
+        ``required_keys`` and ``opt_keys``. (default: True)
 
     Returns
     -------
     out : dict
         Contains all required and optional keys with default values, where
         optional keys where missing.
-        If `d` is None, returns only the `opt_keys` dict.
+        If ``d`` is None, returns only the ``opt_keys`` dict.
     """
     if d is None:
         if not required_keys:
@@ -83,6 +65,33 @@ def fill_dict_defaults(d, required_keys=[], opt_keys={}, noleft=True):
         raise KeyError("Keys ['{}'] not used in dict `d`.".format(
             "', '".join(list(d.keys()))))
     return out
+
+
+def random_choice(rndgen, CDF, n=None):
+    """
+    Stripped implementation of ``np.ranom.choice`` without the checks for the
+    weights making it significantly faster. If ``CDF`` is not a real CDF this
+    will produce non-sense.
+
+    Parameters
+    ----------
+    rndgen : np.random.RandomState instance
+        Random state instance to sample from.
+    CDF : array-like
+        Correctly normed CDF used to sample from. ``CDF[-1]=1`` and
+        ``CDF[i-1]<=CDF[i]``.
+    n : int or None, optional
+        How many indices to sample. If ``None`` a single int is returned.
+        (default: ``None``)
+
+    Returns
+    –------
+    idx : int or array-like
+        The sampled indices of the chosen CDF values. Can be inserted in the
+        original array to obtain the values.
+    """
+    u = np.random.uniform(size=n)
+    return np.searchsorted(CDF, u, side="right")
 
 
 def rejection_sampling(pdf, bounds, n_samples, rndgen, max_fvals=None):
