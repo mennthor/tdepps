@@ -78,7 +78,7 @@ class SignalFluenceInjector(object):
         ``sklearn.utils.check_random_state``. (default: None)
     """
     def __init__(self, model, mode="band", sindec_inj_width=0.035,
-                 dec_range=[-np.pi / 2., np.pi / 2.], random_state=None):
+                 dec_range=None, random_state=None):
         if not callable(model):
             raise TypeError("`model` must be a function `f(trueE)`.")
         self._model = model
@@ -91,11 +91,14 @@ class SignalFluenceInjector(object):
             raise ValueError("Injection width must be in (0, pi].")
         self._sindec_inj_width = sindec_inj_width
 
-        dec_range = np.atleast_1d(dec_range)
-        if (dec_range[0] < -np.pi / 2.) or (dec_range[1] > np.pi / 2.):
-            raise ValueError("`dec_range` must be in range [-pi/2, pi/2].")
-        if dec_range[0] >= dec_range[1]:
-            raise ValueError("`dec_range=[low, high]` must be increasing.")
+        if dec_range is None:
+            dec_range = np.array([-np.pi / 2., np.pi / 2.])
+        else:
+            dec_range = np.atleast_1d(dec_range)
+            if (dec_range[0] < -np.pi / 2.) or (dec_range[1] > np.pi / 2.):
+                raise ValueError("`dec_range` must be in range [-pi/2, pi/2].")
+            if dec_range[0] >= dec_range[1]:
+                raise ValueError("`dec_range=[low, high]` must be increasing.")
         self._dec_range = dec_range
 
         self.rndgen = random_state
@@ -195,8 +198,6 @@ class SignalFluenceInjector(object):
         Fill injector with Monte Carlo events, preselecting events around the
         source positions.
 
-        Multiyear compatible when using dicts of samples, see below.
-
         Parameters
         -----------
         srcs : recarray
@@ -239,29 +240,8 @@ class SignalFluenceInjector(object):
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
-        # Check if each recarray has it's required names
-        for n in ["ra", "dec", "w_theo"]:
-            if n not in srcs.dtype.names:
-                raise ValueError("`srcs` array is missing name '{}'.".format(n))
-
-        self._exp_names = list(exp_names)
-        for n in ["ra", "dec"]:
-            if n not in exp_names:
-                raise ValueError("`exp_names` is missing name '{}'.".format(n))
-
-        self._mc_names = ["trueRa", "trueDec", "trueE", "ow"]
-        MC_names = self._exp_names + self._mc_names
-        for n in MC_names:
-            if n not in MC.dtype.names:
-                raise ValueError("`MC` array is missing name '{}'.".format(n))
-
-        # Check if sources are outside `dec_range`
-        if (np.any(srcs["dec"] < self._dec_range[0]) or
-                np.any(srcs["dec"] > self._dec_range[1])):
-            raise ValueError("Source position(s) found outside `dec_range`.")
-
-        self._srcs = srcs
-        nsrcs = len(srcs)
+        self._srcs, MC, exp_names = self._check_fit_input(srcs, MC, exp_names)
+        nsrcs = len(self._srcs)
 
         # Set injection solid angles for all sources
         self._set_solid_angle()
@@ -292,7 +272,8 @@ class SignalFluenceInjector(object):
         total_mask = np.any(inj_mask, axis=0)
         N_unique = np.count_nonzero(total_mask)
         # Only keep needed MC names (MC truth and those specified by exp_names)
-        drop_names = [n for n in self._MC.dtype.names if n not in MC_names]
+        keep_names = self._mc_arr + self._exp_names
+        drop_names = [n for n in self._MC.dtype.names if n not in keep_names]
         self._MC = drop_fields(MC[total_mask], drop_names)
         assert len(self._MC) == N_unique
 
@@ -352,6 +333,8 @@ class SignalFluenceInjector(object):
         sam_ev = self._rot_and_strip(self._srcs["ra"][src_idx],
                                      self._srcs["dec"][src_idx],
                                      sam_ev)
+        # Debug purpose
+        self._sample_idx = sam_idx
         return sam_ev
 
     def _set_sampling_weights(self):
@@ -436,18 +419,18 @@ class SignalFluenceInjector(object):
         nsrcs = len(self._srcs)
 
         if self._mode == "band":
-            A, B = np.sin(self._dec_range)
+            sinL, sinU = np.sin(self._dec_range)
 
             if self._skylab_band:
                 # Recenter sources somewhat so that bands get bigger at poles
-                m = (A - B + 2. * self._sindec_inj_width) / (A - B)
-                b = self._sindec_inj_width * (A + B) / (B - A)
-                sin_dec = m * np.sin(self._srcs["dec"]) + b
+                m = (sinL - sinU + 2. * self._sindec_inj_width) / (sinL - sinU)
+                sinU = self._sindec_inj_width * (sinL + sinU) / (sinU - sinL)
+                sin_dec = m * np.sin(self._srcs["dec"]) + sinU
             else:
                 sin_dec = np.sin(self._srcs["dec"])
 
-            min_sin_dec = np.maximum(A, sin_dec - self._sindec_inj_width)
-            max_sin_dec = np.minimum(B, sin_dec + self._sindec_inj_width)
+            min_sin_dec = np.maximum(sinL, sin_dec - self._sindec_inj_width)
+            max_sin_dec = np.minimum(sinU, sin_dec + self._sindec_inj_width)
 
             self._min_dec = np.arcsin(np.clip(min_sin_dec, -1., 1.))
             self._max_dec = np.arcsin(np.clip(max_sin_dec, -1., 1.))
@@ -459,6 +442,7 @@ class SignalFluenceInjector(object):
             r = self._inj_width
             self._omega = np.array(nsrcs * [2 * np.pi * (1. - np.cos(r))])
             assert len(self._omega) == nsrcs
+        assert np.all((0. < self._omega) & (self._omega <= 4. * np.pi))
 
     def _rot_and_strip(self, src_ras, src_decs, MC):
         """
@@ -494,6 +478,30 @@ class SignalFluenceInjector(object):
              (MC["dec"] <= self._dec_range[1]))
         return drop_fields(MC[m], self._mc_names)
 
+    def _check_fit_input(self, srcs, MC, exp_names):
+        """ Check fit input, setup self._exp_names, self._mc_names """
+        # Check if each recarray has it's required names
+        for n in ["ra", "dec", "w_theo"]:
+            if n not in srcs.dtype.names:
+                raise ValueError("`srcs` array is missing name '{}'.".format(n))
+
+        self._exp_names = list(exp_names)
+        for n in ["ra", "dec"]:
+            if n not in exp_names:
+                raise ValueError("`exp_names` is missing name '{}'.".format(n))
+
+        self._mc_names = ["trueRa", "trueDec", "trueE", "ow"]
+        MC_names = self._exp_names + self._mc_names
+        for n in MC_names:
+            if n not in MC.dtype.names:
+                raise ValueError("`MC` array is missing name '{}'.".format(n))
+
+        # Check if sources are outside `dec_range`
+        if (np.any(srcs["dec"] < self._dec_range[0]) or
+                np.any(srcs["dec"] > self._dec_range[1])):
+            raise ValueError("Source position(s) found outside `dec_range`.")
+        return srcs, MC, exp_names
+
 
 class HealpySignalFluenceInjector(SignalFluenceInjector):
     """
@@ -510,28 +518,28 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
     gamma : float
         Index of an unbroken power law :math:`E^{-\gamma}` which is used to
         describe the energy flux of signal events.
-    inj_width : float, optional
-        This is different form the `SignalFluenceInjector` behaviour because
+    sindec_inj_width : float, optional
+        This is different form the ``SignalFluenceInjector`` behaviour because
         depending on the prior localization we may select a different bandwidth
-        for each source. ``inj_width`` is the minimum selection bandwidth,
-        preventing the band to become too small for very narrow priors. Is
-        therefore used in combination with the new attribute ``inj_sigma``.
-        (default: ``np.deg2rad(2)``)
+        for each source. Here, ``sindec_inj_width`` is the minimum selection
+        bandwidth, preventing the band to become too small for very narrow
+        priors. It is therefore used in combination with the new attribute
+        ``inj_sigma``. (default: 0.035 ~ 2°)
     inj_sigma : float, optional
         Angular size in sigma around each source region from the prior map from
-        which MC events are injected. Use in combination with ``inj_width``
-        to make sure, the injection band is wide enough. (default: ``3.``)
-    sin_dec_range : array-like, shape (2), optional
-        Boundaries for which injected events are discarded, when their rotated
-        coordinates are outside this bounds. Is useful, when a zenith cut is
-        used and the PDFs are not defined on the whole sky.
-        (default: ``[-1, 1]``)
+        which MC events are injected. Use in combination with
+        ``sindec_inj_width`` to make sure, the injection band is wide enough.
+        (default: 3.)
+    dec_range : array-like, shape (2), optional
+        Global declination interval in which events can be injected in rotated
+        coordinates. Events rotated outside are dropped even if selected, which
+        drops sensitivity as desired. (default: ``[-pi/2, pi/2]``)
     random_state : seed, optional
         Turn seed into a ``np.random.RandomState`` instance. See
         ``sklearn.utils.check_random_state``. (default: ``None``)
     """
-    def __init__(self, gamma, inj_width=np.deg2rad(2), inj_sigma=3.,
-                 sin_dec_range=[-1., 1.], random_state=None):
+    def __init__(self, gamma, sindec_inj_width=0.035, inj_sigma=3.,
+                 dec_range=None, random_state=None):
         if inj_sigma <= 0.:
             raise ValueError("Injection sigma must be >0.")
         self._inj_sigma = inj_sigma
@@ -540,13 +548,15 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         self._src_map_CDFs = None
         self._NSIDE = None
         self._NPIX = None
+        self._pix2ra = None
+        self._pix2dec = None
 
         # Debug attributes
         self._src_ra = None
         self._src_dec = None
 
         return super(HealpySignalFluenceInjector, self).__init__(
-            gamma, "band", inj_width, sin_dec_range, random_state)
+            gamma, "band", sindec_inj_width, dec_range, random_state)
 
     @property
     def inj_sigma(self):
@@ -554,23 +564,13 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
 
     def fit(self, srcs, src_maps, MC, exp_names):
         """
-        Fill injector with Monte Carlo events, preselecting events around the
-        source positions.
-
-        Multiyear compatible when using dicts of samples, see below.
-
-        Sets up private class variables:
-
-        - ``_min_dec``, ``_max_dec``, dict of arrays: Upper/lower bounds for
-          each declination band in radians for each source sample. Size of the
-          bands is determined by ``inj_width`` in sigma and the prior width.
+        Fill injector with Monte Carlo events, preselecting events in regions
+        in the prior maps.
 
         Parameters
         -----------
-        srcs : recarray or dict(name, recarray)
-            Source properties as single record array or as dictionary with
-            sample names mapped to record arrays. Keys must match keys in
-            ``MC``. Each record array must have names:
+        srcs : recarray
+            Source properties in a record array, must have names:
 
             - 'ra', float: Right-ascension coordinate of each source in
               radian in intervall :math:`[0, 2\pi]`.
@@ -583,17 +583,15 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
             - 'w_theo', float: Theoretical source weight per source, eg. from
               a known gamma flux.
 
-        src_maps : array or dict(name, list of array(s))
-            List of valid healpy map array(s) per source per sample, all in same
-            resolution used as spatial priors for injecting source positions
-            each sample step. Maps must be normal space PDFs normalized to
-            area equals one on the unit sphere from a positional reconstruction
-            to give a probability region of the true source position per source.
-        MC : recarray or dict(name, recarray)
-            Either single structured array describing Monte Carlo events or a
-            dictionary with sample names mapped to record arrays. Keys must
-            match ``srcs``. Each record array must contain names given in
-            ``exp_names`` and additonally:
+        src_maps : array-like, shape (nsrcs, NPIX)
+            List of valid healpy map arrays per source, all in same resolution
+            used as spatial priors for injecting source positions each sample
+            step. Maps must be normal space PDFs normalized to area equals one
+            on the unit sphere from a positional reconstruction to give a
+            probability region of the true source position per source.
+        MC : recarray
+            Structured array describing Monte Carlo events, must contain the
+            same names as given in ``exp_names`` and additonally MC truths:
 
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
@@ -603,107 +601,70 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
               Units are 'GeV sr cm^2'. Final event weights are obtained by
               multiplying with desired sum flux for nu and anti-nu flux.
 
-        exp_names : tuple of strings
-            All names in the experimental data record array used for other
-            classes. Must match with the MC record names. ``exp_names`` is
-            required to have at least the names:
-
-            - 'ra': Per event right-ascension coordinate in :math:`[0, 2\pi]`.
-            - 'sinDec': Per event sinus declination, in :math`[-1, 1]`.
-            - 'logE': Per event energy proxy, given in
-              :math`\log_{10}(1/\text{GeV})`.
-            - 'sigma': Per event positional uncertainty, given in radians.
-            - 'timeMJD': Per event times in MJD days.
+        exp_names : list
+            Names that must be present in ``MC`` to match names for experimental
+            data record array. Must have at least names ``['ra', 'dec']`` needed
+            to rotate injected signal events to the source positions. Names
+            that are present in ``MC`` but not in ``exp_names`` are not used and
+            removed from the sample output. Names other than ``['ra', 'dec']``
+            are not treated any further, but only piped through. So if there is
+            e.g. ``sinDec`` this must be converted manually after receiving the
+            sampled data.
 
         Notes
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
         srcs, MC, exp_names = self._check_fit_input(srcs, MC, exp_names)
+        nsrcs = len(srcs)
 
-        # Check if prior maps are valid healpy maps and all have same resolution
-        # and if there is a map for every source
-        if not isinstance(src_maps, dict):
-            src_maps = {-1: src_maps}
-        if viewkeys(src_maps) != viewkeys(MC):
-            raise ValueError("Keys in `MC` and `src_maps` don't match.")
+        # Check if maps match srcs
+        if hp.maptype(src_maps) != nsrcs:
+                raise ValueError("Not as many prior maps as srcs given.")
 
-        src_maps = deepcopy(src_maps)
-        map_lens = []
-        for key, maps_i in src_maps.items():
-            if hp.maptype(maps_i) == 0:
-                # Always use list of maps, not bare arrays
-                maps_i = [maps_i]
-                src_maps[key] = maps_i
-                print("Wapped single bare map for key '{}'.".format(key))
-            if hp.maptype(maps_i) != len(srcs[key]):
-                raise ValueError("For sample '{}' ".format(key) +
-                                 "there are not as many maps as srcs given.")
-            map_lens.append(map(len, maps_i))
-        map_lens = np.concatenate(map_lens)
-        self._NPIX = int(map_lens[0])
+        self._NPIX = int(len(src_maps[0]))
         self._NSIDE = hp.npix2nside(self._NPIX)
-        if not hp.isnsideok(self._NSIDE):
-            raise ValueError("Given `src_maps` don't have proper resolution.")
-        if not np.all(map_lens == self._NPIX):
-            raise ValueError("Not all given 'src_maps' have the same length.")
 
         # Test if maps are valid PDFs on the unit sphere (m>=0 and sum(m*dA)=1)
         dA = hp.nside2pixarea(self._NSIDE)
-        for key, maps_i in src_maps.items():
-            areas = np.array(map(np.sum, maps_i)) * dA
-            if not np.allclose(areas, 1.) or np.any(maps_i < 0.):
-                raise ValueError("Not all given maps for key '{}'".format(key) +
-                                 " are valid PDFs on the unit sphere.")
+        areas = np.array(map(np.sum, src_maps)) * dA
+        if not np.allclose(areas, 1.) or np.any(src_maps < 0.):
+            raise ValueError("Not all given maps for key are valid PDFs.")
 
         # Select the injection band depending on the given source prior maps
-        self._min_dec = {}
-        self._max_dec = {}
-        min_sin_dec_bandwidth = np.sin(self._inj_width)
-        A, B = self._sin_dec_range
-        Adec, Bdec = np.arcsin(self._sin_dec_range)
-        for key, maps_i in src_maps.items():
-            # Get band min / max from n sigma prior contour
-            self._min_dec[key] = []
-            self._max_dec[key] = []
-            for i, map_i in enumerate(maps_i):
-                min_dec, max_dec = self.get_nsigma_dec_band(map_i,
-                                                            self._inj_sigma)
-                assert min_dec <= srcs[key]["dec"][i] <= max_dec
-                self._min_dec[key].append(min_dec)
-                self._max_dec[key].append(max_dec)
-            self._min_dec[key] = np.maximum(self._min_dec[key], Adec)
-            self._max_dec[key] = np.minimum(self._max_dec[key], Bdec)
-            assert not np.any(self._max_dec[key] < srcs[key]["dec"])
-            assert not np.any(srcs[key]["dec"] < self._min_dec[key])
+        decL, decU = self._dec_range
+        sinL, sinU = np.sin(self._dec_range)
+        # Get band [min dec, max dec] from n sigma contour of the prior maps
+        for i, map_i in enumerate(src_maps):
+            min_dec, max_dec = self.get_nsigma_dec_band(map_i, self._inj_sigma)
+            self._min_dec.append(min_dec)
+            self._max_dec.append(max_dec)
+            if (min_dec <= srcs["dec"][i]) or (srcs["dec"][i] <= max_dec):
+                raise ValueError("Source {} not within {} sigma band ".format(
+                    i, self._inj_sigma) + "of corresponding prior map.")
 
-            # Check that all bands are larger than requested minimum size
-            if self._skylab_band:
-                m = (A - B + 2. * min_sin_dec_bandwidth) / (A - B)
-                b = min_sin_dec_bandwidth * (A + B) / (B - A)
-                sin_dec = m * np.sin(srcs[key]["dec"]) + b
-            else:
-                sin_dec = np.sin(srcs[key]["dec"])
-            min_sin_dec = np.maximum(A, sin_dec - min_sin_dec_bandwidth)
-            max_sin_dec = np.minimum(B, sin_dec + min_sin_dec_bandwidth)
-            min_dec = np.arcsin(np.clip(min_sin_dec, -1., 1.))
-            max_dec = np.arcsin(np.clip(max_sin_dec, -1., 1.))
-            assert (len(min_dec) == len(max_dec) ==
-                    len(self._min_dec[key]) == len(self._min_dec[key]))
-            self._min_dec[key] = np.minimum(self._min_dec[key], min_dec)
-            self._max_dec[key] = np.maximum(self._max_dec[key], max_dec)
+        # Enlarge bands if they got too narrow
+        sin_dec = np.sin(srcs["dec"])
+        min_sin_dec = np.minimum(np.sin(self._min_dec),
+                                 sin_dec - self._sindec_inj_width)
+        max_sin_dec = np.maximum(np.sin(self._max_dec),
+                                 sin_dec + self._sindec_inj_width)
+        # Clip if we ran over the set dec range
+        self._min_dec = np.arcsin(np.clip(min_sin_dec, sinL, sinU))
+        self._max_dec = np.arcsin(np.clip(max_sin_dec, sinL, sinU))
+        assert not np.any(self._max_dec < srcs["dec"])
+        assert not np.any(srcs["dec"] < self._min_dec)
 
         # Pre-compute normalized sampling CDFs from the maps for fast sampling
-        self._src_map_CDFs = {}
-        for key, maps_i in src_maps.items():
-            self._src_map_CDFs[key] = []
-            for i, map_i in enumerate(maps_i):
-                CDF = np.cumsum(map_i)
-                self._src_map_CDFs[key].append(CDF / CDF[-1])
-                assert np.isclose(self._src_map_CDFs[key][i][-1], 1.)
-                assert np.allclose(self._src_map_CDFs[key][i],
-                                   np.cumsum(map_i / np.sum(map_i)))
-                assert len(self._src_map_CDFs[key][i]) == self._NPIX
+        CDFs = np.cumsum(src_maps, axis=1)
+        self._src_map_CDFs = CDFs / CDFs[:, [-1]]
+        assert np.allclose(self._src_map_CDFs[:, -1], 1.)
+        assert len(self._src_map_CDFs) == self._NPIX
+
+        # Prepare other fixed elements to save time during sampling
+        # Precompute pix2ang conversion, directly in ra, dec
+        th, phi = hp.pix2ang(self._NSIDE, np.arange(self._NPIX))
+        self._pix2dec, self._pix2ra = ThetaPhiToDecRa(th, phi)
 
         return super(HealpySignalFluenceInjector, self).fit(srcs, MC, exp_names)
 
@@ -716,10 +677,10 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         Parameters
         ----------
         pdf_map : array-like
-            Healpy PDF map.
+            Healpy PDF map on the unit sphere.
         sigma : int, optional
-            How many sigmas the band should measure. For sigmas, Wilk's
-            theorem is assumed
+            How many sigmas the band should measure. Wilk's theorem is assumed
+            to calculate the sigmas.
 
         Returns
         -------
@@ -737,191 +698,64 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         dec, _ = ThetaPhiToDecRa(th, phi)
         return np.amin(dec), np.amax(dec)
 
-    def sample(self, mean_mu, poisson=True):
+    def sample(self, n_samples=1):
         """
         Generator to get sampled events from MC for each source position.
         Each time new source positions are sampled from the prior maps.
 
         Parameters
         -----------
-        mu : float
-            Expectation value of number of events to sample.
-        poisson : bool, optional
-            If True, sample the actual number of events from a poisson
-            distribution with expectation ``mu``. Otherwise the number of events
-            is constant in each trial. (default: True)
+        n_samples : n_samples
+            How many events to sample.
 
         Returns
         --------
-        num : int
-            Number of events sampled in total
-        sam_ev : iterator
-            Sampled events for each loop iteration, either as simple array or
-            as dictionary for each sample.
-        idx : array-like
-            Indices mapping the sampled events to the injected MC events in
-            ``self._MC`` for debugging purposes.
+        sam_ev : record-array
+            Sampled events from the stored MC pool. Number of events sampled in
+            total might be smaller than ``n_samples`` when a ``dec_width`` less
+            than the whole sky is used. If ``n_samples<1`` an empty recarray is
+            returned.
         """
         if self._mc_arr is None:
             raise ValueError("Injector has not been filled with MC data yet.")
 
-        # If poisson is `False`, sample fixed integer number of signal events
-        if poisson is False:
-            n = int(np.around(mean_mu))
-            if n < 1:
-                raise ValueError("`poisson` is False and `int(mean_mu) < 1` " +
-                                 "so there won't be any events sampled.")
+        if n_samples < 1:
+            dtype = [(name, float) for name in self._exp_names]
+            return np.empty(0, dtype=dtype)
 
-        # Precompute pix2ang conversion, directly in ra, dec
-        th, phi = hp.pix2ang(self._NSIDE, np.arange(self._NPIX))
-        pix2dec, pix2ra = ThetaPhiToDecRa(th, phi)
+        # Sample new source positions from prior maps
+        src_idx = np.empty(len(self._srcs), dtype=int)
+        for i, CDFi in enumerate(self._src_map_CDFs):
+            src_idx[i] = random_choice(self._rndgen, CDF=CDFi, n=None)
+        src_ras, src_decs = self._pix2ra[src_idx], self._pix2dec[src_idx]
 
-        # Prepare other fixed elements to save time during sampling
-        if len(self._key2enum) == 1 and list(self._key2enum.keys())[0] == -1:
-            # Only one sample, src memberships are unambigious
-            src_map_CDFs = self._src_map_CDFs[-1]
-            src_t = self._srcs[-1]["t"]
-            src_dt = np.vstack((self._srcs[-1]["dt0"],
-                                self._srcs[-1]["dt1"])).T
-            src_idx = np.zeros(self._nsrcs[-1], dtype=int) - 1
+        # Draw IDs from the whole stored pool of MC events
+        sam_idx = random_choice(self._rndgen, self._sample_w_CDF, n=n_samples)
+        sam_idx = self._mc_arr[sam_idx]
 
-            def sample_src_positions():
-                """
-                Returns a new set of source position sampled from the given
-                prior map PDFs.
-
-                Returns
-                -------
-                ra, dec : array-like
-                    New source positions sampled from each prior map.
-                """
-                for i, src_map_CDF_i in enumerate(src_map_CDFs):
-                    u = np.random.uniform(size=None)
-                    src_idx[i] = np.searchsorted(src_map_CDF_i, u, side='right')
-                return pix2ra[src_idx], pix2dec[src_idx]
-        else:
-            src_dt = {}
-            src_idx = {}
-            for key in self._key2enum.keys():
-                src_dt[key] = np.vstack((self._srcs[key]["dt0"],
-                                         self._srcs[key]["dt1"])).T
-                src_idx[key] = np.zeros(self._nsrcs[key], dtype=int) - 1
-
-            def sample_src_positions():
-                """
-                Returns a new set of source position sampled from the given
-                prior map PDFs.
-
-                Returns
-                -------
-                ra, dec : dict of arrays
-                    Returns an array of source positions for each key in the
-                    given source map dictionary.
-                """
-                src_ras = {}
-                src_decs = {}
-                for key, src_map_CDFs_i in self._src_map_CDFs.items():
-                    for i, src_map_CDF_i in enumerate(src_map_CDFs_i):
-                        u = np.random.uniform(size=None)
-                        src_idx[key][i] = np.searchsorted(src_map_CDF_i, u,
-                                                          side='right')
-                    src_ras[key] = pix2ra[src_idx[key]]
-                    src_decs[key] = pix2dec[src_idx[key]]
-
-                return src_ras, src_decs
-
-        # Create the generator part
-        while True:
-            if poisson:
-                n = self._rndgen.poisson(mean_mu, size=None)
-
-            # If n=0 (no events get sampled) return None
-            if n < 1:
-                yield n, None, None
-                continue
-
-            # Draw IDs from the whole pool of events
-            u = np.random.uniform(size=n)
-            sam_idx = np.searchsorted(self._sample_w_CDF, u, side="right")
-            sam_idx = self._mc_arr[sam_idx]
-
-            # Check which samples have been injected
-            enums = np.unique(sam_idx["enum"])
-
-            # Also draw new src position from prior maps
-            src_ra, src_dec = sample_src_positions()
-            # Debug attributes
-            self._src_ra, self._src_dec = src_ra, src_dec
-
-            # If only one sample: return single recarray
-            if len(enums) == 1 and enums[0] == -1:
-                sam_ev = np.copy(self._MC[enums[0]][sam_idx["ev_idx"]])
-                _src_idx = sam_idx['src_idx']
-                sam_ev, m = self._rot_and_strip(
-                    src_ra[_src_idx], src_dec[_src_idx], sam_ev, key=-1)
-                sam_ev["timeMJD"] = self._sample_times(
-                    src_t[_src_idx], src_dt[_src_idx])[m]
-                yield n, sam_ev, sam_idx[m]
-                continue
-
-            # Else return same dict structure as used in `fit`
-            sam_ev = dict()
-            # Total mask to filter out events rotated outside `sin_dec_range`
-            idx_m = np.zeros_like(sam_idx, dtype=bool)
-            for key, enum in self._key2enum.items():
-                if enum in enums:
-                    # Get source positions for the correct sample
-                    _src_ra = src_ra[key]
-                    _src_dec = src_dec[key]
-                    _src_t = self._srcs[key]["t"]
-                    _src_dt = src_dt[key]
-                    # Select events per sample
-                    enum_m = (sam_idx["enum"] == enum)
-                    idx = sam_idx[enum_m]["ev_idx"]
-                    sam_ev_i = np.copy(self._MC[key][idx])
-                    # Broadcast corresponding sources for correct rotation
-                    _src_idx = sam_idx[enum_m]["src_idx"]
-                    sam_ev[key], m = self._rot_and_strip(
-                        _src_ra[_src_idx], _src_dec[_src_idx], sam_ev_i, key)
-                    sam_ev[key]["timeMJD"] = self._sample_times(
-                        _src_t[_src_idx], _src_dt[_src_idx])[m]
-                    # Build up the mask for the returned indices 'sam_idx'
-                    _idx_m = np.zeros_like(m)
-                    _idx_m[m] = True
-                    idx_m[enum_m] = _idx_m
-                else:
-                    drop_names = [ni for ni in self._MC[key].dtype.names if
-                                  ni not in self._exp_names[key]]
-                    sam_ev[key] = drop_fields(
-                        np.empty((0,), dtype=self._MC[key].dtype), drop_names)
-
-            yield n, sam_ev, sam_idx[idx_m]
+        # Select events from pool and rotate them to corresponding src positions
+        sam_ev = self._MC[sam_idx["ev_idx"]]
+        src_idx = sam_idx["src_idx"]
+        sam_ev = self._rot_and_strip(src_ras[src_idx], src_decs[src_idx],
+                                     sam_ev)
+        # Debug purpose
+        self._sample_idx = sam_idx
+        self._src_ra, self._src_dec = src_ras, src_decs
+        return sam_ev
 
     def _set_solid_angle(self):
         """
         Setup solid angles of injection area for selected MC events and sources.
 
-        Overriden to use only 'band' mode and different upper/lower ranges per
-        source, as set up in ``fit``. Only sets up the solid angle here, band
-        boundaries have been calculated in ``fit`` to not break inheritance.
-
-        Sets up private class variable:
-
-        - ``_omega``, dict of arrays: Solid angle in radians of each injection
-          region for each source sample.
+        Only sets up the solid angle here to not break inheritance, band
+        boundaries have been calculated from prior maps in ``fit``.
         """
         assert self._mode == "band"
-        self._omega = {}
-        for key, _srcs in self._srcs.items():
-            # Solid angles of selected events around each source
-            min_sin_dec = np.sin(self._min_dec[key])
-            max_sin_dec = np.sin(self._max_dec[key])
-            self._omega[key] = 2. * np.pi * (max_sin_dec - min_sin_dec)
-            assert np.all(0. < self._omega[key])
-            assert np.all(self._omega[key] <= 4. * np.pi)
-            assert (len(self._min_dec[key]) == len(self._max_dec[key]) ==
-                    len(self._omega[key]) == self._nsrcs[key])
-        return
+        # Solid angles of selected events around each source
+        min_sin_dec = np.sin(self._min_dec)
+        max_sin_dec = np.sin(self._max_dec)
+        self._omega = 2. * np.pi * (max_sin_dec - min_sin_dec)
+        assert np.all((0. < self._omega) & (self._omega <= 4. * np.pi))
 
 
 ##############################################################################
