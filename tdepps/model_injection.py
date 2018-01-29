@@ -5,12 +5,27 @@ from future.utils import viewkeys
 from future import standard_library
 standard_library.install_aliases()
 
-from model_toolkit import SignalFluenceInjector, ResampleBGDataInjector
+from model_toolkit import (SignalFluenceInjector, ResampleBGDataInjector,
+                           SinusFixedConstRateFunction)
 
 
 class GRBInjectionModel(object):
     """
     Models the injection part for the LLH tests. Implements: `get_sample()`.
+    This model is used for the GRB-like HESE stacking analysis.
+
+    BG injection is allsky and time and declination dependent:
+      1. For each source time build a declination dependent detector profile
+         from which the declination is sampled weighted.
+      2. For each source the integrated event rate over the time interval is
+         used to draw the number of events to sample.
+      3. Then the total number of events for the source is sampled from the
+         total pool of experimental data weighted in declination.
+      4. RA is sampled uniformly in ``[0, 2pi]`` and times are sampled from the
+         rate function (uniform for small time windows.)
+
+    Signal injection is done similar to skylab:
+      1. Spatial and energy
 
     Parameters
     ----------
