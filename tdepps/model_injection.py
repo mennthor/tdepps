@@ -25,7 +25,8 @@ class GRBInjectionModel(object):
          rate function (uniform for small time windows.)
 
     Signal injection is done similar to skylab:
-      1. Spatial and energy
+      1. Spatial and energy attributes are resampled from MC weighted to the
+         detector response for a specific signal model and source position.
 
     Parameters
     ----------
