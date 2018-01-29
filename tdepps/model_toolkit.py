@@ -13,7 +13,6 @@ benefit from direct class attributes.
 from __future__ import print_function, division, absolute_import
 from builtins import zip, super
 from future import standard_library
-from future.utils import viewkeys
 standard_library.install_aliases()
 
 import abc
