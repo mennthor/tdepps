@@ -53,7 +53,7 @@ class GRBInjectionModel(object):
     def signal_injectors(self):
         return self._sig_injectors
 
-    def fit(self, X, MC, srcs):
+    def fit(self, X, MC, srcs, run_dicts):
         """
         Take data, MC and sources and build injection models. This is the place
         to actually stitch together a custom injector from the toolkit modlues.
@@ -86,8 +86,16 @@ class GRBInjectionModel(object):
         # Internally keep track of which event was injected from which injector
         return
 
-    def _build_data_injectors(self, X, srcs):
-        """ The specific model for BG injection is encoded here """
+    def _build_data_injectors(self, X, srcs, runlist):
+        """
+        Create a time and declination dependent background model.
+
+        Fit rate functions to time dependent rate in sindec bins. Normalize PDFs
+        over the sindec range and fit splines to the fitted parameter points to
+        continiously describe a rate model for a declination. Then choose a
+        specific source time and build weights to inject according to the sindec
+        dependent rate PDF from the whole pool of BG events.
+        """
         return
 
     def _build_signal_injectors(self, X, MC, srcs):
@@ -98,6 +106,16 @@ class GRBInjectionModel(object):
             pass
         self._sig_injectors = _sig_injectors
         return
+
+    def _make_timedep_bg_injection(self):
+        """
+        Create the weight CDFs for a time and declination dependent background
+        injection model.
+
+        Parameters
+        ----------
+        T : array
+        """
 
 
 # class MultiGRBInjectionModel(object):
