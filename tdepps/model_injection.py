@@ -5,8 +5,13 @@ from future.utils import viewkeys
 from future import standard_library
 standard_library.install_aliases()
 
+import numpy as np
+from sklearn.utils import check_random_state
+
 from model_toolkit import (SignalFluenceInjector, ResampleBGDataInjector,
-                           SinusFixedConstRateFunction)
+                           SinusFixedConstRateFunction, rebin_rate_rec,
+                           make_rate_records)
+from utils import spl_normed, fit_spl_to_hist
 
 
 class GRBInjectionModel(object):
@@ -34,7 +39,7 @@ class GRBInjectionModel(object):
     MC : dict
     srcs : dict
     """
-    def __init__(self):
+    def __init__(self, rndgen=None):
         self._bg_injectors = None
         self._sig_injectors = None
         self._names
@@ -53,6 +58,14 @@ class GRBInjectionModel(object):
     def signal_injectors(self):
         return self._sig_injectors
 
+    @property
+    def rndgen(self):
+        return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
+
     def fit(self, X, MC, srcs, run_dicts):
         """
         Take data, MC and sources and build injection models. This is the place
@@ -61,12 +74,14 @@ class GRBInjectionModel(object):
         # Keys must all be equivalent
         if viewkeys(X) != viewkeys(MC):
             raise ValueError("Keys in `X` and `MC` don't match.")
-        if viewkeys(MC) != viewkeys(srcs):
+        if viewkeys(srcs) != viewkeys(MC):
             raise ValueError("Keys in `MC` and `srcs` don't match.")
+        if viewkeys(run_dicts) != viewkeys(MC):
+            raise ValueError("Keys in `MC` and `run_dicts` don't match.")
 
-        self._names = list(viewkeys(X))
+        self._names = list(viewkeys(MC))
 
-        self._build_data_injectors(X, srcs)
+        self._build_data_injectors(X, srcs, run_dicts)
         self._build_signal_injectors(MC, srcs)
 
         return
@@ -86,7 +101,7 @@ class GRBInjectionModel(object):
         # Internally keep track of which event was injected from which injector
         return
 
-    def _build_data_injectors(self, X, srcs, runlist):
+    def _build_data_injectors(self, X, srcs, run_dicts):
         """
         Create a time and declination dependent background model.
 
@@ -96,6 +111,34 @@ class GRBInjectionModel(object):
         specific source time and build weights to inject according to the sindec
         dependent rate PDF from the whole pool of BG events.
         """
+        # Custom sindec binning, equal for all samples, finer at the horizon
+        hor = 0.25
+        sindec_bins = np.unique(np.concatenate([
+                                np.linspace(-1., -hor, 5 + 1),    # south
+                                np.linspace(-hor, +hor, 10 + 1),  # horizon
+                                np.linspace(+hor, 1., 5 + 1),     # north
+                                ]))
+
+
+        print("Setup background injectors:")
+        splines = {}
+        for key in self._names:
+            print(" - Sample '{}':".format(key))
+            # For each sample build a spline model for the rate function params
+            # describing the declination dependent bg rate
+            T = X[key]["timeMJD"]
+            sindec = np.sin(X[key]["dec"])
+            # Time binning for stable rate function fits
+            t_bins = np.linspace(np.amin(T), np.amax(T), 12 + 1)
+            # Make model parameter splines
+            rate_rec = make_rate_records(T, run_dicts[key])
+            splines[key] = self._setup_timedep_bg_rate_splines(
+                T, sindec, sindec_bins, t_bins, rate_rec)
+            print("   + Built dec dependent rate spline".format(len()))
+
+            # Get the background rate for each source per sample and setup the
+            # background sampler using the correct weights per source
+
         return
 
     def _build_signal_injectors(self, X, MC, srcs):
@@ -107,15 +150,108 @@ class GRBInjectionModel(object):
         self._sig_injectors = _sig_injectors
         return
 
-    def _make_timedep_bg_injection(self):
+    def _setup_timedep_bg_rate_splines(self, T, sindec, sindec_bins, t_bins,
+                                       rate_rec):
         """
         Create the weight CDFs for a time and declination dependent background
         injection model.
 
         Parameters
         ----------
-        T : array
+        T : array-like
+            Experimental data MJD times.
+        sindec : array-like
+            Experimental data sinus of declination.
+        sindec_bins : array-like
+            Explicit bin edges for the binning used to construct the dec
+            dependent model.
+        t_bins : array-like
+            Explicit bins edges for the time binning used to fit the rate model.
+        rate_rec : record-array
+            Rate information as coming out of ``rebin_rate_rec``. Needs names
+            ``'start_mjd', 'stop_mjd', 'rate'``.
+
+        Returns
+        -------
+
         """
+        T = np.atleast_1d(T)
+        sindec = np.atleast_1d(sindec)
+        sindec_bins = np.atleast_1d(sindec_bins)
+
+        # Rate model only varies in amplitude and baseline
+        p_fix = 365.
+        t0_fix = np.amin(T)
+        rate_func = SinusFixedConstRateFunction(p_fix=p_fix, t0_fix=t0_fix,
+                                                random_state=self._rndgen)
+
+        # First an allsky fit to correctly renormalize the splines later
+        rates, new_bins, rates_std, _ = rebin_rate_rec(
+            rate_rec, rate_rec, bins=t_bins, ignore_zero_runs=True)
+        t_mids = 0.5 * (new_bins[:-1] + new_bins[1:])
+        fitres = rate_func.fit(t_mids, rates, x0=None, w=1. / rates_std)
+        names = ["amplitude", "baseline"]
+        allsky_fitpars = {n: fitres.x[i] for i, n in enumerate(names)}
+
+        # For each sindec bin fit a model
+        fit_pars = []
+        fit_stds = []
+        sindec_mids = []
+        for i, (lo, hi) in enumerate(zip(sindec_bins[:-1], sindec_bins[1:])):
+            mask = (sindec >= lo) & (sindec < hi)
+            # Rebin rates and fit the model per sindec bin
+            rates, new_bins, rates_std, _ = rebin_rate_rec(
+                rate_rec[mask], bins=t_bins, ignore_zero_runs=True)
+
+            t_mids = 0.5 * (new_bins[:-1] + new_bins[1:])
+            fitres = rate_func.fit(t_mids, rates, x0=None, w=1. / rates_std)
+
+            # Save stats for spline interpolation
+            sindec_mids.append(0.5 * (lo + hi))
+            fit_stds.append(np.sqrt(np.diag(fitres.hess_inv)))
+            fit_pars.append(fitres.x)
+
+        fit_pars = np.array(fit_pars).T
+        fit_stds = np.array(fit_stds).T
+        sindec_mids = np.array(sindec_mids)
+
+        # Build a spline to continiously describe the rate model for each dec
+        splines = {}
+        lo, hi = sindec_bins[0], sindec_bins[-1]
+        for i, (bp, std, n) in enumerate(zip(fit_pars, fit_stds, names)):
+            # Amplitude and baseline must be in units HZ/dec, so that the
+            # integral over declination gives back the allsky values
+            norm = np.diff(sindec_bins)
+            _bp = bp / norm
+            _std = std / norm
+            spl, norm, vals, pts = fit_spl_to_hist(_bp, sindec_bins, _std)
+            splines[n] = self._spl_normed_factory(spl, lo=lo, hi=hi,
+                                                  norm=allsky_fitpars[n])
+
+        return splines
+
+        def _spl_normed_factory(self, spl, lo, hi, norm):
+            """
+            Returns a renormalized spline so that
+            ``int_lo^hi renorm_spl dx = norm``.
+
+            Parameters
+            ----------
+            spl : scipy.interpolate.UnivariateSpline
+                Scipy spline object.
+            lo, hi : float
+                Borders of the integration range.
+            norm : float
+                Norm the renormalized spline should have after renormalizing.
+
+            Returns
+            -------
+            spl : utils.spl_normed
+                New spline object with fewer feature set, but normalized over
+                the range ``[lo, hi]``.
+            """
+            return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
+
 
 
 # class MultiGRBInjectionModel(object):
