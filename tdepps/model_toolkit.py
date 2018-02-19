@@ -1373,8 +1373,8 @@ class RateFunction(object):
 
         Returns
         -------
-        bf_pars : array-like
-            Values of the best fit parameters.
+        res : scipy.optimize.OptimizeResult
+            Dict wrapper with fot results.
         """
         if w is None:
             w = np.ones_like(rate)
@@ -1392,7 +1392,7 @@ class RateFunction(object):
         self._bf_fun = (lambda t: self.fun(t, res.x))
         self._bf_int = (lambda t, trange: self.integral(t, trange, res.x))
         self._bf_pars = res.x
-        return res.x
+        return res
 
     def _lstsq(self, pars, *args):
         """
@@ -1994,3 +1994,76 @@ def make_rate_records(T, run_dict, eps=0., all_in_err=False):
     a = np.vstack((run, rate, runtime, start_mjd, stop_mjd, evts, rate_std))
     rate_rec = np.core.records.fromarrays(a, dtype=dtype)
     return rate_rec
+
+
+def rebin_rate_rec(rate_rec, bins, ignore_zero_runs=True):
+    """
+    Rebin rate per run information. The binning is right exclusice on the start
+    time of an run:
+      ``bins[i] <= rate_rec["start_mjd"] < bins[i+1]``.
+    Therefore the bin borders are not 100% exact, but the included rates are.
+    New bin borders adjustet to start at the first included run are returned, to
+    miniimize the error, but we still shouldn't calculate the event numbers by
+    multiplying bin widths with rates.
+
+    Parameters
+    ----------
+    rate_rec : record-array
+        Rate information as coming out of RunlistBGRateInjector._rate_rec.
+        Needs names ``'start_mjd', 'stop_mjd', 'rate'``.
+    bins : array-like or int
+        New time binning used to rebin the rates.
+    ignore_zero_runs : bool, optional
+        If ``True`` runs with zero events are ignored. This method of BG
+        estimation doesn't work well, if we have many zero events runs because
+        the baseline gets biased towards zero. If this is an effect of the
+        events selection then a different method should be used. (Default: True)
+
+    Returns
+    -------
+    rates : array-like
+        Rebinned rates per bin.
+    bins : array-like
+        Adjusted bins so that the left borders always start at the first
+        included run and the last right bin at the end of the last included run.
+    rate_std : array-like
+        Poisson ``sqrt(N)`` standard error of the rates per bin.
+    deadtime : array-like
+        How much livetime is 'dead' in the given binning, because runs do not
+        start immideiately one after another or there are bad runs that got
+        filtered out. Subtracting the missing livetime from the bin width
+        enables us to use the resulting time to recreate the event numbers.
+    """
+    _SECINDAY = 24. * 60. * 60.
+    rates = rate_rec["rate"]
+    start = rate_rec["start_mjd"]
+    stop = rate_rec["stop_mjd"]
+
+    bins = np.atleast_1d(bins)
+    if len(bins) == 1:
+        # Use min max and equidistant binning if only a number is given
+        bins = np.linspace(np.amin(start), np.amax(stop), int(bins[0]) + 1)
+
+    new_bins = np.empty_like(bins)
+    rate = np.empty(len(bins) - 1, dtype=float)
+    rate_std = np.empty(len(bins) - 1, dtype=float)
+    livetime_per_bin = np.empty_like(rate)
+
+    assert np.allclose(rate_rec["nevts"],
+                       rate_rec["rate"] * (stop - start) * _SECINDAY)
+
+    for i, (lo, hi) in enumerate(zip(bins[:-1], bins[1:])):
+        mask = (lo <= start) & (start < hi)
+        if ignore_zero_runs:
+            mask = mask & (rates > 0)
+        livetime_per_bin[i] = np.sum(stop[mask] - start[mask])
+        # New mean rate: sum(all events in runs) / sum(real livetimes in runs)
+        nevts = np.sum(rates[mask] * (stop[mask] - start[mask]))
+        rate[i] = nevts / livetime_per_bin[i]
+        rate_std[i] = np.sqrt(nevts / _SECINDAY) / livetime_per_bin[i]
+        # Adapt bin edges
+        new_bins[i] = np.amin(start[mask])
+    new_bins[-1] = np.amax(stop[mask])
+
+    deadtime = np.diff(new_bins) - livetime_per_bin
+    return rate, np.atleast_1d(new_bins), rate_std, deadtime
