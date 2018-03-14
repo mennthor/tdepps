@@ -7,6 +7,7 @@ standard_library.install_aliases()
 
 import numpy as np
 from sklearn.utils import check_random_state
+import abc
 
 from model_toolkit import (SignalFluenceInjector, ResampleBGDataInjector,
                            SinusFixedConstRateFunction, rebin_rate_rec,
@@ -14,9 +15,22 @@ from model_toolkit import (SignalFluenceInjector, ResampleBGDataInjector,
 from utils import spl_normed, fit_spl_to_hist
 
 
-class GRBInjectionModel(object):
+class Injector(object):
+    """ Interface for injection type classes. """
+    __metaclass__ = abc.ABCMeta
+
+    @abc.abstractmethod
+    def fit():
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def get_sample():
+        raise NotImplementedError
+
+
+class GRBInjectionModel(Injector):
     """
-    Models the injection part for the LLH tests. Implements: `get_sample()`.
+    Models the injection part for the GRB LLH, implements: ``get_sample()``.
     This model is used for the GRB-like HESE stacking analysis.
 
     BG injection is allsky and time and declination dependent:
