@@ -1859,10 +1859,12 @@ def fit_time_dec_rate_models(timesMJD, sin_decs, run_dict, sin_dec_bins,
     -------
     best_pars : record-array
         Best fit parameters amplitude and baseline per sinus declination bin,
-        has names ``'amp', 'base'``.
+        normalized to binwidth. Has names ``'amp', 'base'``.
     std_devs : record-array
         Standard deviation of amplitude and baseline per sinus declination bin,
-        has names ``'amp', 'base'``.
+        normalized to binwidth. Has names ``'amp', 'base'``.
+    sin_dec_mids : array-like
+        Mids of the sinus declination bins.
     """
     timesMJD = np.atleast_1d(timesMJD)
     sin_decs = np.atleast_1d(sin_decs)
@@ -1878,8 +1880,9 @@ def fit_time_dec_rate_models(timesMJD, sin_decs, run_dict, sin_dec_bins,
     t0_fix = np.amin(timesMJD)
     rate_func = SinusFixedRateFunction(p_fix=p_fix, t0_fix=t0_fix)
 
-    nbins = len(sin_dec_bins) - 1
     names = ["amp", "base"]
+    norm = np.diff(sin_dec_bins)
+    nbins = len(sin_dec_bins) - 1
     best_pars = np.empty((nbins, ), dtype=[(n, float) for n in names])
     std_devs = np.empty_like(best_pars)
     for i, (lo, hi) in enumerate(zip(sin_dec_bins[:-1], sin_dec_bins[1:])):
@@ -1889,17 +1892,23 @@ def fit_time_dec_rate_models(timesMJD, sin_decs, run_dict, sin_dec_bins,
 
         # Rebinned fit ((f-y)/std). Weights should be approx. std dev to obtain
         # useful weights for the spline parametrization.
-        rates, bins, rates_std, _ = rebin_rate_rec(
-            rate_rec, bins=rate_rebins, ignore_zero_runs=True)
+        rates, bins, rates_std, _ = rebin_rate_rec(rate_rec, bins=rate_rebins,
+                                                   ignore_zero_runs=True)
+        weights = 1. / rates_std
         mids = 0.5 * (bins[:-1] + bins[1:])
 
-        fitres = rate_func.fit(mids, rates, x0=None, w=1. / rates_std)
+        # Fit seeds: Half the max spread for amp, average baseline for base
+        p0 = (-0.5 * (np.amax(rates) - np.amin(rates)),
+              np.average(rates, weights=weights))
+        fitres = rate_func.fit(mids, rates, p0=p0, w=weights)
 
         for j, n in enumerate(names):
-            best_pars[n][i] = fitres.x[j]
-            std_devs[n][i] = np.sqrt(np.diag(fitres.hess_inv))[j]
+            # Normalize amp and base to sin_dec binwidth
+            best_pars[n][i] = fitres.x[j] / norm[i]
+            std_devs[n][i] = np.sqrt(np.diag(fitres.hess_inv))[j] / norm[i]
 
-    return best_pars, std_devs
+    sin_dec_mids = 0.5 * (sin_dec_bins[:-1] + sin_dec_bins[1:])
+    return best_pars, std_devs, sin_dec_mids
 
 
 def make_time_dec_rate_model_splines(sin_dec_bins, best_pars, std_devs,
@@ -1915,10 +1924,10 @@ def make_time_dec_rate_model_splines(sin_dec_bins, best_pars, std_devs,
         Explicit bin edges in ``sin(dec)`` used to create the binned best fits.
     best_pars : record-array
         Best fit parameters amplitude and baseline per sinus declination bin,
-        has names ``'amp', 'base'``.
+        already normalized to binwidth. Has names ``'amp', 'base'``.
     std_devs : record-array
         Standard deviation of amplitude and baseline per sinus declination bin,
-        has names ``'amp', 'base'``.
+        already normalized to binwidth. Has names ``'amp', 'base'``.
     spl_norm : dict, optional
         If not ``None`` must be a dict with keys ``'amplitude'``, ``'baseline'``
         containing the normalization constant used for each spline, so that the
@@ -1943,18 +1952,16 @@ def make_time_dec_rate_model_splines(sin_dec_bins, best_pars, std_devs,
 
     param_splines = {}
     lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
-    sin_dec_norm = np.diff(sin_dec_bins)
-    names = ["amp", "base"]
-    for i, (bp, n, std) in enumerate(zip(best_pars, names, std_devs)):
+    for n in ["amp", "base"]:
         # Use normalized amplitude and baseline in units HZ/dec
-        bp = bp / sin_dec_norm
-        std = std / sin_dec_norm
-        spl = fit_spl_to_hist(bp, sin_dec_bins, std)
+        spl = fit_spl_to_hist(best_pars[n], sin_dec_bins, std_devs[n])[0]
 
         if spl_norm is not None:
             # Renormalization can only be done with amp and baseline because the
             # are additive across the disjunct sindec bins for the rate model.
             norm = spl_norm[n]
+        else:
+            norm = spl.integral(lo, hi)
 
         param_splines[n] = spl_normed_factory(spl, lo=lo, hi=hi, norm=norm)
 
