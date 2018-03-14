@@ -1,12 +1,11 @@
 # coding: utf-8
 
 """
-Collection of repetedly used or large helper functions more or less indepent
-of the use as building blocks for the model classes.
+Collection of basic methods used eg. in ``model_toolkit``.
 """
 
 from __future__ import print_function, division, absolute_import
-from builtins import zip, map
+from builtins import map
 from future import standard_library
 standard_library.install_aliases()
 
@@ -597,7 +596,8 @@ class spl_normed(object):
 
     The given spline is normalized so that integral over ``[lo, hi]`` is
     ``norm``. There might be a better way by directly inheriting from
-    UnivariateSpline, but this is OK, if we don't need the full feature set.
+    ``UnivariateSpline``, but this class is OK, if we don't need the full spline
+    feature set.
 
     Note: Not all spline methods are available.
 
@@ -616,6 +616,8 @@ class spl_normed(object):
         if spl.integral(a=lo, b=hi) == 0:
             raise ValueError("Given spline has integral 0, can't scale it.")
         self._scale = norm / spl.integral(a=lo, b=hi)
+        if np.isclose(self._scale, 1.):
+            self._scale = 1.
 
     def __call__(self, x, nu=0, ext=None):
         return self._scale * self._spl(x, nu, ext)
