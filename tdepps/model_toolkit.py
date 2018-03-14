@@ -1831,6 +1831,136 @@ def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
     return phi0 * (trueE / E0)**(-gamma)
 
 
+def fit_time_dec_rate_models(timesMJD, sin_decs, run_dict, sin_dec_bins,
+                             rate_rebins, minimizer_opts=None):
+    """
+    Fit amplitude and baseline of a ``SinusFixedRateFunction`` model to data in
+    given declination bins to build a time and dec dependent rate model.
+
+    Parameters
+    ----------
+    timesMJD : array-like
+        Experimental per event event times in MJD days.
+    sin_decs : array-like
+        Experimental per event ``sin(declination)`` values.
+    run_dict : dictionary
+        Dictionary with run information, matching the experimental data. Can be
+        obtained from ``create_run_dict``.
+    sin_dec_bins : array-like
+        Explicit bin edges in ``sin(dec)`` used to bin ``sin_decs``.
+    rate_rebins : array-like
+        Explicit bin edges used to rebin the rates before fitting the model to
+        achieve more stable fit conditions.
+    minimizer_opts : dict, optional
+        Options passed to the minimizer in the rate model fitter.
+        (default: ``None``)
+
+    Returns
+    -------
+    best_pars : record-array
+        Best fit parameters amplitude and baseline per sinus declination bin,
+        has names ``'amp', 'base'``.
+    std_devs : record-array
+        Standard deviation of amplitude and baseline per sinus declination bin,
+        has names ``'amp', 'base'``.
+    """
+    timesMJD = np.atleast_1d(timesMJD)
+    sin_decs = np.atleast_1d(sin_decs)
+    sin_dec_bins = np.atleast_1d(sin_dec_bins)
+    rate_rebins = np.atleast_1d(rate_rebins)
+
+    if not isinstance(run_dict, dict):
+        raise TypeError("`run_dict` must be a dictionary.")
+
+    # Create rate function to model the data: Use only amplitude and baseline as
+    # free parameters in the rate model
+    p_fix = 365.
+    t0_fix = np.amin(timesMJD)
+    rate_func = SinusFixedRateFunction(p_fix=p_fix, t0_fix=t0_fix)
+
+    nbins = len(sin_dec_bins) - 1
+    names = ["amp", "base"]
+    best_pars = np.empty((nbins, ), dtype=[(n, float) for n in names])
+    std_devs = np.empty_like(best_pars)
+    for i, (lo, hi) in enumerate(zip(sin_dec_bins[:-1], sin_dec_bins[1:])):
+        mask = (sin_decs >= lo) & (sin_decs < hi)
+        rate_rec = make_rate_records(timesMJD[mask], run_dict, eps=0.,
+                                     all_in_err=False)
+
+        # Rebinned fit ((f-y)/std). Weights should be approx. std dev to obtain
+        # useful weights for the spline parametrization.
+        rates, bins, rates_std, _ = rebin_rate_rec(
+            rate_rec, bins=rate_rebins, ignore_zero_runs=True)
+        mids = 0.5 * (bins[:-1] + bins[1:])
+
+        fitres = rate_func.fit(mids, rates, x0=None, w=1. / rates_std)
+
+        for j, n in enumerate(names):
+            best_pars[n][i] = fitres.x[j]
+            std_devs[n][i] = np.sqrt(np.diag(fitres.hess_inv))[j]
+
+    return best_pars, std_devs
+
+
+def make_time_dec_rate_model_splines(sin_dec_bins, best_pars, std_devs,
+                                     spl_norm=None):
+    """
+    Fit a spline to best fit values from ``fit_time_dec_rate_models``. Build a
+    spline model to continiously describe the rate model parameters in
+    declination.
+
+    Parameters
+    ----------
+    sin_dec_bins : array-like
+        Explicit bin edges in ``sin(dec)`` used to create the binned best fits.
+    best_pars : record-array
+        Best fit parameters amplitude and baseline per sinus declination bin,
+        has names ``'amp', 'base'``.
+    std_devs : record-array
+        Standard deviation of amplitude and baseline per sinus declination bin,
+        has names ``'amp', 'base'``.
+    spl_norm : dict, optional
+        If not ``None`` must be a dict with keys ``'amplitude'``, ``'baseline'``
+        containing the normalization constant used for each spline, so that the
+        integral over the whole declination range yields ``spl_norm`` in each
+        case. (Default: ``None``)
+
+    Returns
+    -------
+    param_splines : dict
+        Dictionary with keys ``'amp'``, ``'base'`` containing ``spl_normed``
+        objects, which describe the amplitude and baseline parameters used to
+        describe the experimental data rates with a time and declination
+        dependent rate model.
+    """
+    def spl_normed_factory(spl, lo, hi, norm):
+        """ Renormalize spline, so ``int_lo^hi renorm_spl dx = norm`` """
+        return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
+
+    if spl_norm is not None:
+        if not isinstance(spl_norm, dict):
+            raise ValueError("`spl_norm` must be a dictionary.")
+
+    param_splines = {}
+    lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
+    sin_dec_norm = np.diff(sin_dec_bins)
+    names = ["amp", "base"]
+    for i, (bp, n, std) in enumerate(zip(best_pars, names, std_devs)):
+        # Use normalized amplitude and baseline in units HZ/dec
+        bp = bp / sin_dec_norm
+        std = std / sin_dec_norm
+        spl = fit_spl_to_hist(bp, sin_dec_bins, std)
+
+        if spl_norm is not None:
+            # Renormalization can only be done with amp and baseline because the
+            # are additive across the disjunct sindec bins for the rate model.
+            norm = spl_norm[n]
+
+        param_splines[n] = spl_normed_factory(spl, lo=lo, hi=hi, norm=norm)
+
+    return param_splines
+
+
 def create_run_dict(run_list, filter_runs=None):
     """
     Create a dict of lists from a run list in JSON format (list of dicts).
