@@ -25,9 +25,14 @@ from sklearn.utils import check_random_state
 import healpy as hp
 from astropy.time import Time as astrotime
 
-from awkde import GaussianKDE as KDE
+try:
+    from awkde import GaussianKDE as KDE
+except ImportError as e:
+    print(e)
+    print("KDE injector is not available because package `awkde` is missing.")
 
-from .utils import random_choice, fill_dict_defaults, ThetaPhiToDecRa, rotator
+from .utils import (random_choice, fill_dict_defaults, ThetaPhiToDecRa,
+                    rotator, spl_normed, fit_spl_to_hist)
 
 
 ##############################################################################
