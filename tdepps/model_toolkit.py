@@ -2208,4 +2208,4 @@ def rebin_rate_rec(rate_rec, bins, ignore_zero_runs=True):
     new_bins[-1] = np.amax(stop[mask])
 
     deadtime = np.diff(new_bins) - livetime_per_bin
-    return rate, np.atleast_1d(new_bins), rate_std, deadtime
+    return rate, new_bins, rate_std, deadtime
