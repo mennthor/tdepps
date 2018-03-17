@@ -18,6 +18,7 @@ import numpy as np
 from numpy.lib.recfunctions import drop_fields
 import scipy.optimize as sco
 import scipy.stats as scs
+import scipy.interpolate as sci
 from sklearn.utils import check_random_state
 import healpy as hp
 from astropy.time import Time as astrotime
@@ -1828,18 +1829,21 @@ def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
     return phi0 * (trueE / E0)**(-gamma)
 
 
-def fit_time_dec_rate_models(timesMJD, sin_decs, run_dict, sin_dec_bins,
-                             rate_rebins, minimizer_opts=None):
+def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
+                              sin_dec_bins, rate_rebins):
     """
-    Fit amplitude and baseline of a ``SinusFixedRateFunction`` model to data in
-    given declination bins to build a time and dec dependent rate model.
+    Make a declination PDF spline averaged over each sources time window.
 
     Parameters
     ----------
-    timesMJD : array-like
+    ev_t : array-like, shape (nevts)
         Experimental per event event times in MJD days.
-    sin_decs : array-like
+    ev_sin_dec : array-like, shape (nevts)
         Experimental per event ``sin(declination)`` values.
+    src_t : array-like, shape (nsrcs)
+        Source times in MJD days.
+    src_trange : array-like, shape (nsrcs, 2)
+        Source time windows in seconds, centered around source time.
     run_dict : dictionary
         Dictionary with run information, matching the experimental data. Can be
         obtained from ``create_run_dict``.
@@ -1848,121 +1852,113 @@ def fit_time_dec_rate_models(timesMJD, sin_decs, run_dict, sin_dec_bins,
     rate_rebins : array-like
         Explicit bin edges used to rebin the rates before fitting the model to
         achieve more stable fit conditions.
-    minimizer_opts : dict, optional
-        Options passed to the minimizer in the rate model fitter.
-        (default: ``None``)
 
     Returns
     -------
-    best_pars : record-array
-        Best fit parameters amplitude and baseline per sinus declination bin,
-        normalized to binwidth. Has names ``'amp', 'base'``.
-    std_devs : record-array
-        Standard deviation of amplitude and baseline per sinus declination bin,
-        normalized to binwidth. Has names ``'amp', 'base'``.
-    sin_dec_mids : array-like
-        Mids of the sinus declination bins.
+    sin_dec_splines : list of scipy.interpolate.UnivariateSpline
+        For each given source time and range, a declination PDF spline, so that
+        the integral over the spline over the given sin dec range is 1.
     """
-    timesMJD = np.atleast_1d(timesMJD)
-    sin_decs = np.atleast_1d(sin_decs)
+    ev_t = np.atleast_1d(ev_t)
+    ev_sin_dec = np.atleast_1d(ev_sin_dec)
+    src_t = np.atleast_1d(src_t)
+    src_trange = np.atleast_2d(src_trange)
     sin_dec_bins = np.atleast_1d(sin_dec_bins)
     rate_rebins = np.atleast_1d(rate_rebins)
 
-    if not isinstance(run_dict, dict):
-        raise TypeError("`run_dict` must be a dictionary.")
-
-    # Create rate function to model the data: Use only amplitude and baseline as
-    # free parameters in the rate model
-    p_fix = 365.
-    t0_fix = np.amin(timesMJD)
-    rate_func = SinusFixedRateFunction(p_fix=p_fix, t0_fix=t0_fix)
-
-    names = ["amp", "base"]
+    rate_rec = make_rate_records(run_dict=run_dict, T=ev_t)
     norm = np.diff(sin_dec_bins)
+
+    # 1) Get phase offset from allsky fit for good amp and baseline fits.
+    #    Only fix the period to 1 year, as expected from seasons.
+    p_fix = 365.
+    rate_func = SinusFixedRateFunction(p_fix=p_fix)
+    #    Fit amp, phase and base using rebinned rates
+    rates, new_rate_bins, rates_std, _ = rebin_rate_rec(
+        rate_rec, bins=rate_rebins, ignore_zero_runs=True)
+    rate_bin_mids = 0.5 * (new_rate_bins[:-1] + new_rate_bins[1:])
+    weights = 1. / rates_std
+    #    Empirical seeds to get a good fit
+    min_rate, max_rate = np.amin(rates), np.amax(rates)
+    min_ev_t = np.amin(ev_t)
+    seed_reb = (-0.5 * (max_rate - min_rate),  # Optimized for southern hemisp.
+                min_ev_t,
+                np.average(rates, weights=weights))
+    bounds = [[-2. * max_rate, 2. * max_rate],
+              [seed_reb[1] - 180., seed_reb[1] + 180.],
+              [0., None]]
+    fitres_allsky = rate_func.fit(
+        rate_bin_mids, rates, p0=seed_reb, w=weights, bounds=bounds)
+    #    This is used to fix the time phase approximately at the correct
+    #    baseline in the following fits, because a 3 param fit yields large
+    #    errors, due to strong correlation between amp and phase, so we can't
+    #    use them to build a proper spline representation.
+    phase_bf_fix = fitres_reb.x[1]
+
+    # 2) For each sin_dec_bin fit a separate rate model in amp and base.
+    rate_func = SinusFixedRateFunction(p_fix=p_fix, t0_fix=phase_bf_fix)
+    names = ["amp", "base"]
     nbins = len(sin_dec_bins) - 1
     best_pars = np.empty((nbins, ), dtype=[(n, float) for n in names])
     std_devs = np.empty_like(best_pars)
     for i, (lo, hi) in enumerate(zip(sin_dec_bins[:-1], sin_dec_bins[1:])):
-        mask = (sin_decs >= lo) & (sin_decs < hi)
-        rate_rec = make_rate_records(timesMJD[mask], run_dict, eps=0.,
+        # Only make rates for the current bin and fit rate func in amp and base
+        mask = (ev_sin_dec >= lo) & (ev_sin_dec < hi)
+        rate_rec = make_rate_records(ev_t[mask], run_dict, eps=0.,
                                      all_in_err=False)
-
-        # Rebinned fit ((f-y)/std). Weights should be approx. std dev to obtain
-        # useful weights for the spline parametrization.
-        rates, bins, rates_std, _ = rebin_rate_rec(rate_rec, bins=rate_rebins,
-                                                   ignore_zero_runs=True)
+        rates, _, rates_std, _ = rebin_rate_rec(
+            rate_rec, bins=rate_rebins, ignore_zero_runs=True)
         weights = 1. / rates_std
-        mids = 0.5 * (bins[:-1] + bins[1:])
-
-        # Fit seeds: Half the max spread for amp, average baseline for base
-        p0 = (-0.5 * (np.amax(rates) - np.amin(rates)),
-              np.average(rates, weights=weights))
-        fitres = rate_func.fit(mids, rates, p0=p0, w=weights)
-
+        min_rate, max_rate = np.amin(rates), np.amax(rates)
+        p0 = (-0.5 * (max_rate - min_rate), np.average(rates, weights=weights))
+        bounds = [[-2. * max_rate, 2. * max_rate], [0., None]]
+        fitres = rate_func.fit(
+            rate_bin_mids, rates, p0=p0, w=weights, bounds=bounds)
+        # Store normalized best pars and fit stddevs to build a spline model
         for j, n in enumerate(names):
-            # Normalize amp and base to sin_dec binwidth
             best_pars[n][i] = fitres.x[j] / norm[i]
-            std_devs[n][i] = np.sqrt(np.diag(fitres.hess_inv))[j] / norm[i]
+            std_devs[n][i] = (
+                np.sqrt(np.diag(fitres.hess_inv.todense()))[j] / norm[i])
 
-    sin_dec_mids = 0.5 * (sin_dec_bins[:-1] + sin_dec_bins[1:])
-    return best_pars, std_devs, sin_dec_mids
-
-
-def make_time_dec_rate_model_splines(sin_dec_bins, best_pars, std_devs,
-                                     spl_norm=None):
-    """
-    Fit a spline to best fit values from ``fit_time_dec_rate_models``. Build a
-    spline model to continiously describe the rate model parameters in
-    declination.
-
-    Parameters
-    ----------
-    sin_dec_bins : array-like
-        Explicit bin edges in ``sin(dec)`` used to create the binned best fits.
-    best_pars : record-array
-        Best fit parameters amplitude and baseline per sinus declination bin,
-        already normalized to binwidth. Has names ``'amp', 'base'``.
-    std_devs : record-array
-        Standard deviation of amplitude and baseline per sinus declination bin,
-        already normalized to binwidth. Has names ``'amp', 'base'``.
-    spl_norm : dict, optional
-        If not ``None`` must be a dict with keys ``'amplitude'``, ``'baseline'``
-        containing the normalization constant used for each spline, so that the
-        integral over the whole declination range yields ``spl_norm`` in each
-        case. (Default: ``None``)
-
-    Returns
-    -------
-    param_splines : dict
-        Dictionary with keys ``'amp'``, ``'base'`` containing ``spl_normed``
-        objects, which describe the amplitude and baseline parameters used to
-        describe the experimental data rates with a time and declination
-        dependent rate model.
-    """
+    # 3) Interpolate discrete fit points with a continous smoothing spline
     def spl_normed_factory(spl, lo, hi, norm):
         """ Renormalize spline, so ``int_lo^hi renorm_spl dx = norm`` """
         return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
 
-    if spl_norm is not None:
-        if not isinstance(spl_norm, dict):
-            raise ValueError("`spl_norm` must be a dictionary.")
-
     param_splines = {}
     lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
-    for n in ["amp", "base"]:
+    norm_allsky = {
+        names[0]: fitres_allsky.x[0], names[-1]: fitres_allsky.x[-1]}
+    for n in names:
         # Use normalized amplitude and baseline in units HZ/dec
         spl = fit_spl_to_hist(best_pars[n], sin_dec_bins, std_devs[n])[0]
+        # Renormalize to match the allsky params, because the model is additive
+        param_splines[n] = spl_normed_factory(
+            spl, lo=lo, hi=hi, norm=norm_allsky[n])
 
-        if spl_norm is not None:
-            # Renormalization can only be done with amp and baseline because the
-            # are additive across the disjunct sindec bins for the rate model.
-            norm = spl_norm[n]
-        else:
-            norm = spl.integral(lo, hi)
+    # 4) For each source time window build a sindec PDF spline.
+    #    Each spline is averaged over the time range, so this only works for
+    #    reasonably small windows in which fluctuations don't get averaged out.
+    #    Get all rate model params from splines at sin_dec support points. Nr of
+    #    is arbitrary and chosen to have enough resolution in sin_dec, using
+    #    linear splines as they are fastest and good enough with many pts.
+    def spl_factory(x, y, k=1, ext="raise"):
+        """ Factory returning a new UnivariateSpline object """
+        return sci.InterpolatedUnivariateSpline(x, y, k=k, ext=ext)
 
-        param_splines[n] = spl_normed_factory(spl, lo=lo, hi=hi, norm=norm)
+    sin_dec_pts = np.linspace(lo, hi, 1000)
+    # Broadcast params to get the rate func vals for each sindec
+    amp = param_splines["amp"](sin_dec_pts)
+    base = param_splines["base"](sin_dec_pts)
+    sin_dec_splines = []
+    for ti, tri in zip(src_t, src_trange):
+        vals = rate_func.integral(t=ti, trange=tri, pars=(amp, base))
+        spl = sci.InterpolatedUnivariateSpline(
+            sin_dec_pts, vals, k=1, ext="raise")
+        norm = spl.integral(lo, hi)
+        sin_dec_splines.append(spl_factory(sin_dec_pts, vals / norm))
 
-    return param_splines
+    return sin_dec_splines
 
 
 def create_run_dict(run_list, filter_runs=None):
