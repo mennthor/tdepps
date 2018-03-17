@@ -13,7 +13,6 @@ benefit from direct class attributes.
 from __future__ import print_function, division
 
 import abc
-from copy import deepcopy
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
 import scipy.optimize as sco
@@ -1858,6 +1857,8 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
     sin_dec_splines : list of scipy.interpolate.UnivariateSpline
         For each given source time and range, a declination PDF spline, so that
         the integral over the spline over the given sin dec range is 1.
+    info : dict
+        Collection of various intermediate results and fit information.
     """
     ev_t = np.atleast_1d(ev_t)
     ev_sin_dec = np.atleast_1d(ev_sin_dec)
@@ -1872,7 +1873,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
     # 1) Get phase offset from allsky fit for good amp and baseline fits.
     #    Only fix the period to 1 year, as expected from seasons.
     p_fix = 365.
-    rate_func = SinusFixedRateFunction(p_fix=p_fix)
+    rate_func_allsky = SinusFixedRateFunction(p_fix=p_fix)
     #    Fit amp, phase and base using rebinned rates
     rates, new_rate_bins, rates_std, _ = rebin_rate_rec(
         rate_rec, bins=rate_rebins, ignore_zero_runs=True)
@@ -1887,7 +1888,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
     bounds = [[-2. * max_rate, 2. * max_rate],
               [seed_reb[1] - 180., seed_reb[1] + 180.],
               [0., None]]
-    fitres_allsky = rate_func.fit(
+    fitres_allsky = rate_func_allsky.fit(
         rate_bin_mids, rates, p0=seed_reb, w=weights, bounds=bounds)
     #    This is used to fix the time phase approximately at the correct
     #    baseline in the following fits, because a 3 param fit yields large
@@ -1958,7 +1959,9 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
         norm = spl.integral(lo, hi)
         sin_dec_splines.append(spl_factory(sin_dec_pts, vals / norm))
 
-    return sin_dec_splines
+    info = {"allsky_rate_func": rate_func_allsky,
+            "allsky_best_params": fitres_allsky.x}
+    return sin_dec_splines, info
 
 
 def create_run_dict(run_list, filter_runs=None):
