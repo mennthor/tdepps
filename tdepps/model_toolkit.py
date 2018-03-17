@@ -10,10 +10,7 @@ caching reasons, then consider coding the functionality directly into a model to
 benefit from direct class attributes.
 """
 
-from __future__ import print_function, division, absolute_import
-from builtins import zip, super
-from future import standard_library
-standard_library.install_aliases()
+from __future__ import print_function, division
 
 import abc
 from copy import deepcopy
@@ -768,7 +765,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
 ##############################################################################
 class BGDataInjector(object):
     """
-    General Purpose Data Injector Base Class
+    Background Data Injector Base Class
 
     Base class for generating events from a given data record array.
     Classes must implement methods:
@@ -800,11 +797,9 @@ class BGDataInjector(object):
     """
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, random_state=None):
-        self.rndgen = random_state
-        # Setup private defaults
-        self._X_names = None
-        self._n_features = None
+    _rndgen = None
+    _X_names = None
+    _n_features = None
 
     @property
     def rndgen(self):
@@ -889,14 +884,14 @@ class KDEBGDataInjector(BGDataInjector):
     ----------
     kde : awkde.GaussianKDE
         Adaptive width KDE model. If an already fitted model is given,
-        th ``fit`` step can be called with ``X=None`` to avoid refitting,
+        the ``fit`` step can be called with ``X=None`` to avoid refitting,
         which can take some time when many points with adaptive kernels are
         used.
     random_state : None, int or np.random.RandomState, optional
         Turn seed into a ``np.random.RandomState`` instance. (default: None)
     """
     def __init__(self, kde, random_state=None):
-        super(KDEBGDataInjector, self).__init__(random_state)
+        self.rndgen = random_state
         self.kde_model = kde
 
     @property
@@ -984,7 +979,7 @@ class ResampleBGDataInjector(BGDataInjector):
     Data injector resampling weighted data events from the given array.
     """
     def __init__(self, random_state=None):
-        super(ResampleBGDataInjector, self).__init__(random_state)
+        self.rdngen = random_state
 
     def fit(self, X, weights=None):
         """
@@ -1013,9 +1008,6 @@ class ResampleBGDataInjector(BGDataInjector):
         """
         Sample by choosing random events from the given data.
         """
-        if self._n_features is None:
-            raise RuntimeError("Injector was not fit to data yet.")
-
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
             dtype = [(n, float) for n in self._X_names]
@@ -1033,7 +1025,10 @@ class Binned3DBGDataInjector(BGDataInjector):
     data arrays.
     """
     def __init__(self, random_state=None):
-        super(Binned3DBGDataInjector, self).__init__(random_state)
+        self.rdngen = random_state
+        self._ax0_bins = None
+        self._ax1_bins = None
+        self._ax2_bins = None
 
     def fit(self, X, nbins=10, minmax=False):
         """
@@ -1180,7 +1175,7 @@ class Binned3DBGDataInjector(BGDataInjector):
         ax1_idx = self._rndgen.randint(0, self._nbins[1], size=n_samples)
         ax2_idx = self._rndgen.randint(0, self._nbins[2], size=n_samples)
 
-        # Sample uniform in [0, 1] to decide where each point lies in the bins
+        # Sample uniformly in [0, 1] to decide where each point lies in the bins
         r = self._rndgen.uniform(0, 1, size=(n_samples, self._n_features))
 
         # Get edges of each bin
@@ -1646,6 +1641,8 @@ class SinusFixedRateFunction(SinusRateFunction):
             self._c = t0_fix
 
         self._fit_idx = np.arange(4)[self._fit_idx]
+        self._PARAMS = np.array(super(SinusFixedRateFunction,
+                                      self)._PARAMS)[self._fit_idx]
 
     def fun(self, t, pars):
         pars = self._make_params(pars)
