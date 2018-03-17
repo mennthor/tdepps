@@ -1893,7 +1893,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
     #    baseline in the following fits, because a 3 param fit yields large
     #    errors, due to strong correlation between amp and phase, so we can't
     #    use them to build a proper spline representation.
-    phase_bf_fix = fitres_reb.x[1]
+    phase_bf_fix = fitres_allsky.x[1]
 
     # 2) For each sin_dec_bin fit a separate rate model in amp and base.
     rate_func = SinusFixedRateFunction(p_fix=p_fix, t0_fix=phase_bf_fix)

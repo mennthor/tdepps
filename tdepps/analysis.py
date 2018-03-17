@@ -1,22 +1,17 @@
 # coding: utf-8
 
-from __future__ import print_function, division, absolute_import
-from builtins import next
-from future import standard_library
-standard_library.install_aliases()
+from __future__ import print_function, division
 
 import numpy as np
 import scipy.stats as scs
 import scipy.optimize as sco
 
-from tdepps.utils import weighted_cdf
+from .utils import weighted_cdf
 
 
 class GRBLLHAnalysis(object):
     """
-    Providing methods to do a transients analysis.
-
-    model_injector yields events for the LLH that gets tested
+    Providing methods to do analysis stuff on a GRBLLH.
     """
     def __init__(self, model_injector, llh):
         self._check_inj_llh_harmony(model_injector, llh)
@@ -30,7 +25,7 @@ class GRBLLHAnalysis(object):
     @model_injector.setter
     def model_injector(self, model_injector):
         self._check_inj_llh_harmony(model_injector, self._llh)
-        self._model_injector = self._model_injector
+        self._model_injector = model_injector
 
     @property
     def llh(self):
@@ -39,7 +34,7 @@ class GRBLLHAnalysis(object):
     @llh.setter
     def llh(self, llh):
         self._check_inj_llh_harmony(self._model_injector, llh)
-        self.llh = self.llh
+        self.llh = llh
 
     def _check_inj_llh_harmony(inj_mod, llh):
         """
@@ -50,9 +45,10 @@ class GRBLLHAnalysis(object):
             if not hasattr(llh, "names"):  # But LLH is not
                 raise TypeError("'injector_model' is a multi sample injector " +
                                 "but 'llh' is a single sample LLH.")
+            # Check if exchanged data is compatible. Must be dicts of lists here
             for sam in inj_mod.names:
-                for name in inj_mod.injectors[sam].provided_names:
-                    if name not in llh.llhs[sam].model.needed_names:
+                for name in inj_mod.provided_data_names[sam]:
+                    if name not in llh.needed_data_names[sam]:
                         e = ("'model_injector' for sample '{}' ".format(sam) +
                              "is not providing data name '{}' ".format(name) +
                              "needed for the corresponding LLH model.")
@@ -61,13 +57,13 @@ class GRBLLHAnalysis(object):
             if hasattr(llh, "names"):  # But LLH is not
                 raise TypeError("'llh' is a multi sample LLH but the " +
                                 "'injector_model' is a single sample injector.")
-            for name in inj_mod.provided_names:
-                if name not in llh.model.needed_names:
+            # Check if exchanged data is compatible. Must be list here
+            for name in inj_mod.provided_data_names:
+                if name not in llh.needed_data_names:
                     raise ValueError("'model_injector' is not providing " +
                                      "data name '{}' ".format(name) +
                                      "needed for the LLH model.")
 
-    # PUBLIC
     def do_trials(self, n_trials, ns0, full_out=False):
         """
         Do pseudo experiment trials using events from the injector model.
@@ -181,6 +177,7 @@ class GRBLLHAnalysis(object):
         PDF models. Injects BG only for the largest time window but test the
         injected data with a LLH having each of the different timewindows.
         """
+        pass
 
     @staticmethod
     def fit_chi2_cdf(ts_val, beta, TS, mus):

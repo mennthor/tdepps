@@ -98,7 +98,7 @@ def random_choice(rndgen, CDF, n=None):
         The sampled indices of the chosen CDF values. Can be inserted in the
         original array to obtain the values.
     """
-    u = np.random.uniform(size=n)
+    u = rndgen.uniform(size=n)
     return np.searchsorted(CDF, u, side="right")
 
 

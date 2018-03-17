@@ -4,22 +4,23 @@ import abc
 
 
 class PDF(object):
-    """ Interface for LLH PDF type classes. """
+    """ Interface for unbinned LLH PDF type classes """
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def get_soverb():
-        raise NotImplementedError
+    def get_soverb(self):
+        """ Returns the signal over bg ratio for each given data point """
+        pass
 
     @abc.abstractmethod
-    def get_args():
-        raise NotImplementedError
+    def get_args(self):
+        """ Returns fixed argus the LLH needs, which are not data or params """
+        pass
 
 
 class GRBPDF(PDF):
     """
-    Models the PDF part for the GRB LLH function. Implements: ``get_soverb()``
-    and ``get_args()``.
+    Models the PDF part for the GRB LLH function.
     """
     def __init__(self, X, MC, srcs):
         """
@@ -27,3 +28,9 @@ class GRBPDF(PDF):
         The LLH PDFs must not necessarily match the injected data model.
         """
         return
+
+    def get_args(self):
+        pass
+
+    def get_soverb(self):
+        pass

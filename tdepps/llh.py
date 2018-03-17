@@ -1,9 +1,8 @@
 # coding: utf-8
 
 from __future__ import division, absolute_import
-from future import standard_library
-standard_library.install_aliases()
 
+import abc
 import math
 import numpy as np
 import scipy.optimize as sco
@@ -11,7 +10,40 @@ import scipy.optimize as sco
 from .utils import fill_dict_defaults
 
 
-class GRBLLH(object):
+class LLH(object):
+    """ Interface for LLH type classes """
+    __metaclass__ = abc.ABCMeta
+
+    _needed_data_names = None
+
+    @property
+    def needed_data_names(self):
+        """ Data recarray attributes this LLH needs to evaluate lnllh_ratio """
+        return self._needed_data_names
+
+    @abc.abstractmethod
+    def lnllh_ratio(self):
+        """ Returns the lnLLH ratio given data and params """
+        pass
+
+    @abc.abstractmethod
+    def fit_lnllh_ratio(self):
+        """ Returns the best fit parameter set under given data """
+        pass
+
+
+class MultiLLH(LLH):
+    """ Interface for managing multiple LLH type classes """
+    _names = None
+
+    @property
+    @abc.abstractmethod
+    def names(self):
+        """ Names of all subinjectors, identifies this as a MulitLLH """
+        pass
+
+
+class GRBLLH(LLH):
     """
     Stacking GRB LLH
 
@@ -59,7 +91,6 @@ class GRBLLH(object):
             raise ValueError("'minimizer_opts' must be a dictionary.")
         self._llh_args = _llh_args
 
-    # PUBLIC
     def lnllh_ratio(self, ns, X):
         """ Public method wrapper """
         sob = self._soverb(self._select_X(X))
@@ -103,7 +134,6 @@ class GRBLLH(object):
                                options=self._llh_args["minimizer_opts"])
             return res.x[0], -res.fun[0]
 
-    # PRIVATE
     def _lnllh_ratio(self, ns, sob):
         """ Calculate TS = 2 * ln(L1 / L0) """
         x = ns * sob
@@ -146,14 +176,15 @@ class GRBLLH(object):
         return X
 
 
-class MultiGRBLLH(object):
+class MultiGRBLLH(MultiLLH):
     """
-    Class holding multiple GRBLLH objects, implementing the combined LLH
-    from all single LLHs.
+    Class holding multiple GRBLLH objects, implementing the combined GRBLLH
+    from all single GRBLLHs.
     """
     def __init__(self):
         self._llhs = {}
         self._ns_weights = None
+        super(MultiGRBLLH, self).__init__()
 
     @property
     def names(self):
@@ -163,15 +194,23 @@ class MultiGRBLLH(object):
     def llhs(self):
         return self._llhs
 
-    def add_sample(self, name, llh):
-        if not isinstance(llh, GRBLLH):
-            raise ValueError("`llh` object must be of type GRBLLH.")
+    def fit(self, llhs):
+        """
+        Takes multiple single GRBLLHs in a dict and manages them.
 
-        if name in self.names:
-            raise KeyError("Name '{}' has already been added. ".format(name) +
-                           "Choose a different name.")
-        else:
-            self._llhs[name] = llh
+        Parameters
+        ----------
+        llhs : dict
+            LLHs to be managed by this multi LLH class. Names must match with
+            dict keys of provided multiinjector data.
+        """
+        for name, llh in llhs.items():
+            if not isinstance(llh, GRBLLH):
+                raise ValueError("LLH object " +
+                                 "`{}` is not of type `GRBLLH`.".format(name))
 
-        # Reset, because weights change for each added sample.
-        self._ns_weights = None
+    def lnllh_ratio(self, ns, X):
+        raise NotImplementedError("TODO")
+
+    def fit_lnllh_ratio(self, ns0, X):
+        raise NotImplementedError("TODO")
