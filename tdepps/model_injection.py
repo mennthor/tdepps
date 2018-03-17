@@ -6,9 +6,9 @@ import abc
 import numpy as np
 from sklearn.utils import check_random_state
 
-from .model_toolkit import (fit_time_dec_rate_models,
-                            make_time_dec_rate_model_splines)
-from .utils import spl_normed, fit_spl_to_hist
+from .model_toolkit import (make_time_dep_dec_splines,
+                            SinusFixedConstRateFunction)
+from .utils import fit_spl_to_hist
 
 
 class ModelInjector(object):
@@ -77,7 +77,7 @@ class GRBModelInjector(ModelInjector):
     _trange = None
     _nb = None
 
-    def __init__(self, sindec_bins, t_bins, rate_func, rndgen=None):
+    def __init__(self, sindec_bins, rate_rebins, rndgen=None):
         # Use this outside as a default
         # hor = 0.25
         # sindec_bins = np.unique(np.concatenate([
@@ -91,8 +91,7 @@ class GRBModelInjector(ModelInjector):
         # rate_func = SinusFixedRateFunction(p_fix=p_fix, t0_fix=t0_fix)
 
         self._sindec_bins = np.atleast_1d(sindec_bins)
-        self._t_bins = np.atleast_1d(t_bins)
-        self._rate_func = rate_func
+        self._rate_rebins = np.atleast_1d(rate_rebins)
         self.rndgen = rndgen
 
     def fit(self, X, MC, srcs, run_dict):
@@ -137,6 +136,17 @@ class GRBModelInjector(ModelInjector):
         5. Concat BG and signal samples
         Internally keep track of which event was injected from which injector
         """
+        # Number BG events to sample in this trial
+        expected_evts = self._rndgen.poisson(self._nb)
+
+        # Sample times from rate function
+
+        # Sample dec, logE, sigma from bg_injector
+
+        # Sample missing ra uniformly
+
+        # Concat to a single recarray
+
         return
 
     def _build_data_injector(self, X, srcs, run_dict):
@@ -149,37 +159,44 @@ class GRBModelInjector(ModelInjector):
         specific source time and build weights to inject according to the sindec
         dependent rate PDF from the whole pool of BG events.
         """
-        sin_dec = np.sin(X["dec"])
-        self._t = np.atleast_1d(srcs["t"])
-        self._trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
-        assert len(self._trange) == len(self._t)
+        ev_t = X["timeMJD"]
+        ev_sin_dec = np.sin(X["dec"])
+        nsrcs = len(srcs)
+        self._src_t = np.atleast_1d(srcs["t"])
+        self._src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
+        assert len(self._src_trange) == len(self._src_t) == nsrcs
+
+        # Get sindec PDF spline for each source, averaged over its time window
+        sin_dec_splines, info = make_time_dep_dec_splines(
+            ev_t, ev_sin_dec, self._src_t, self._src_trange, run_dict,
+            self._sin_dec_bins, self._rate_rebins)
 
         # Cache expected nb for each source from allsky rate func integral
-        pars_allsky = fit_time_dec_rate_models(
-            timesMJD=X["timeMJD"], sin_decs=sin_dec, run_dict=run_dict,
-            sin_dec_bins=[-1., 1.], rate_rebins=self._t_bins)[0]
-
-        self._nb = self._rate_func.integral(self._t, self._trange, pars_allsky)
+        rate_func = info["allsky_rate_func"]
+        pars = info["allsky_best_params"]
+        self._nb = rate_func.integral(self._t, self._trange, pars)
         assert len(self._nb) == len(self._t)
 
-        # Build sampling CDFs from dec dependent rate func fits
-        pars, std_devs, _ = fit_time_dec_rate_models(
-            timesMJD=X["timeMJD"], sin_decs=sin_dec, run_dict=run_dict,
-            sin_dec_bins=self._sindec_bins, rate_rebins=self._t_bins)
-        # Normalize parameters to sinus declination bins
-        norm = np.diff(self._sin_dec_bins)
-        for n in ["amp", "base"]:
-            pars[n] = pars[n] / norm
-            std_devs[n] = std_devs[n] / norm
-        # Fix the differential splines norm to match the allsky params. The
-        # norm can be a bit off because each sindec fit is done individually.
-        spl_norm = {"amp": pars_allsky["amp"], "base": pars_allsky["base"]}
-        splines = make_time_dec_rate_model_splines(
-            self._sin_dec_bins, pars, std_devs, spl_norm=spl_norm)
+        # Make sampling CDFs to sample sindecs per source per trial
+        # Spline to estimate intrinsic data sindec distribution
+        hist = np.histogram(ev_sin_dec, bins=self._sin_dec_bins,
+                            density=False)[0]
+        stddev = np.sqrt(hist)
+        norm = np.diff(self._sin_dec_bins) * np.sum(hist)
+        hist = hist / norm
+        stddev = stddev / norm
+        data_spl = fit_spl_to_hist(hist, bins=self._sin_dec_bins,
+                                   stddev=stddev)[0]
 
-        # Build the data sampling weight CDFs by dividing the sindec PDF per
-        # source by the data sindec PDF.
+        # Build sampling weights from PDF ratios
+        sample_w = np.empty((len(sin_dec_splines), len(ev_sin_dec)),
+                            dtype=float)
+        for i, spl in enumerate(sin_dec_splines):
+            sample_w[i] = spl(ev_sin_dec) / data_spl(ev_sin_dec)
 
+        # Cache fixed sampling CDFs for fast radnom choice
+        CDFs = np.cumsum(sample_w, axis=1)
+        self._sample_CDFs = CDFs / CDFs[:, [-1]]
 
         return
 
