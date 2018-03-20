@@ -14,6 +14,14 @@ import scipy.interpolate as sci
 from scipy.stats import rv_continuous, chi2
 
 
+def arr2str(arr, sep=", ", fmt="{}"):
+    """
+    Make a string from a list seperated by ``sep`` and each item formatted
+    with ``fmt``.
+    """
+    return sep.join([fmt.format(v) for v in arr])
+
+
 def fill_dict_defaults(d, required_keys=None, opt_keys=None, noleft=True):
     """
     Populate dictionary with data from a given dict ``d``, and check if ``d``
@@ -242,7 +250,7 @@ def make_spl_edges(vals, bins, w=None):
     return vals, pts, w
 
 
-def fit_spl_to_hist(h, bins, stddev=None):
+def fit_spl_to_hist(h, bins, stddev=None, k=3, ext="raise"):
     """
     Takes histogram values and bin edges and returns a spline fitted through the
     bin mids.
@@ -281,7 +289,7 @@ def fit_spl_to_hist(h, bins, stddev=None):
         w = None
 
     vals, pts, w = make_spl_edges(h, bins, w=w)
-    return sci.UnivariateSpline(pts, vals, s=s, w=w, ext="raise")
+    return sci.UnivariateSpline(pts, vals, s=s, w=w, k=k, ext=ext)
 
 
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
