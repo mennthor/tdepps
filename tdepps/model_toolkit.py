@@ -42,7 +42,7 @@ class SignalFluenceInjector(object):
     Inject signal events from Monte Carlo data weighted to a specific fluence
     model and inject at given source positions. Fluence is assumed to be per
     "burst" as in GRB models, so the fluence is not depending on the duration
-    of a source's time window. Only spatial rotation is done.
+    of a source's time window. Time sampling is done via a ``TimeSampler``.
 
     Parameters
     ----------
@@ -79,11 +79,15 @@ class SignalFluenceInjector(object):
         Turn seed into a ``np.random.RandomState`` instance. See
         ``sklearn.utils.check_random_state``. (default: None)
     """
-    def __init__(self, model, mode="band", sindec_inj_width=0.035,
+    def __init__(self, model, time_sampler, mode="band", sindec_inj_width=0.035,
                  dec_range=None, random_state=None):
         if not callable(model):
             raise TypeError("`model` must be a function `f(trueE)`.")
         self._model = model
+
+        if not isinstance(time_sampler, TimeSampler):
+            raise ValueError("`time_sampler` must be a `TimeSampler` instance.")
+        self._time_sampler = time_sampler
 
         if mode not in ["band", "circle"]:
             raise ValueError("`mode` must be one of ['band', 'circle']")
@@ -111,7 +115,7 @@ class SignalFluenceInjector(object):
         self._MC = None
         self._mc_names = None
         self._exp_names = None
-        self._nsrcs = None
+        self._src_dt = None
 
         self._min_dec = None
         self._max_dec = None
@@ -274,8 +278,8 @@ class SignalFluenceInjector(object):
         total_mask = np.any(inj_mask, axis=0)
         N_unique = np.count_nonzero(total_mask)
         # Only keep needed MC names (MC truth and those specified by exp_names)
-        keep_names = self._mc_arr + self._exp_names
-        drop_names = [n for n in self._MC.dtype.names if n not in keep_names]
+        keep_names = self._mc_names + self._exp_names
+        drop_names = [n for n in MC.dtype.names if n not in keep_names]
         self._MC = drop_fields(MC[total_mask], drop_names)
         assert len(self._MC) == N_unique
 
@@ -335,6 +339,11 @@ class SignalFluenceInjector(object):
         sam_ev = self._rot_and_strip(self._srcs["ra"][src_idx],
                                      self._srcs["dec"][src_idx],
                                      sam_ev)
+
+        # Sample times from time model
+        sam_ev["timeMJD"] = self._time_sampler.sample(
+            src_t=self._srcs["t"][src_idx], src_dt=self._src_dt[src_idx])
+
         # Debug purpose
         self._sample_idx = sam_idx
         return sam_ev
@@ -375,11 +384,10 @@ class SignalFluenceInjector(object):
         """
         mc = self._MC[self._mc_arr["ev_idx"]]
         src_idx = self._mc_arr["src_idx"]
-        nsrcs = len(self._nsrcs)
 
         # Normalize w_theos to prevent overestimatiing injected fluxes
         self._w_theo_norm = self._srcs["w_theo"] / np.sum(self._srcs["w_theo"])
-        assert np.isclose(np.sum(self._w_theo_norm, 1.))
+        assert np.isclose(np.sum(self._w_theo_norm), 1.)
 
         # Broadcast solid angles and w_theo to corrsponding sources for each evt
         omega = self._omega[src_idx]
@@ -391,11 +399,6 @@ class SignalFluenceInjector(object):
         assert len(self._mc_arr) == len(w)
 
         self._raw_flux = np.sum(w)
-        _raw_flux_per_source = ([np.sum(w[src_idx == j]) for j in
-                                np.arange(nsrcs)])
-        assert np.allclose(_raw_flux_per_source,
-                           self._w_theo_norm * self._raw_flux)
-        assert np.isclose(np.sum(self._raw_flux_per_source), self._raw_flux)
 
         # Cache sampling CDF used for injecting events from the whole MC pool
         self._sample_w_CDF = np.cumsum(w) / self._raw_flux
@@ -483,9 +486,10 @@ class SignalFluenceInjector(object):
     def _check_fit_input(self, srcs, MC, exp_names):
         """ Check fit input, setup self._exp_names, self._mc_names """
         # Check if each recarray has it's required names
-        for n in ["ra", "dec", "w_theo"]:
+        for n in ["t", "dt0", "dt1", "ra", "dec", "w_theo"]:
             if n not in srcs.dtype.names:
                 raise ValueError("`srcs` array is missing name '{}'.".format(n))
+        self._src_dt = np.vstack((srcs["dt0"], srcs["dt1"])).T
 
         self._exp_names = list(exp_names)
         for n in ["ra", "dec"]:
@@ -704,6 +708,8 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         """
         Generator to get sampled events from MC for each source position.
         Each time new source positions are sampled from the prior maps.
+        Only performs spatial rotation to the source positions, no time sampling
+        is done.
 
         Parameters
         -----------
@@ -740,6 +746,11 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         src_idx = sam_idx["src_idx"]
         sam_ev = self._rot_and_strip(src_ras[src_idx], src_decs[src_idx],
                                      sam_ev)
+
+        # Sample times from time model
+        sam_ev["timeMJD"] = self._time_sampler.sample(
+            src_t=self._srcs["t"][src_idx], src_dt=self._src_dt[src_idx])
+
         # Debug purpose
         self._sample_idx = sam_idx
         self._src_ra, self._src_dec = src_ras, src_decs
@@ -758,6 +769,59 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         max_sin_dec = np.sin(self._max_dec)
         self._omega = 2. * np.pi * (max_sin_dec - min_sin_dec)
         assert np.all((0. < self._omega) & (self._omega <= 4. * np.pi))
+
+
+##############################################################################
+# Time sampler
+##############################################################################
+class TimeSampler(object):
+    """
+    Class to collect time samplers used by SignalFluenceInjector
+    """
+    __metaclass__ = abc.ABCMeta
+
+    _SECINDAY = 24. * 60. * 60
+    _rndgen = None
+
+    @property
+    def rndgen(self):
+        return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
+
+    @abc.abstractmethod
+    def sample():
+        pass
+
+
+class UniformTimeSampler(TimeSampler):
+    def __init__(self, random_state=None):
+        self.rndgen = random_state
+
+    def sample(self, src_t, src_dt):
+        """
+        Sample times uniformly in on-time signal PDF region.
+
+        Parameters
+        ----------
+        src_t : array-like (nevts)
+            Source time in MJD per event.
+        src_dt : array-like, shape (nevts, 2)
+            Time window in seconds centered around ``src_t`` in which the signal
+            time PDF is assumed to be uniform.
+
+        Returns
+        -------
+        times : array-like, shape (nevts)
+            Sampled times for this trial.
+        """
+        # Sample uniformly in [0, 1] and scale to time windows per source in MJD
+        r = self._rndgen.uniform(0, 1, size=len(src_t))
+        times_rel = r * np.diff(src_dt, axis=1).ravel() + src_dt[:, 0]
+
+        return src_t + times_rel / self._SECINDAY
 
 
 ##############################################################################
@@ -1348,7 +1412,7 @@ class RateFunction(object):
         """
         pass
 
-    def fit(self, t, rate, p0=None, w=None, minopts=None):
+    def fit(self, t, rate, p0=None, w=None, **minopts):
         """
         Fits the function parameters to experimental data using a weighted
         least squares fit.
@@ -1385,10 +1449,17 @@ class RateFunction(object):
         # Setup minimizer options
         required_keys = []
         opt_keys = {"ftol": 1e-15, "gtol": 1e-10, "maxiter": int(1e3)}
-        minopts = fill_dict_defaults(minopts, required_keys, opt_keys)
+        minopts["options"] = fill_dict_defaults(
+            minopts.get("options", None), required_keys, opt_keys)
 
+        # Scale times to be in range [0, 1] for a proper fit
+        bounds = minopts.pop("bounds", None)
+        # t, p0, bounds, min_t, max_t = self._scale(t, p0, bounds)
         res = sco.minimize(fun=self._lstsq, x0=p0, args=(t, rate, w),
-                           method="L-BFGS-B", options=minopts)
+                           method="L-BFGS-B", bounds=bounds, **minopts)
+        # Re-scale fit result back to original scale
+        # res = self._rescale(res, min_t, max_t)
+
         self._bf_fun = (lambda t: self.fun(t, res.x))
         self._bf_int = (lambda t, trange: self.integral(t, trange, res.x))
         self._bf_pars = res.x
@@ -1471,7 +1542,7 @@ class SinusRateFunction(RateFunction):
         self._fmax = None
         self._trange = None
 
-    def fit(self, t, rate, srcs, p0=None, w=None, minopts=None):
+    def fit(self, t, rate, srcs, p0=None, w=None, **minopts):
         """
         Fit the rate model to discrete points ``(t, rate)``. Cache source values
         for fast sampling.
@@ -1482,7 +1553,7 @@ class SinusRateFunction(RateFunction):
             Must have names ``'t', 'dt0', 'dt1'`` describing the time intervals
             around the source times to sample from.
         """
-        bf_pars = super(SinusRateFunction, self).fit(t, rate, p0, w, minopts)
+        fitres = super(SinusRateFunction, self).fit(t, rate, p0, w, **minopts)
 
         # Cache max function values in the fixed source intervals for sampling
         required_names = ["t", "dt0", "dt1"]
@@ -1492,10 +1563,11 @@ class SinusRateFunction(RateFunction):
                                  "'{}'.".format(n))
         _dts = np.vstack((srcs["dt0"], srcs["dt1"])).T
         _, _trange = self._transform_trange_mjd(srcs["t"], _dts)
-        self._fmax = self._calc_fmax(_trange[:, 0], _trange[:, 1], pars=bf_pars)
+        self._fmax = self._calc_fmax(
+            _trange[:, 0], _trange[:, 1], pars=fitres.x)
         self._trange = _trange
 
-        return bf_pars
+        return fitres
 
     def fun(self, t, pars):
         """ Full 4 parameter sinus rate function """
@@ -1616,6 +1688,50 @@ class SinusRateFunction(RateFunction):
 
         return fmax
 
+    def _scale(self, t, p0, bounds):
+        """ Scale x axis to [0,1] - times, seeds and bounds - before fitting """
+        min_t, max_t = np.amin(t), np.amax(t)
+        dt = max_t - min_t
+
+        t_ = (t - min_t) / dt
+        b_ = dt * p0[1]
+        c_ = (p0[2] - min_t) / dt
+
+        if bounds is not None:
+            b_bnds = [dt * bounds[1, 0], dt * bounds[1, 1]]
+            c_bnds = [(bounds[2, 0] - min_t) / dt,
+                      (bounds[2, 1] - min_t) / dt]
+
+            bounds = [bounds[0], b_bnds, c_bnds, bounds[3]]
+
+        return t_, (p0[0], b_, c_, p0[3]), bounds, min_t, max_t
+
+    def _rescale(self, res, min_t, max_t):
+        """ Rescale fitres and errors after fitting """
+        dt = (max_t - min_t)
+        best_pars = res.x
+
+        b_ = best_pars[1]
+        c_ = best_pars[2]
+
+        b = b_ / dt
+        c = c_ * dt + min_t
+
+        res.x = np.array([best_pars[0], b, c, best_pars[3]])
+
+        try:
+            errs = res.hess_inv
+        except:
+            errs = res.hess_inv.todense()
+
+        # Var[a*x] = a^2*x. Cov[a*x+b, c*y+d] = a*c*Cov[x, y]
+        # >>> Only need to scale the variances because dt / dt drops out in Cov
+        errs[1, 1] = dt**2 * errs[1, 1]
+        errs[2, 2] = errs[2, 2] / dt**2
+        res.hess_inv = errs
+
+        return res
+
 
 class SinusFixedRateFunction(SinusRateFunction):
     """
@@ -1659,10 +1775,117 @@ class SinusFixedRateFunction(SinusRateFunction):
         # Drop b0 and / or c0 seed, when it's marked as fixed
         return tuple(seed[i] for i in self._fit_idx)
 
+    def _calc_fmax(self, t0, t1, pars):
+        """
+        Copy and pasted with a minor change to make it work, needs a better
+        solution. Problem is, that we need all 4 params first and then only the
+        stripped version when using fixed rate functions.
+        """
+        a, b, c, d = self._make_params(pars)
+        L = 2. * np.pi / b  # Period length
+        # If we start with a negative sine, then the first max is after 3/4 L
+        if np.sign(a) == 1:
+            step = 1.
+        else:
+            step = 3.
+        # Get dist to first max > c and count how many periods k it is away
+        k = np.ceil((t0 - (c + step * L / 4.)) / L)
+        # Get the closest next maximum to t0 with t0 <= tmax_k
+        tmax_gg_t0 = L / 4. * (step + 4. * k) + c
+
+        # If the next max is <= t1, then fmax must be the global max, else the
+        # highest border
+        fmax = np.zeros_like(t0) + (np.abs(a) + d)
+        m = (tmax_gg_t0 > t1)
+        fmax[m] = np.maximum(self.fun(t0[m], pars), self.fun(t1[m], pars))
+
+        return fmax
+
+    def _scale(self, t, p0, bounds):
+        """ Scale x axis to [0,1] - times, seeds and bounds - before fitting """
+        if len(p0) != len(self._fit_idx):
+            raise ValueError("Given number of parameters does not match the " +
+                             "number of free parameters here.")
+
+        min_t, max_t = np.amin(t), np.amax(t)
+        dt = max_t - min_t
+
+        t_ = (t - min_t) / dt
+
+        # Explicit handling OK here, because we have only 4 combinations
+        if self._b is None:
+            if self._c is None:
+                return super(SinusFixedRateFunction, self)._scale(t, p0, bounds)
+            b_ = dt * p0[1]
+            p0 = (p0[0], b_, p0[2])
+        elif self._c is None:
+            c_ = (p0[2] - min_t) / dt
+            p0 = (p0[0], c_, p0[2])
+        else:
+            # Don't scale
+            pass
+
+        if bounds is not None:
+            if len(bounds) != len(self._fit_idx):
+                raise ValueError("Given number of bounds does not match the " +
+                                 "number of free parameters here.")
+            if self._b is None:
+                if self._c is None:
+                    return super(SinusFixedRateFunction, self)._scale(t, p0, bounds)
+                b_bnds = [dt * bounds[1, 0], dt * bounds[1, 1]]
+                p0 = (p0[0], b_, p0[2])
+                bounds = [bounds[0], b_bnds, bounds[2]]
+            elif self._c is None:
+                c_bnds = [(bounds[1, 0] - min_t) / dt,
+                          (bounds[1, 1] - min_t) / dt]
+                bounds = [bounds[0], c_bnds, bounds[2]]
+            else:
+                # Don't scale
+                pass
+
+        return t_, p0, bounds, min_t, max_t
+
+    def _rescale(self, res, min_t, max_t):
+        """ Rescale fitres and errors after fitting """
+        if len(res.x) != len(self._fit_idx):
+            raise ValueError("Number of best fit params does not match the " +
+                             "number of free parameters here.")
+
+        dt = (max_t - min_t)
+
+
+        try:
+            errs = res.hess_inv
+        except:
+            errs = res.hess_inv.todense()
+
+        if self._b is None:
+            if self._c is None:
+                return super(SinusFixedRateFunction, self)._rescale(
+                    res, min_t, max_t)
+            b_ = res.x[1]
+            b = b_ / dt
+            res.x[1] = b
+            errs[1, 1] = dt**2 * errs[1, 1]
+        elif self._c is None:
+            c_ = res.x[1]
+            c = c_ * dt + min_t
+            res.x[1] = c
+            errs[1, 1] = errs[1, 1] / dt**2
+        else:
+            # Don't rescale
+            pass
+
+        # Var[a*x] = a^2*x. Cov[a*x+b, c*y+d] = a*c*Cov[x, y]
+        # >>> Only need to scale the variances because dt / dt drops out in Cov
+        res.hess_inv = errs
+
+        return res
+
     def _make_params(self, pars):
         """
         Check which parameters are fixed and insert them where needed to build
-        a full parameter set.
+        a full 4 parameter set.
 
         Returns
         -------
@@ -1694,8 +1917,9 @@ class SinusFixedConstRateFunction(SinusFixedRateFunction):
     like). Perfect for small time windows, avoiding rejection sampling and thus
     giving a speed boost.
     """
-    def __init__(self, random_state=None):
-        super(SinusFixedConstRateFunction, self).__init__(random_state)
+    def __init__(self, p_fix=None, t0_fix=None, random_state=None):
+        super(SinusFixedConstRateFunction, self).__init__(
+            p_fix, t0_fix, random_state)
 
     def sample(self, n_samples):
         """
@@ -1828,8 +2052,8 @@ def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
     return phi0 * (trueE / E0)**(-gamma)
 
 
-def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
-                              sin_dec_bins, rate_rebins):
+def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
+                              rate_rebins):
     """
     Make a declination PDF spline averaged over each sources time window.
 
@@ -1839,10 +2063,9 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
         Experimental per event event times in MJD days.
     ev_sin_dec : array-like, shape (nevts)
         Experimental per event ``sin(declination)`` values.
-    src_t : array-like, shape (nsrcs)
-        Source times in MJD days.
-    src_trange : array-like, shape (nsrcs, 2)
-        Source time windows in seconds, centered around source time.
+    srcs : record-array
+        Must have names ``'t', 'dt0', 'dt1'`` describing the time intervals
+        around the source times to sample from.
     run_dict : dictionary
         Dictionary with run information, matching the experimental data. Can be
         obtained from ``create_run_dict``.
@@ -1862,8 +2085,8 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
     """
     ev_t = np.atleast_1d(ev_t)
     ev_sin_dec = np.atleast_1d(ev_sin_dec)
-    src_t = np.atleast_1d(src_t)
-    src_trange = np.atleast_2d(src_trange)
+    src_t = np.atleast_1d(srcs["t"])
+    src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
     sin_dec_bins = np.atleast_1d(sin_dec_bins)
     rate_rebins = np.atleast_1d(rate_rebins)
 
@@ -1873,7 +2096,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
     # 1) Get phase offset from allsky fit for good amp and baseline fits.
     #    Only fix the period to 1 year, as expected from seasons.
     p_fix = 365.
-    rate_func_allsky = SinusFixedRateFunction(p_fix=p_fix)
+    rate_func_allsky = SinusFixedConstRateFunction(p_fix=p_fix)
     #    Fit amp, phase and base using rebinned rates
     rates, new_rate_bins, rates_std, _ = rebin_rate_rec(
         rate_rec, bins=rate_rebins, ignore_zero_runs=True)
@@ -1888,8 +2111,9 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
     bounds = [[-2. * max_rate, 2. * max_rate],
               [seed_reb[1] - 180., seed_reb[1] + 180.],
               [0., None]]
-    fitres_allsky = rate_func_allsky.fit(
-        rate_bin_mids, rates, p0=seed_reb, w=weights, bounds=bounds)
+    fitres_allsky = rate_func_allsky.fit(t=rate_bin_mids, rate=rates,
+                                         srcs=srcs, p0=seed_reb, w=weights,
+                                         bounds=bounds)
     #    This is used to fix the time phase approximately at the correct
     #    baseline in the following fits, because a 3 param fit yields large
     #    errors, due to strong correlation between amp and phase, so we can't
@@ -1897,7 +2121,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
     phase_bf_fix = fitres_allsky.x[1]
 
     # 2) For each sin_dec_bin fit a separate rate model in amp and base.
-    rate_func = SinusFixedRateFunction(p_fix=p_fix, t0_fix=phase_bf_fix)
+    rate_func = SinusFixedConstRateFunction(p_fix=p_fix, t0_fix=phase_bf_fix)
     names = ["amp", "base"]
     nbins = len(sin_dec_bins) - 1
     best_pars = np.empty((nbins, ), dtype=[(n, float) for n in names])
@@ -1913,13 +2137,17 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
         min_rate, max_rate = np.amin(rates), np.amax(rates)
         p0 = (-0.5 * (max_rate - min_rate), np.average(rates, weights=weights))
         bounds = [[-2. * max_rate, 2. * max_rate], [0., None]]
-        fitres = rate_func.fit(
-            rate_bin_mids, rates, p0=p0, w=weights, bounds=bounds)
+        fitres = rate_func.fit(t=rate_bin_mids, rate=rates, srcs=srcs, p0=p0,
+                               w=weights, bounds=bounds)
         # Store normalized best pars and fit stddevs to build a spline model
         for j, n in enumerate(names):
             best_pars[n][i] = fitres.x[j] / norm[i]
-            std_devs[n][i] = (
-                np.sqrt(np.diag(fitres.hess_inv.todense()))[j] / norm[i])
+            try:
+                std_devs[n][i] = (
+                    np.sqrt(np.diag(fitres.hess_inv))[j] / norm[i])
+            except:
+                std_devs[n][i] = (
+                    np.sqrt(np.diag(fitres.hess_inv.todense()))[j] / norm[i])
 
     # 3) Interpolate discrete fit points with a continous smoothing spline
     def spl_normed_factory(spl, lo, hi, norm):
@@ -1932,7 +2160,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
         names[0]: fitres_allsky.x[0], names[-1]: fitres_allsky.x[-1]}
     for n in names:
         # Use normalized amplitude and baseline in units HZ/dec
-        spl = fit_spl_to_hist(best_pars[n], sin_dec_bins, std_devs[n])[0]
+        spl = fit_spl_to_hist(best_pars[n], sin_dec_bins, std_devs[n])
         # Renormalize to match the allsky params, because the model is additive
         param_splines[n] = spl_normed_factory(
             spl, lo=lo, hi=hi, norm=norm_allsky[n])
@@ -1960,7 +2188,10 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, src_t, src_trange, run_dict,
         sin_dec_splines.append(spl_factory(sin_dec_pts, vals / norm))
 
     info = {"allsky_rate_func": rate_func_allsky,
-            "allsky_best_params": fitres_allsky.x}
+            "allsky_best_params": fitres_allsky.x,
+            "param_splines": param_splines,
+            "best_pars": best_pars,
+            "best_stddevs": std_devs}
     return sin_dec_splines, info
 
 
