@@ -213,14 +213,14 @@ def make_spl_edges(vals, bins, w=None):
     bins : array-like, shape (len(vals), )
         Histogram bin edges.
     w : array-like or None
-        Weight array. If not ``None`` is shaped as the values array.
+        Weight array. If not ``None``, ``w`` is shaped as the values array.
 
     Returns
     -------
-    pts : array-like
-        x-values for the spline fit.
     vals : array-like
         y-values for the spline fit, same length as ``pts``.
+    pts : array-like
+        x-values for the spline fit.
     w : array-like or None
         Weights for the spline fit, same length as ``pts``.
     """
@@ -290,6 +290,104 @@ def fit_spl_to_hist(h, bins, stddev=None, k=3, ext="raise"):
 
     vals, pts, w = make_spl_edges(h, bins, w=w)
     return sci.UnivariateSpline(pts, vals, s=s, w=w, k=k, ext=ext)
+
+
+def get_stddev_from_scan(mids, rates, weights, bfs, rngs, rate_func, nbins=100):
+    """
+    Scan the rate_func chi2 fit LLH to get stddevs for the best fit params a, d.
+    Using matplotlib contours and averaging to approximately get the variances.
+    The method tries to find the optimal scan ranges automatically.
+
+    Note: This is not a true LLH profile scan in both variables.
+
+    Parameters
+    ----------
+    mids : array-like
+        Time points (x) used in the original fit.
+    rates : array-like, shape (len(mids))
+        Rate values (y) used in the original fit.
+    weights : array-like, shape (len(mids))
+        Weights used in the original chi2 fit.
+    bfs : array-like, shape (2)
+        Best fit result parameters.
+    rngs : list
+        Parameter ranges ``[rng_x, rng_y]`` to scan.
+    rate_func : RateFunction instance
+        Rate function used to do the original fit.
+    nbins : int, optional
+        Number of bin in each dimension to sca. (Default: 100)
+
+    Returns
+    -------
+    stds : array-like, shape (2)
+        Approximate standard deviations (symmetric) for each fit parameter,
+        obtained using Wilks' theorem on the scanned space.
+    llh : array-like, shape (nbins, nbins)
+        Scanned LLH values.
+    grid : list
+        X, Y grid, same shape as ``llh``.
+    """
+    def _scan_llh(bf_a, rng_a, bf_d, rng_d):
+        """ Scan LLH and return contour vertices """
+        a_bins = np.linspace(bf_a - rng_a, bf_a + rng_a, nbins)
+        d_bins = np.linspace(bf_d - rng_d, bf_d + rng_d, nbins)
+        a, d = np.meshgrid(a_bins, d_bins)
+        AA, DD = map(np.ravel, [a, d])
+        llh = np.empty_like(AA)
+        for i, (ai, di) in enumerate(zip(AA, DD)):
+            llh[i] = rf._lstsq((ai, di), mids, rates, weights)
+        llh = llh.reshape(a.shape)
+        # Get the contour points and average over min, max per parameter
+        one_sigma = np.amin(llh) - scs.chi2.logsf(df=2, x=[1**2])
+        cont = plt.contour(a, d, llh, one_sigma)
+        plt.clf()
+        # https://stackoverflow.com/questions/5666056
+        # Collection list contains one LineCollection per contour value
+        return cont.collections[0].get_paths(), llh, [a, d]
+
+    def _get_stds_from_path(path):
+        """ Create symmetric stddevs from the path vertices """
+        x = path.vertices[:, 0]
+        y = path.vertices[:, 1]
+        # Average asymmetricities in both direction
+        a_min, a_max = np.amin(x), np.amax(x)
+        d_min, d_max = np.amin(y), np.amax(y)
+        return 0.5 * (a_max - a_min), 0.5 * (d_max - d_min)
+
+    bf_a, bf_d = bfs
+    rng_a, rng_d = rngs
+
+    # Scan the LLH, adapt scan range if contour is not closed
+    closed = False
+    while not closed:
+        # Get contour from scanned LLH space
+        paths, llh, grid = _scan_llh(bf_a, rng_a, bf_d, rng_d)
+
+        # We want the contour to be fully contained. Means there is only one
+        # path and the first and last point are close.
+        if len(paths) == 1:
+            path = paths[0]
+            # If no contour is made, path has only a single vertex
+            if len(path.vertices) > 1:
+                max_bin_dist = np.amax([rng_a / float(nbins),
+                                        rng_d / float(nbins)])
+                closed = np.allclose(path.vertices[0], path.vertices[-1],
+                                     atol=max_bin_dist)
+        if not closed:
+            # Otherwise make the scan range twice as large and retry
+            # TODO: Is there a mechanism to decide if only y OR y needs scaling?
+            rng_a *= 2
+            rng_d *= 2
+
+    for i in range(2):
+        std_a, std_d = _get_stds_from_path(path)
+        rng_a = std_a * 1.1
+        rng_d = std_d * 1.1
+        paths, llh, grid = _scan_llh(bf_a, rng_a, bf_d, rng_d)
+        path = paths[0]
+
+    stds = np.array(_get_stds_from_path(path))
+    return stds, llh, grid
 
 
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):
