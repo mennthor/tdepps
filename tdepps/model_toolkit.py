@@ -29,7 +29,7 @@ except ImportError as e:
     print("KDE injector is not available because package `awkde` is missing.")
 
 from .utils import (random_choice, fill_dict_defaults, ThetaPhiToDecRa,
-                    rotator, spl_normed, fit_spl_to_hist)
+                    rotator, spl_normed, fit_spl_to_hist, get_stddev_from_scan)
 
 
 ##############################################################################
@@ -2139,15 +2139,24 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         bounds = [[-2. * max_rate, 2. * max_rate], [0., None]]
         fitres = rate_func.fit(t=rate_bin_mids, rate=rates, srcs=srcs, p0=p0,
                                w=weights, bounds=bounds)
+
+        # Scan the LLH to get stdev estimates.
+        # Use empirical range estimates, amp seems to have larger errors
+        rngs = np.array([fitres.x[0], fitres.x[1] / 10.])
+        stds, llh, grid = get_stddev_from_scan(rate_bin_mids, rates, weights,
+                                               bfs=fitres.x, rngs=rngs,
+                                               rate_func=rate_func)
+
         # Store normalized best pars and fit stddevs to build a spline model
         for j, n in enumerate(names):
             best_pars[n][i] = fitres.x[j] / norm[i]
-            try:
-                std_devs[n][i] = (
-                    np.sqrt(np.diag(fitres.hess_inv))[j] / norm[i])
-            except:
-                std_devs[n][i] = (
-                    np.sqrt(np.diag(fitres.hess_inv.todense()))[j] / norm[i])
+            std_devs[n][i] = stds[j] / norm[i]
+            # try:
+            #     std_devs[n][i] = (
+            #         np.sqrt(np.diag(fitres.hess_inv))[j] / norm[i])
+            # except:
+            #     std_devs[n][i] = (
+            #         np.sqrt(np.diag(fitres.hess_inv.todense()))[j] / norm[i])
 
     # 3) Interpolate discrete fit points with a continous smoothing spline
     def spl_normed_factory(spl, lo, hi, norm):
