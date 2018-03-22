@@ -10,6 +10,7 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
+import matplotlib.pyplot as plt
 import scipy.interpolate as sci
 from scipy.stats import rv_continuous, chi2
 
@@ -335,10 +336,10 @@ def get_stddev_from_scan(mids, rates, weights, bfs, rngs, rate_func, nbins=100):
         AA, DD = map(np.ravel, [a, d])
         llh = np.empty_like(AA)
         for i, (ai, di) in enumerate(zip(AA, DD)):
-            llh[i] = rf._lstsq((ai, di), mids, rates, weights)
+            llh[i] = rate_func._lstsq((ai, di), mids, rates, weights)
         llh = llh.reshape(a.shape)
         # Get the contour points and average over min, max per parameter
-        one_sigma = np.amin(llh) - scs.chi2.logsf(df=2, x=[1**2])
+        one_sigma = np.amin(llh) - chi2.logsf(df=2, x=[1**2])
         cont = plt.contour(a, d, llh, one_sigma)
         plt.clf()
         # https://stackoverflow.com/questions/5666056
