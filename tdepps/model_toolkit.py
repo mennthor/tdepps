@@ -26,7 +26,8 @@ try:
     from awkde import GaussianKDE as KDE
 except ImportError as e:
     print(e)
-    print("KDE injector is not available because package `awkde` is missing.")
+    print("model_toolkit :: KDE injector is not available because package " +
+          "`awkde` is missing.")
 
 from .utils import (random_choice, fill_dict_defaults, ThetaPhiToDecRa,
                     rotator, spl_normed, fit_spl_to_hist, get_stddev_from_scan)
@@ -79,6 +80,9 @@ class SignalFluenceInjector(object):
         Turn seed into a ``np.random.RandomState`` instance. See
         ``sklearn.utils.check_random_state``. (default: None)
     """
+    def _INFO_(self, s=""):
+        return "{} :: {}".format(self.__class__.__name__, s)
+
     def __init__(self, model, time_sampler, mode="band", sindec_inj_width=0.035,
                  dec_range=None, random_state=None):
         if not callable(model):
@@ -299,9 +303,11 @@ class SignalFluenceInjector(object):
         self._mc_arr['src_idx'] = np.repeat(np.arange(nsrcs),
                                             np.sum(core_mask, axis=1))
 
-        print("Selected {:d} evts at {:d} sources.".format(n_tot, nsrcs))
-        print("  - Sources without selected evts: {}".format(
-            nsrcs - np.count_nonzero(np.sum(core_mask, axis=1))))
+        s_ = "Selected {:d} evts at {:d} sources.".format(n_tot, nsrcs) + "\n"
+        s_ += len(self._INFO_()) * " "
+        s_ += "- Sources without selected evts: {}".format(
+            nsrcs - np.count_nonzero(np.sum(core_mask, axis=1)))
+        print(self._INFO_(s_))
 
         self._set_sampling_weights()
 
@@ -2027,6 +2033,11 @@ class ConstantRateFunction(RateFunction):
 ##############################################################################
 # Misc helper methods
 ##############################################################################
+def _INFO_(s=""):
+    """ Print string s, prepended with information where it came from. """
+    return "module_toolkit :: {}".format(s)
+
+
 def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
     """
     Returns the unbroken power law flux :math:`\sim \phi_0 (E/E_0)^{-\gamma}`
@@ -2053,7 +2064,7 @@ def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
 
 
 def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
-                              rate_rebins):
+                              rate_rebins, spl_s=None):
     """
     Make a declination PDF spline averaged over each sources time window.
 
@@ -2074,6 +2085,11 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
     rate_rebins : array-like
         Explicit bin edges used to rebin the rates before fitting the model to
         achieve more stable fit conditions.
+    spl_s : float, optional
+        Smoothing condition for the parameter spline fits, controlling how much
+        the spline is allowed to deviate from the data points, where ``spl_s=0``
+        means interpolation. If ``None`` the default for
+        ``scipy.interpolate.UnivariateSpline`` is used. (Default: ``None``)
 
     Returns
     -------
@@ -2127,6 +2143,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
     best_pars = np.empty((nbins, ), dtype=[(n, float) for n in names])
     std_devs = np.empty_like(best_pars)
     for i, (lo, hi) in enumerate(zip(sin_dec_bins[:-1], sin_dec_bins[1:])):
+        print(_INFO_("sindec bin {} / {}".format(i + 1, nbins)))
         # Only make rates for the current bin and fit rate func in amp and base
         mask = (ev_sin_dec >= lo) & (ev_sin_dec < hi)
         rate_rec = make_rate_records(ev_t[mask], run_dict, eps=0.,
@@ -2141,21 +2158,16 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
                                w=weights, bounds=bounds)
 
         # Scan the LLH to get stdev estimates.
+        args = (rate_bin_mids, rates, weights)
         # Use empirical range estimates, amp seems to have larger errors
-        rngs = np.array([fitres.x[0], fitres.x[1] / 10.])
-        stds = get_stddev_from_scan(rate_bin_mids, rates, weights, bfs=fitres.x,
-                                    rngs=rngs, rate_func=rate_func)[0]
+        rngs = np.array([fitres.x[0] / 10., fitres.x[1] / 100.])
+        stds = get_stddev_from_scan(rate_func._lstsq, args, bfs=fitres.x,
+                                    rngs=rngs, nbins=50)[0]
 
         # Store normalized best pars and fit stddevs to build a spline model
         for j, n in enumerate(names):
             best_pars[n][i] = fitres.x[j] / norm[i]
             std_devs[n][i] = stds[j] / norm[i]
-            # try:
-            #     std_devs[n][i] = (
-            #         np.sqrt(np.diag(fitres.hess_inv))[j] / norm[i])
-            # except:
-            #     std_devs[n][i] = (
-            #         np.sqrt(np.diag(fitres.hess_inv.todense()))[j] / norm[i])
 
     # 3) Interpolate discrete fit points with a continous smoothing spline
     def spl_normed_factory(spl, lo, hi, norm):
@@ -2168,7 +2180,8 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         names[0]: fitres_allsky.x[0], names[-1]: fitres_allsky.x[-1]}
     for n in names:
         # Use normalized amplitude and baseline in units HZ/dec
-        spl = fit_spl_to_hist(best_pars[n], sin_dec_bins, std_devs[n])
+        weights = 1. / std_devs[n]
+        spl = fit_spl_to_hist(best_pars[n], sin_dec_bins, weights, s=spl_s)[0]
         # Renormalize to match the allsky params, because the model is additive
         param_splines[n] = spl_normed_factory(
             spl, lo=lo, hi=hi, norm=norm_allsky[n])
