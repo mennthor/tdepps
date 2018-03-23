@@ -10,9 +10,14 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
-import matplotlib.pyplot as plt
+from matplotlib import _cntr as contour
 import scipy.interpolate as sci
 from scipy.stats import rv_continuous, chi2
+
+
+def _INFO_(s=""):
+    """ Print string s, prepended with information where it came from. """
+    return "utils :: {}".format(s)
 
 
 def arr2str(arr, sep=", ", fmt="{}"):
@@ -214,7 +219,9 @@ def make_spl_edges(vals, bins, w=None):
     bins : array-like, shape (len(vals), )
         Histogram bin edges.
     w : array-like or None
-        Weight array. If not ``None``, ``w`` is shaped as the values array.
+        Additional weight array that may be used in a spline fit later. If not
+        ``None``, ``w`` is shaped as the values array, the outermost points get
+        the minimal weight from the original entries: ``w[[0, -1]] = min(w)``.
 
     Returns
     -------
@@ -233,17 +240,14 @@ def make_spl_edges(vals, bins, w=None):
         w = np.atleast_1d(w)
         if len(w) != len(vals):
             raise ValueError("Weights must have same length as vals")
-        w = np.concatenate((w[[0]], w, w[[-1]]))
+        # Give appended artificial points the lowest priority
+        w = np.concatenate(([np.amin(w)], w, [np.amin(w)]))
 
-    # Model outermost bin edges to avoid uncontrolled behaviour at the edges
-    if len(vals) > 2:
-        # Subtract mean of 1st and 2nd bins from 1st to use as height 0
-        val_l = (3. * vals[0] - vals[1]) / 2.
-        # The same for the right edge
-        val_r = (3. * vals[-1] - vals[-2]) / 2.
-    else:  # Just repeat if we have only 2 bins
-        val_l = vals[0]
-        val_r = vals[-1]
+    # Linear extrapolate outer bin edges to avoid uncontrolled edge behaviour:
+    # f(x_i+1 + (x_i+1 - x_i) / 2)
+    #  = (y_i+1 - y_i) / (x_i+1 + x_i) * (x_i+1 + (x_i+1 - x_i) / 2) + y_i
+    val_l = (3. * vals[0] - vals[1]) / 2.
+    val_r = (3. * vals[-1] - vals[-2]) / 2.
 
     vals = np.concatenate(([val_l], vals, [val_r]))
     mids = 0.5 * (bins[:-1] + bins[1:])
@@ -251,7 +255,7 @@ def make_spl_edges(vals, bins, w=None):
     return vals, pts, w
 
 
-def fit_spl_to_hist(h, bins, stddev=None, k=3, ext="raise"):
+def fit_spl_to_hist(h, bins, w=None, s=None, k=3, ext="raise"):
     """
     Takes histogram values and bin edges and returns a spline fitted through the
     bin mids.
@@ -262,9 +266,12 @@ def fit_spl_to_hist(h, bins, stddev=None, k=3, ext="raise"):
         Histogram values.
     bins : array-like
         Histogram bin edges.
-    stddev : array-like or None
-        Standard deviations of histogram entries. if errors. If ``None`` the
-        spline is interpolating else a smoothing spline is used.
+    w : array-like or None
+        Weights to use for the smoothing condition, eg. standard deviation of
+        histogram entries. If ``None`` the spline is interpolating (``s=0``).
+        (Default: ``None``)
+    s, k, ext
+        Arguments passed to ``scipy.interpolate.UnivariateSpline``.
 
     Returns
     -------
@@ -275,48 +282,44 @@ def fit_spl_to_hist(h, bins, stddev=None, k=3, ext="raise"):
     if len(h) != len(bins) - 1:
         raise ValueError("Bin edges must have length `len(h) + 1`.")
 
-    if stddev is not None:
-        stddev = np.atleast_1d(stddev)
-        if len(h) != len(stddev):
-            raise ValueError("Length of errors and histogram muste be equal.")
-        s = len(h)
-        if np.any(stddev <= 0):
-            raise ValueError("Given stddev has unallowed entries <= 0.")
-        w = 1. / stddev
-        assert len(w) == s == len(h) == len(stddev)
-        s = len(h) // 2
-    else:
+    if w is None:
         s = 0
-        w = None
+    else:
+        if len(h) != len(w):
+            raise ValueError("Length of weights and histogram muste be equal.")
+        if np.any(w <= 0):
+            raise ValueError("Given weights have unallowed entries <= 0.")
+        w = np.atleast_1d(w)
+        if s is None:
+            # Set dof via s here, because `make_spl_edges` adds in edge points
+            s = len(h)
 
     vals, pts, w = make_spl_edges(h, bins, w=w)
-    return sci.UnivariateSpline(pts, vals, s=s, w=w, k=k, ext=ext)
+    return sci.UnivariateSpline(pts, vals, s=s, w=w, k=k, ext=ext), vals, pts, w
 
 
-def get_stddev_from_scan(mids, rates, weights, bfs, rngs, rate_func, nbins=100):
+def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
     """
     Scan the rate_func chi2 fit LLH to get stddevs for the best fit params a, d.
     Using matplotlib contours and averaging to approximately get the variances.
-    The method tries to find the optimal scan ranges automatically.
-
+    Method tries to adapt the scan ranges automatically to get the best contour
+    resolution.
     Note: This is not a true LLH profile scan in both variables.
 
     Parameters
     ----------
-    mids : array-like
-        Time points (x) used in the original fit.
-    rates : array-like, shape (len(mids))
-        Rate values (y) used in the original fit.
-    weights : array-like, shape (len(mids))
-        Weights used in the original chi2 fit.
+    func : callable
+        Loss function to be scanned, used to obtain the best fit. Function
+        is called as done with a scipy fitter, ``func(x, *args)``.
+    args : tuple
+        Args passed to the loss function ``func``. For a rate function, this is
+        ``(mids, rates, weights)``.
     bfs : array-like, shape (2)
         Best fit result parameters.
     rngs : list
-        Parameter ranges ``[rng_x, rng_y]`` to scan.
-    rate_func : RateFunction instance
-        Rate function used to do the original fit.
+        Parameter ranges to scan: ``[bf[i] - rng[i], bf[i] + rng[i]]``.
     nbins : int, optional
-        Number of bin in each dimension to sca. (Default: 100)
+        Number of bins in each dimension to scan. (Default: 100)
 
     Returns
     -------
@@ -328,66 +331,95 @@ def get_stddev_from_scan(mids, rates, weights, bfs, rngs, rate_func, nbins=100):
     grid : list
         X, Y grid, same shape as ``llh``.
     """
-    def _scan_llh(bf_a, rng_a, bf_d, rng_d):
+    def _scan_llh(bf_x, rng_x, bf_y, rng_y):
         """ Scan LLH and return contour vertices """
-        a_bins = np.linspace(bf_a - rng_a, bf_a + rng_a, nbins)
-        d_bins = np.linspace(bf_d - rng_d, bf_d + rng_d, nbins)
-        a, d = np.meshgrid(a_bins, d_bins)
-        AA, DD = map(np.ravel, [a, d])
+        x_bins = np.linspace(bf_x - rng_x, bf_x + rng_x, nbins)
+        y_bins = np.linspace(bf_y - rng_y, bf_y + rng_y, nbins)
+        x, y = np.meshgrid(x_bins, y_bins)
+        AA, DD = map(np.ravel, [x, y])
         llh = np.empty_like(AA)
         for i, (ai, di) in enumerate(zip(AA, DD)):
-            llh[i] = rate_func._lstsq((ai, di), mids, rates, weights)
-        llh = llh.reshape(a.shape)
+            llh[i] = func((ai, di), *args)
+        llh = llh.reshape(x.shape)
         # Get the contour points and average over min, max per parameter
-        one_sigma = np.amin(llh) - chi2.logsf(df=2, x=[1**2])
-        cont = plt.contour(a, d, llh, one_sigma)
-        plt.clf()
-        # https://stackoverflow.com/questions/5666056
-        # Collection list contains one LineCollection per contour value
-        return cont.collections[0].get_paths(), llh, [a, d]
+        one_sigma_level = np.amin(llh) - chi2.logsf(df=2, x=[1**2])
+        # Call undocumented base of plt.contour, to avoid creating a figure ...
+        cntr = contour.Cntr(x, y, llh)
+        paths = cntr.trace(level0=one_sigma_level)
+        paths = paths[:len(paths) // 2]  # First half of list has the vertices
+        return paths, llh, [x, y]
+
+    def _is_path_closed(paths, rng_x, rng_y):
+        """
+        We want the contour to be fully contained. Means there is only one path
+        and the first and last point are close together.
+        Returns ``True`` if contour is closed.
+        """
+        closed = False
+        if len(paths) == 1:
+            vertices = paths[0]
+            # If no contour is made, only 1 vertex is returned -> invalid
+            if len(vertices) > 1:
+                max_bin_dist = np.amax([rng_x / float(nbins),
+                                        rng_y / float(nbins)])
+                closed = np.allclose(vertices[0], vertices[-1],
+                                     atol=max_bin_dist, rtol=0.)
+        return closed
 
     def _get_stds_from_path(path):
         """ Create symmetric stddevs from the path vertices """
-        x = path.vertices[:, 0]
-        y = path.vertices[:, 1]
+        x, y = path[:, 0], path[:, 1]
         # Average asymmetricities in both direction
-        a_min, a_max = np.amin(x), np.amax(x)
-        d_min, d_max = np.amin(y), np.amax(y)
-        return 0.5 * (a_max - a_min), 0.5 * (d_max - d_min)
-
-    bf_a, bf_d = bfs
-    rng_a, rng_d = rngs
+        x_min, x_max = np.amin(x), np.amax(x)
+        y_min, y_max = np.amin(y), np.amax(y)
+        return 0.5 * (x_max - x_min), 0.5 * (y_max - y_min)
 
     # Scan the LLH, adapt scan range if contour is not closed
+    bf_x, bf_y = bfs
+    rng_x, rng_y = rngs
     closed = False
+    # We do something wrong, when not converging after so much iterations
+    n_rescans = 0
+    RAISE_N_RESCANS = 100
     while not closed:
+        # Reset after each scan. Default is scaling up, when range is too small.
+        scalex, scaley = 10., 10.
         # Get contour from scanned LLH space
-        paths, llh, grid = _scan_llh(bf_a, rng_a, bf_d, rng_d)
-
-        # We want the contour to be fully contained. Means there is only one
-        # path and the first and last point are close.
-        if len(paths) == 1:
-            path = paths[0]
-            # If no contour is made, path has only a single vertex
-            if len(path.vertices) > 1:
-                max_bin_dist = np.amax([rng_a / float(nbins),
-                                        rng_d / float(nbins)])
-                closed = np.allclose(path.vertices[0], path.vertices[-1],
-                                     atol=max_bin_dist)
+        paths, llh, grid = _scan_llh(bf_x, rng_x, bf_y, rng_y)
+        if _is_path_closed(paths, rng_x, rng_y):
+            vertices = paths[0]
+            # Estimate scale factors to get contour in optimum resolution and
+            # check if the range is zoomed way to far out
+            diffx = np.abs(np.amax(vertices[:, 0]) - np.amin(vertices[:, 0]))
+            diffy = np.abs(np.amax(vertices[:, 1]) - np.amin(vertices[:, 1]))
+            scalex = diffx / rng_x
+            scaley = diffy / rng_y
+            # Contour can be closed, but extremely zoomed out in only one param
+            if not np.allclose([scalex, scaley], 1., atol=0.5, rtol=0.):
+                print(_INFO_("LLH contour is very distorted in one direction"))
+                closed = False
+            else:
+                # Rescan valid contour 2 times to use optimal scan resolution.
+                # 2nd scan is useful when resolution was coarse in 1st try
+                for i in range(2):
+                    std_x, std_y = _get_stds_from_path(vertices)
+                    rng_x = std_x * 1.05  # Allow a little padding
+                    rng_y = std_y * 1.05
+                    paths, llh, grid = _scan_llh(bf_x, rng_x, bf_y, rng_y)
+                    # Recheck if path is still valid
+                    closed = _is_path_closed(paths, rng_x, rng_y)
+        # Must always be checked because path can get invalid in rescaling step
         if not closed:
-            # Otherwise make the scan range twice as large and retry
-            # TODO: Is there a mechanism to decide if only y OR y needs scaling?
-            rng_a *= 2
-            rng_d *= 2
+            print(_INFO_("Open or no LLH contour, rescale scan ranges."))
+            rng_x *= scalex
+            rng_y *= scaley
 
-    for i in range(2):
-        std_a, std_d = _get_stds_from_path(path)
-        rng_a = std_a * 1.1
-        rng_d = std_d * 1.1
-        paths, llh, grid = _scan_llh(bf_a, rng_a, bf_d, rng_d)
-        path = paths[0]
+        n_rescans += 1
+        if n_rescans > RAISE_N_RESCANS:
+            raise RuntimeError(_INFO_("LLH scan not converging. Check seeds!"))
 
-    stds = np.array(_get_stds_from_path(path))
+    vertices = paths[0]
+    stds = np.array(_get_stds_from_path(vertices))
     return stds, llh, grid
 
 
