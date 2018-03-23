@@ -281,39 +281,71 @@ class MultiGRBModelInjector(MultiModelInjector):
                                  " is not of type `GRBModelInjector`.")
 
     def get_sample(self, n_signal=None):
-        raise NotImplementedError("TODO")
+        """
+        Background sampling is straightforward, because each sampler knows
+        how many events to sample on its own.
+        The requested signal events must be split to the single injector
+        instances based on the signal source weights and the relative effective
+        area each sample contributes.
+        """
+        # We need to re-normalize w_theo over all samples instead of all sources in a
+        # single samples for a single injector, because sources are disjunct in each one
+        pass
 
+    # These belong to a multi signal injector. Decide how to include that
+    # 1) Build multi signal injector container
+    # 2) Make dummy signal injector class here and attach methods to it
+    def mu2flux(mu, injectors, per_source=False):
+        raw_fluxes, w_theos, _ = get_raw_fluxes(injectors)
+        raw_fluxes_sum = np.sum(raw_fluxes)
+        if per_source:
+            return [mu * wts / raw_fluxes_sum for wts in w_theos]
+        return mu / raw_fluxes_sum
 
-# ##############################################################################
-# Code to sample from multiple single signal injector instances over their
-# public methods.
-# ##############################################################################
-# # We need to re-normalize w_theo over all samples instead of all sources in a
-# # single samples for a single injector, because sources are disjunct in each one
-# def get_raw_fluxes(injectors):
-#     # Split original flux over sources per sample.
-#     # List of arrays, fluxes per sample, per source
-#     w_theos = [inj._srcs[-1]["w_theo"] / inj._srcs[-1]["w_theo"].sum() for inj in injectors]
-#     raw_fluxes = np.array([wts / inj.mu2flux(1.) for inj, wts in zip(injectors, w_theos)])
-#     # Renormalize w_theos over all samples
-#     w_theos = [inj._srcs[-1]["w_theo"] for inj in injectors]
-#     w_theo_sum = np.sum(map(np.sum, w_theos))
-#     w_theos = [wt / w_theo_sum for wt in w_theos]
-#     # Renormalize fluxes per sample per source with renormalized w_theo weights
-#     raw_fluxes = np.array([raw_f * wt for raw_f, wt in zip(raw_fluxes, w_theos)])
-#     # Combine to decreased raw flux per sample
-#     raw_fluxes = np.array(map(np.sum, raw_fluxes))
-#     return raw_fluxes, w_theos
+    def flux2mu(flux, injectors, per_source=True):
+        raw_fluxes, _, raw_fluxes_per_src = get_raw_fluxes(injectors)
+        if per_source:
+            return [flux * rfs for rfs in raw_fluxes_per_src]
+        return flux * np.sum(raw_fluxes)
 
-# def get_sample_w(injectors):
-#     # Get the renormalized fluxes and normalize as normal now
-#     raw_fluxes, _ = get_raw_fluxes(injectors)
-#     return raw_fluxes / raw_fluxes.sum()
+    def _split_signal_samples(self, n_signal):
+        """
+        We need to split the requested number of signal events to sample the
+        correct amount of signal from each singel injector.
 
-# def distribute_samples(n, injectors):
-#     p = get_sample_w(injectors)
-#     return np.random.multinomial(n, p, size=None)
+        Parameters
+        ----------
+        n_signal : int
+            Number of signal events to sample from all injectors in total.
 
-# def mu2flux(mu, injectors):
-#     raw_fluxes, _ = get_raw_fluxes(injectors)
-#     return mu / np.sum(raw_fluxes)
+        Returns
+        -------
+        n_sig_per_inj : dict
+            Integer number of signal events to sample per injector.
+        """
+        def get_raw_fluxes(injectors):
+            # Remove w_theo from raw fluxes per sample to renormalize them
+            w_theos = [inj._srcs[-1]["w_theo"] for inj in injectors]
+            w_theo_sum_per_sample = map(np.sum, w_theos)
+            w_theos_norm_per_sam = [wt / wtn for wt, wtn in zip(w_theos, w_theo_sum_per_sample)]
+            raw_fluxes_per_src = [inj._raw_flux_per_sam_per_src[-1] / wts for
+                                  inj, wts in zip(injectors, w_theos_norm_per_sam)]
+            assert np.all([len(wts) == len(rfs) for wts, rfs in zip(w_theos, raw_fluxes_per_src)])
+            # Renormalize w_theos over all samples
+            w_theo_sum = np.sum(w_theo_sum_per_sample)
+            w_theos_renorm = [wt / w_theo_sum for wt in w_theos]
+            # Renormalize fluxes per sample per source with renormalized w_theo weights
+            raw_fluxes_per_src_renorm = [raw_f * wt for raw_f, wt in
+                                         zip(raw_fluxes_per_src, w_theos_renorm)]
+            # Combine to decreased raw flux per sample
+            raw_fluxes_per_sam = np.array(map(np.sum, raw_fluxes_per_src_renorm))
+            return raw_fluxes_per_sam, w_theos_renorm, raw_fluxes_per_src_renorm
+
+        def get_sample_w(injectors):
+            # Get the renormalized fluxes and normalize as normal now
+            raw_fluxes, _, _ = get_raw_fluxes(injectors)
+            return raw_fluxes / raw_fluxes.sum()
+
+        def distribute_samples(n, injectors):
+            p = get_sample_w(injectors)
+            return np.random.multinomial(n, p, size=None)
