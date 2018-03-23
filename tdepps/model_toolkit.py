@@ -166,14 +166,14 @@ class SignalFluenceInjector(object):
 
     def mu2flux(self, mu, per_source=False):
         """
-        Convert a given number of events ``mu`` to a corresponding particle
-        flux normalization :math:`F_0` in units [GeV^-1 cm^-2].
+        Convert a given number of events ``mu`` to a corresponding particle flux
+        normalization :math:`F_0` in units [GeV^-1 cm^-2].
 
         The connection between :math:`F_0` and the number of events ``mu`` is:
 
         .. math:: F_0 = \mu / \sum_i \hat{w}_i
 
-        where :math:`F_0 \sum_i \hat{w}_i` would gives the number of events. The
+        where :math:`F_0 \sum_i \hat{w}_i` would give the number of events. The
         weights :math:`w_i` are calculated in :py:meth:`_set_sampling_weights`.
 
         Parameters
@@ -187,11 +187,11 @@ class SignalFluenceInjector(object):
             Total flux for all sources in unit ``[GeV^-1 cm^-2]``.
         """
         if per_source:
-            # Split the total flux according to the thoeretical source weights
-            return self._w_theo_norm * mu / self._raw_flux
+            # Split the total mu according to the theoretical source weights
+            mu = self._w_theo_norm * mu
         return mu / self._raw_flux
 
-    def flux2mu(self, flux):
+    def flux2mu(self, flux, per_source=False):
         """
         Calculates the number of events ``mu`` corresponding to a given particle
         flux for the current setup:
@@ -201,7 +201,12 @@ class SignalFluenceInjector(object):
         where :math:`F_0 \sum_i \hat{w}_i` would gives the number of events. The
         weights :math:`w_i` are calculated in :py:meth:`_set_sampling_weights`.
         """
-        return flux * self._raw_flux
+        if per_source:
+            # Split the total mu according to the theoretical source weights
+            mu = flux * self._raw_flux_per_src
+        else:
+            mu = flux * self._raw_flux
+        return mu
 
     def fit(self, srcs, MC, exp_names):
         """
@@ -404,7 +409,10 @@ class SignalFluenceInjector(object):
         w = mc["ow"] * flux / omega * w_theo
         assert len(self._mc_arr) == len(w)
 
+        self._raw_flux_per_src = np.array(
+            [np.sum(w[src_idx == j]) for j in np.unique(src_idx)])
         self._raw_flux = np.sum(w)
+        assert np.isclose(np.sum(self._raw_flux_per_src), self._raw_flux)
 
         # Cache sampling CDF used for injecting events from the whole MC pool
         self._sample_w_CDF = np.cumsum(w) / self._raw_flux
