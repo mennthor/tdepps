@@ -36,7 +36,62 @@ from .utils import (random_choice, fill_dict_defaults, ThetaPhiToDecRa,
 ##############################################################################
 # Signal injector classes
 ##############################################################################
-class SignalFluenceInjector(object):
+class SignalInjector(object):
+    """
+    Signal Injector base class
+    """
+    __metaclass__ = abc.ABCMeta
+
+    _rndgen = None
+    _srcs = None
+
+    @property
+    def rndgen(self):
+        """ numpy RNG instance used to sample """
+        return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, rndgen):
+        self._rndgen = check_random_state(rndgen)
+
+    @property
+    def srcs(self):
+        """ Source recarray the injector was fitted to """
+        return self._srcs
+
+    @abc.abstractmethod
+    def mu2flux(self):
+        """ Converts a number of injected events to a flux """
+        pass
+
+    @abc.abstractmethod
+    def flux2mu(self):
+        """ Converts a flux to injected number of events """
+        pass
+
+    @abc.abstractmethod
+    def fit(self):
+        """ Sets up the injector and makes it ready to use """
+        pass
+
+    @abc.abstractmethod
+    def sample(self):
+        """ Get a signal sample for a single trial to use in a LLH object """
+        pass
+
+
+class MultiSignalInjector(SignalInjector):
+    """ Interface for managing multiple SignalInjector type classes """
+    _names = None
+
+    @property
+    @abc.abstractmethod
+    def names(self):
+        """ Subinjector names, identifies this as a MultiModelInjector """
+        pass
+
+
+class SignalFluenceInjector(SignalInjector):
     """
     Signal Fluence Injector
 
@@ -152,18 +207,6 @@ class SignalFluenceInjector(object):
     def mc_arr(self):
         return self._mc_arr
 
-    @property
-    def srcs(self):
-        return self._srcs
-
-    @property
-    def rndgen(self):
-        return self._rndgen
-
-    @rndgen.setter
-    def rndgen(self, random_state):
-        self._rndgen = check_random_state(random_state)
-
     def mu2flux(self, mu, per_source=False):
         """
         Convert a given number of events ``mu`` to a corresponding particle flux
@@ -179,12 +222,17 @@ class SignalFluenceInjector(object):
         Parameters
         ----------
         mu : float
-            Expectation for number of events.
+            Expectation for number of events at the detector.
+        per_source : bool, optional
+            If ``True`` returns the expected events per source by splitting the
+            total flux accroding to the sources' theoretical weights.
+            (Default: ``False``)
 
         Returns
         -------
         flux : float or array-like
-            Total flux for all sources in unit ``[GeV^-1 cm^-2]``.
+            Source flux in total, or split for each source, in unit(s)
+            ``[GeV^-1 cm^-2]``.
         """
         if per_source:
             # Split the total mu according to the theoretical source weights
@@ -200,6 +248,20 @@ class SignalFluenceInjector(object):
 
         where :math:`F_0 \sum_i \hat{w}_i` would gives the number of events. The
         weights :math:`w_i` are calculated in :py:meth:`_set_sampling_weights`.
+
+        Parameters
+        ----------
+        flux : float
+            Total source flux for all sources, in units ``[GeV^-1 cm^-2]``.
+        per_source : bool, optional
+            If ``True`` returns the flux per source by splitting the total flux
+            according to the expected events per source at detector level.
+            (Default: ``False``)
+
+        Returns
+        -------
+        mu : float or array-like
+            Expected number of event in total or per source at the detector.
         """
         if per_source:
             # Split the total mu according to the theoretical source weights
@@ -322,8 +384,8 @@ class SignalFluenceInjector(object):
 
         Parameters
         -----------
-        n_samples : n_samples
-            How many events to sample.
+        n_samples : int, optional
+            Number of signal events to sample. (Default. 1)
 
         Returns
         --------
@@ -783,6 +845,177 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         max_sin_dec = np.sin(self._max_dec)
         self._omega = 2. * np.pi * (max_sin_dec - min_sin_dec)
         assert np.all((0. < self._omega) & (self._omega <= 4. * np.pi))
+
+
+class MultiSignalFluenceInjector(SignalInjector):
+    """
+    Collect multiple SignalFluenceInjector classes, implements colective
+    sampling, flux2mu and mu2flux methods.
+    """
+    _injectors = {}
+
+    @property
+    def names(self):
+        return list(self._injectors.keys())
+
+    def mu2flux(self, mu, per_source=False):
+        """
+        Convert a given number of events ``mu`` to a corresponding particle flux
+        normalization :math:`F_0` in units [GeV^-1 cm^-2].
+
+        Combines mu2flux from multiple injectors to a single output.
+
+        Parameters
+        ----------
+        mu : float
+            Expectation for number of events at the detector.
+        per_source : bool, optional
+            If ``True`` returns the expected events per source by splitting the
+            total flux accroding to the sources' theoretical weights.
+            (Default: ``False``)
+
+        Returns
+        -------
+        flux : float or array-like
+            Source flux in total, or split for each source, in unit(s)
+            ``[GeV^-1 cm^-2]``.
+        """
+        if per_source:
+            # Split the total mu according to the theoretical source weights
+            mu = self._w_theo_norm * mu
+        return mu / self._raw_flux
+
+    def flux2mu(self, flux, per_source=False):
+        """
+        Calculates the number of events ``mu`` corresponding to a given particle
+        flux for the current setup:
+
+        .. math:: \mu = F_0 \sum_i \hat{w}_i
+
+        where :math:`F_0 \sum_i \hat{w}_i` would gives the number of events. The
+        weights :math:`w_i` are calculated in :py:meth:`_set_sampling_weights`.
+
+        Combines flux2mu from multiple injectors to a single output.
+
+        Parameters
+        ----------
+        flux : float
+            Total source flux for all sources, in units ``[GeV^-1 cm^-2]``.
+        per_source : bool, optional
+            If ``True`` returns the flux per source by splitting the total flux
+            according to the expected events per source at detector level.
+            (Default: ``False``)
+
+        Returns
+        -------
+        mu : float or array-like
+            Expected number of event in total or per source at the detector.
+        """
+        if per_source:
+            # Split the total mu according to the theoretical source weights
+            mu = flux * self._raw_flux_per_src
+        else:
+            mu = flux * self._raw_flux
+        return mu
+
+    def fit(self, injectors):
+        """
+        Takes multiple single SignalFluenceInjectors in a dict and manages them.
+
+        Parameters
+        ----------
+        injectors : dict
+            Injectors to be managed by this multi Injector class. Names must
+            match with dict keys needed by tested LLH.
+        """
+        for name, inj in injectors.items():
+            if not isinstance(inj, SignalInjector):
+                raise ValueError("Injector object `{}`".format(name) +
+                                 " is not of type `SignalInjector`.")
+
+        self._injectors = injectors
+
+    @abc.abstractmethod
+    def sample(self, n_samples=1):
+        """
+        Split n_samples across single injectors and combine to combined sample
+        after sampling each sub injector.
+
+        Parameters
+        ----------
+        n_samples : int, optional
+            Number of signal events to sample from all injectors in total.
+            (Default: 1)
+
+        Returns
+        --------
+        sam_ev : dict of record-arrays
+            Combined samples of all signal injectors. Number of events sampled
+            in total might be smaller depending on the sub injector settings.
+            If ``n_samples<1`` an empty dict is returned.
+        """
+        if n_samples < 1:
+            return {}
+
+
+    # These belong to a multi signal injector. Decide how to include that
+    # 1) Build multi signal injector container
+    # 2) Make dummy signal injector class here and attach methods to it
+    def mu2flux(mu, injectors, per_source=False):
+        raw_fluxes, w_theos, _ = get_raw_fluxes(injectors)
+        raw_fluxes_sum = np.sum(raw_fluxes)
+        if per_source:
+            return [mu * wts / raw_fluxes_sum for wts in w_theos]
+        return mu / raw_fluxes_sum
+
+    def flux2mu(flux, injectors, per_source=True):
+        raw_fluxes, _, raw_fluxes_per_src = get_raw_fluxes(injectors)
+        if per_source:
+            return [flux * rfs for rfs in raw_fluxes_per_src]
+        return flux * np.sum(raw_fluxes)
+
+    def _split_signal_samples(self, n_signal):
+        """
+        We need to split the requested number of signal events to sample the
+        correct amount of signal from each singel injector.
+
+        Parameters
+        ----------
+        n_signal : int
+            Number of signal events to sample from all injectors in total.
+
+        Returns
+        -------
+        n_sig_per_inj : dict
+            Integer number of signal events to sample per injector.
+        """
+        def get_raw_fluxes(injectors):
+            # Remove w_theo from raw fluxes per sample to renormalize them
+            w_theos = [inj._srcs[-1]["w_theo"] for inj in injectors]
+            w_theo_sum_per_sample = map(np.sum, w_theos)
+            w_theos_norm_per_sam = [wt / wtn for wt, wtn in zip(w_theos, w_theo_sum_per_sample)]
+            raw_fluxes_per_src = [inj._raw_flux_per_sam_per_src[-1] / wts for
+                                  inj, wts in zip(injectors, w_theos_norm_per_sam)]
+            assert np.all([len(wts) == len(rfs) for wts, rfs in zip(w_theos, raw_fluxes_per_src)])
+            # Renormalize w_theos over all samples
+            w_theo_sum = np.sum(w_theo_sum_per_sample)
+            w_theos_renorm = [wt / w_theo_sum for wt in w_theos]
+            # Renormalize fluxes per sample per source with renormalized w_theo weights
+            raw_fluxes_per_src_renorm = [raw_f * wt for raw_f, wt in
+                                         zip(raw_fluxes_per_src, w_theos_renorm)]
+            # Combine to decreased raw flux per sample
+            raw_fluxes_per_sam = np.array(map(np.sum, raw_fluxes_per_src_renorm))
+            return raw_fluxes_per_sam, w_theos_renorm, raw_fluxes_per_src_renorm
+
+        def get_sample_w(injectors):
+            # Get the renormalized fluxes and normalize as normal now
+            raw_fluxes, _, _ = get_raw_fluxes(injectors)
+            return raw_fluxes / raw_fluxes.sum()
+
+        def distribute_samples(n, injectors):
+            p = get_sample_w(injectors)
+            return np.random.multinomial(n, p, size=None)
+
 
 
 ##############################################################################
