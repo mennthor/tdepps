@@ -18,6 +18,9 @@ class PDF(object):
         pass
 
 
+# #############################################################################
+# GRB style PDFs
+# #############################################################################
 class GRBPDF(PDF):
     """
     Models the PDF part for the GRB LLH function.

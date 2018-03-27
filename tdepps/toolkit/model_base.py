@@ -15,7 +15,7 @@ log = logger(name="toolkit", level="ALL")
 
 
 ##############################################################################
-# Signal injector classes
+# Signal injector
 ##############################################################################
 class SignalInjector(object):
     """
@@ -98,7 +98,7 @@ class TimeSampler(object):
 
 
 ##############################################################################
-# Background injector classes
+# Background injector
 ##############################################################################
 class BGDataInjector(object):
     """
@@ -214,7 +214,7 @@ class BGDataInjector(object):
 
 
 ##############################################################################
-# Rate function classes to fit a BG rate model
+# Rate function
 ##############################################################################
 class RateFunction(object):
     """
