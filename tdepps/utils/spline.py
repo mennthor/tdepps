@@ -10,7 +10,7 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
-from matplotlib import _cntr as contour
+from matplotlib import contour
 import scipy.interpolate as sci
 from scipy.stats import chi2
 
@@ -308,9 +308,8 @@ def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
         # Get the contour points and average over min, max per parameter
         one_sigma_level = np.amin(llh) - chi2.logsf(df=2, x=[1**2])
         # Call undocumented base of plt.contour, to avoid creating a figure ...
-        cntr = contour.Cntr(x, y, llh)
-        paths = cntr.trace(level0=one_sigma_level)
-        paths = paths[:len(paths) // 2]  # First half of list has the vertices
+        cntr = contour(x, y, llh, one_sigma_level)
+        paths = cntr.collection[0].get_paths()
         return paths, llh, [x, y]
 
     def _is_path_closed(paths, rng_x, rng_y):
