@@ -10,24 +10,22 @@ caching reasons, then consider coding the functionality directly into a model to
 benefit from direct class attributes.
 """
 
-from __future__ import print_function, division
+from __future__ import print_function, division, absolute_import
 
 import abc
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
-import scipy.optimize as sco
 import scipy.stats as scs
-import scipy.interpolate as sci
-from sklearn.utils import check_random_state
 import healpy as hp
-from astropy.time import Time as astrotime
+from .model_base import (SignalInjector, BGDataInjector, RateFunction, TimeSampler)
 from ..utils import (random_choice, fill_dict_defaults, ThetaPhiToDecRa, logger,
-                     rotator, spl_normed, fit_spl_to_hist, get_stddev_from_scan)
-log = logger(name="toolkit", level="ALL")
+                     rotator, fit_spl_to_hist, make_time_dep_dec_splines,
+                     arr2str)
 
 try:
     from awkde import GaussianKDE as KDE
 except ImportError as e:
+    log = logger(name="toolkit", level="ALL")
     print(log.ERROR(e))
     print(log.ERROR("KDE injector is not available, because package " +
                     "`awkde` is missing."))
@@ -52,6 +50,9 @@ class SignalFluenceInjector(SignalInjector):
         that will be injected from. Values are used to weight events to a
         physics scenario by ``w[i] ~ f(MC['trueE'][i] * MC['ow'][i]``. Make
         sure the model fits to the units of the true energy and the OneWeights.
+    time_sampler : TimeSampler instance
+        Time sampler for sampling the signal times in addition to the spatial
+        rotation part done by the injector.
     mode : string, optional
         One of ``['circle'|'band']``. Selects MC events to inject based
         on their true location:
@@ -80,9 +81,6 @@ class SignalFluenceInjector(SignalInjector):
         Turn seed into a ``np.random.RandomState`` instance. See
         ``sklearn.utils.check_random_state``. (default: None)
     """
-    def _INFO_(self, s=""):
-        return "{} :: {}".format(self.__class__.__name__, s)
-
     def __init__(self, model, time_sampler, mode="band", sindec_inj_width=0.035,
                  dec_range=None, random_state=None):
         if not callable(model):
@@ -115,7 +113,7 @@ class SignalFluenceInjector(SignalInjector):
         self._mc_arr = None
         self._srcs = None
 
-        # Defaults for private class variables
+        # Defaults for private class attributes
         self._MC = None
         self._mc_names = None
         self._exp_names = None
@@ -132,6 +130,8 @@ class SignalFluenceInjector(SignalInjector):
         # Debug attributes
         self._sample_idx = None
         self._skylab_band = False
+
+        self._log = logger(name=self.__class__.__name__, level="ALL")
 
         return
 
@@ -316,10 +316,10 @@ class SignalFluenceInjector(SignalInjector):
                                             np.sum(core_mask, axis=1))
 
         s_ = "Selected {:d} evts at {:d} sources.".format(n_tot, nsrcs) + "\n"
-        s_ += len(self._INFO_()) * " "
+        s_ += len(self._log.INFO()) * " "
         s_ += "- Sources without selected evts: {}".format(
             nsrcs - np.count_nonzero(np.sum(core_mask, axis=1)))
-        print(self._INFO_(s_))
+        print(self._log.INFO(s_))
 
         self._set_sampling_weights()
 
@@ -542,9 +542,14 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
 
     Parameters
     ----------
-    gamma : float
-        Index of an unbroken power law :math:`E^{-\gamma}` which is used to
-        describe the energy flux of signal events.
+    model : callable
+        Function of true energy ``f(MC['trueE'])``, describing the model flux
+        that will be injected from. Values are used to weight events to a
+        physics scenario by ``w[i] ~ f(MC['trueE'][i] * MC['ow'][i]``. Make
+        sure the model fits to the units of the true energy and the OneWeights.
+    time_sampler : TimeSampler instance
+        Time sampler for sampling the signal times in addition to the spatial
+        rotation part done by the injector.
     sindec_inj_width : float, optional
         This is different form the ``SignalFluenceInjector`` behaviour because
         depending on the prior localization we may select a different bandwidth
@@ -565,13 +570,13 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         Turn seed into a ``np.random.RandomState`` instance. See
         ``sklearn.utils.check_random_state``. (default: ``None``)
     """
-    def __init__(self, gamma, sindec_inj_width=0.035, inj_sigma=3.,
-                 dec_range=None, random_state=None):
+    def __init__(self, model, time_sampler, sindec_inj_width=0.035,
+                 inj_sigma=3., dec_range=None, random_state=None):
         if inj_sigma <= 0.:
             raise ValueError("Injection sigma must be >0.")
         self._inj_sigma = inj_sigma
 
-        # Set private attributes' default values
+        # Defaults for private class attributes
         self._src_map_CDFs = None
         self._NSIDE = None
         self._NPIX = None
@@ -583,7 +588,8 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         self._src_dec = None
 
         return super(HealpySignalFluenceInjector, self).__init__(
-            gamma, "band", sindec_inj_width, dec_range, random_state)
+            model, time_sampler, "band", sindec_inj_width, dec_range,
+            random_state)
 
     @property
     def inj_sigma(self):
@@ -794,7 +800,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
 
 class MultiSignalFluenceInjector(SignalInjector):
     """
-    Collect multiple SignalFluenceInjector classes, implements colective
+    Collect multiple SignalFluenceInjector classes, implements collective
     sampling, flux2mu and mu2flux methods.
     """
     _injectors = {}
@@ -825,12 +831,13 @@ class MultiSignalFluenceInjector(SignalInjector):
             Source flux in total, or split for each source, in unit(s)
             ``[GeV^-1 cm^-2]``.
         """
+        raw_fluxes, w_theos, _ = self._get_raw_fluxes(self._injectors.values())
+        raw_fluxes_sum = np.sum(raw_fluxes)
         if per_source:
-            # Split the total mu according to the theoretical source weights
-            mu = self._w_theo_norm * mu
-        return mu / self._raw_flux
+            return [mu * wts / raw_fluxes_sum for wts in w_theos]
+        return mu / raw_fluxes_sum
 
-    def flux2mu(self, flux, per_source=False):
+    def flux2mu(flux, injectors, per_source=True):
         """
         Calculates the number of events ``mu`` corresponding to a given particle
         flux for the current setup:
@@ -856,12 +863,10 @@ class MultiSignalFluenceInjector(SignalInjector):
         mu : float or array-like
             Expected number of event in total or per source at the detector.
         """
+        raw_fluxes, _, raw_fluxes_per_src = get_raw_fluxes(injectors)
         if per_source:
-            # Split the total mu according to the theoretical source weights
-            mu = flux * self._raw_flux_per_src
-        else:
-            mu = flux * self._raw_flux
-        return mu
+            return [flux * rfs for rfs in raw_fluxes_per_src]
+        return flux * np.sum(raw_fluxes)
 
     def fit(self, injectors):
         """
@@ -878,7 +883,13 @@ class MultiSignalFluenceInjector(SignalInjector):
                 raise ValueError("Injector object `{}`".format(name) +
                                  " is not of type `SignalInjector`.")
 
+        # Cache sampling weights
+        raw_fluxes = self._get_raw_fluxes(injectors.values())
+        self._distribute_weights = raw_fluxes / np.sum(raw_fluxes)
+
         self._injectors = injectors
+
+        return
 
     @abc.abstractmethod
     def sample(self, n_samples=1):
@@ -902,64 +913,52 @@ class MultiSignalFluenceInjector(SignalInjector):
         if n_samples < 1:
             return {}
 
+        # Distribute sample size to individual injectors
+        n_per_sam = self._rndgen.multinomial(
+            n_samples, self._distribute_weights, size=None)
 
-    # These belong to a multi signal injector. Decide how to include that
-    # 1) Build multi signal injector container
-    # 2) Make dummy signal injector class here and attach methods to it
-    def mu2flux(mu, injectors, per_source=False):
-        raw_fluxes, w_theos, _ = get_raw_fluxes(injectors)
-        raw_fluxes_sum = np.sum(raw_fluxes)
-        if per_source:
-            return [mu * wts / raw_fluxes_sum for wts in w_theos]
-        return mu / raw_fluxes_sum
+        # Sample per injector
+        sam_ev = {}
+        for i, (key, inj) in enumerate(self._injectors.items()):
+            sam_ev[key] = inj.sample(n_samples=n_per_sam[i])
 
-    def flux2mu(flux, injectors, per_source=True):
-        raw_fluxes, _, raw_fluxes_per_src = get_raw_fluxes(injectors)
-        if per_source:
-            return [flux * rfs for rfs in raw_fluxes_per_src]
-        return flux * np.sum(raw_fluxes)
+        return sam_ev
 
-    def _split_signal_samples(self, n_signal):
+    def _get_raw_fluxes(self, injectors):
         """
-        We need to split the requested number of signal events to sample the
-        correct amount of signal from each singel injector.
+        Renormalize raw fluxes from each injector.
 
         Parameters
         ----------
-        n_signal : int
-            Number of signal events to sample from all injectors in total.
+        injectors : dict
+            Dictionary of signal injector instances.
 
         Returns
         -------
-        n_sig_per_inj : dict
-            Integer number of signal events to sample per injector.
+        raw_fluxes_per_sam, raw_fluxes_per_src, w_renorm
         """
-        def get_raw_fluxes(injectors):
-            # Remove w_theo from raw fluxes per sample to renormalize them
-            w_theos = [inj._srcs[-1]["w_theo"] for inj in injectors]
-            w_theo_sum_per_sample = map(np.sum, w_theos)
-            w_theos_norm_per_sam = [wt / wtn for wt, wtn in zip(w_theos, w_theo_sum_per_sample)]
-            raw_fluxes_per_src = [inj._raw_flux_per_sam_per_src[-1] / wts for
-                                  inj, wts in zip(injectors, w_theos_norm_per_sam)]
-            assert np.all([len(wts) == len(rfs) for wts, rfs in zip(w_theos, raw_fluxes_per_src)])
-            # Renormalize w_theos over all samples
-            w_theo_sum = np.sum(w_theo_sum_per_sample)
-            w_theos_renorm = [wt / w_theo_sum for wt in w_theos]
-            # Renormalize fluxes per sample per source with renormalized w_theo weights
-            raw_fluxes_per_src_renorm = [raw_f * wt for raw_f, wt in
-                                         zip(raw_fluxes_per_src, w_theos_renorm)]
-            # Combine to decreased raw flux per sample
-            raw_fluxes_per_sam = np.array(map(np.sum, raw_fluxes_per_src_renorm))
-            return raw_fluxes_per_sam, w_theos_renorm, raw_fluxes_per_src_renorm
+        # Normalize theo weights for each sample first
+        weights = [inj.srcs["w_theo"] for inj in injectors]
+        w_sum_per_sam = map(np.sum, weights)
+        w_renorm = [wts / norm for wts, norm in zip(weights, w_sum_per_sam)]
 
-        def get_sample_w(injectors):
-            # Get the renormalized fluxes and normalize as normal now
-            raw_fluxes, _, _ = get_raw_fluxes(injectors)
-            return raw_fluxes / raw_fluxes.sum()
+        # Remove normalized theo weights from raw fluxes
+        raw_fluxes_per_src = [inj.flux2mu(1., per_source=True) / wts
+                              for inj, wts in zip(injectors, w_renorm)]
+        assert np.all([len(wts) == len(rfs)
+                       for wts, rfs in zip(w_renorm, raw_fluxes_per_src)])
 
-        def distribute_samples(n, injectors):
-            p = get_sample_w(injectors)
-            return np.random.multinomial(n, p, size=None)
+        # Globally renormalize theo weights over all samples
+        w_sum = np.sum(w_sum_per_sam)
+        w_renorm = [wts / w_sum for wts in weights]
+
+        # Renormalize fluxes per sample per source with renormalized weights
+        raw_fluxes_per_src = [raw_f * wts for raw_f, wts
+                              in zip(raw_fluxes_per_src, w_renorm)]
+
+        # Combined fluxes per sample are used for sampling weights
+        raw_fluxes_per_sam = np.array(map(np.sum, raw_fluxes_per_src))
+        return raw_fluxes_per_sam, raw_fluxes_per_src, w_renorm
 
 
 ##############################################################################
@@ -1092,6 +1091,30 @@ class KDEBGDataInjector(BGDataInjector):
 
         # Concat sampled array list and convert to single record-array
         return np.core.records.fromarrays(np.concatenate(X).T, dtype=dtype)
+
+    def _check_bounds(self, bounds):
+        """
+        Check if bounds are OK. Create numerical values when None is given.
+
+        Returns
+        -------
+        bounds : array-like, shape (n_features, 2)
+            Boundary conditions for each dimension. Unconstrained axes have
+            bounds ``[-np.inf, +np.inf]``.
+        """
+        if bounds is None:
+            bounds = np.repeat([[-np.inf, np.inf], ],
+                               repeats=self._n_features, axis=0)
+
+        bounds = np.array(bounds)
+        if bounds.shape[1] != 2 or (bounds.shape[0] != len(self._X_names)):
+            raise ValueError("Invalid `bounds`. Must be shape (n_features, 2).")
+
+        # Convert None to +-np.inf depnding on low/hig bound
+        bounds[:, 0][bounds[:, 0] == np.array(None)] = -np.inf
+        bounds[:, 1][bounds[:, 1] == np.array(None)] = +np.inf
+
+        return bounds
 
 
 class ResampleBGDataInjector(BGDataInjector):
@@ -1320,8 +1343,7 @@ class Binned3DBGDataInjector(BGDataInjector):
 
 class TimeDecDependentBGDataInjector(BGDataInjector):
     """
-    Models the injection part for the GRB LLH, implements: ``get_sample()``.
-    This model is used for the GRB-like HESE stacking analysis.
+    Models the injection part for the GRB LLH.
 
     BG injection is allsky and time and declination dependent:
       1. For each source time build a declination dependent detector profile
@@ -1333,23 +1355,6 @@ class TimeDecDependentBGDataInjector(BGDataInjector):
       4. RA is sampled uniformly in ``[0, 2pi]`` and times are sampled from the
          rate function (uniform for small time windows.)
     """
-    _nsrcs = None
-    _src_t = None
-    _src_trange = None
-    _allsky_rate_func = None
-    _allsky_pars = None
-    _nb = None
-
-    # Debug info
-    _data_spl = None
-    _sin_dec_splines = None
-    _param_splines = None
-    _best_pars = None
-    _best_stddevs = None
-
-    def _INFO_(self, s=""):
-        return "{} :: {}".format(self.__class__.__name__, s)
-
     def __init__(self, bg_inj_args, rndgen=None):
         self._provided_data_names = np.array(
             ["timeMJD", "dec", "ra", "sigma", "logE"])
@@ -1362,6 +1367,23 @@ class TimeDecDependentBGDataInjector(BGDataInjector):
         self._sin_dec_bins = np.atleast_1d(self.bg_inj_args["sindec_bins"])
         self._rate_rebins = np.atleast_1d(self.bg_inj_args["rate_rebins"])
         self.rndgen = rndgen
+
+        # Defaults for private class variables
+        self._nsrcs = None
+        self._src_t = None
+        self._src_trange = None
+        self._allsky_rate_func = None
+        self._allsky_pars = None
+        self._nb = None
+
+        # Debug info
+        self._data_spl = None
+        self._sin_dec_splines = None
+        self._param_splines = None
+        self._best_pars = None
+        self._best_stddevs = None
+
+        self._log = logger(name=self.__class__.__name__, level="ALL")
 
     def fit(self, X, srcs, run_dict, sig_inj):
         """
@@ -1386,8 +1408,8 @@ class TimeDecDependentBGDataInjector(BGDataInjector):
         drop = np.isin(X_names, self._provided_data_names,
                        assume_unique=True, invert=True)
         drop_names = X_names[drop]
-        print(self._INFO_("Dropping names '{}' ".format(arr2str(drop_names)) +
-                          "from data recarray."))
+        print(self._log.INFO("Dropping names '{}'".format(arr2str(drop_names)) +
+                             " from data recarray."))
 
         self.X = drop_fields(X, drop_names, usemask=False)
         self.srcs = srcs
@@ -1466,7 +1488,7 @@ class TimeDecDependentBGDataInjector(BGDataInjector):
         assert len(self._src_trange) == len(self._src_t) == self._nsrcs
 
         # Get sindec PDF spline for each source, averaged over its time window
-        print(self._INFO_("Create time dep sindec splines."))
+        print(self._log.INFO("Create time dep sindec splines."))
         sin_dec_splines, info = make_time_dep_dec_splines(
             ev_t, ev_sin_dec, srcs, run_dict, self._sin_dec_bins,
             self._rate_rebins, spl_s=self.bg_inj_args["spl_s"])
@@ -1505,6 +1527,7 @@ class TimeDecDependentBGDataInjector(BGDataInjector):
         self._sample_CDFs = CDFs / CDFs[:, [-1]]
 
         return
+
 
 ##############################################################################
 # Rate function classes to fit a BG rate model
@@ -1713,7 +1736,7 @@ class SinusRateFunction(RateFunction):
 
         try:
             errs = res.hess_inv
-        except:
+        except AttributeError:
             errs = res.hess_inv.todense()
 
         # Var[a*x] = a^2*x. Cov[a*x+b, c*y+d] = a*c*Cov[x, y]
@@ -1847,7 +1870,7 @@ class SinusFixedRateFunction(SinusRateFunction):
 
         try:
             errs = res.hess_inv
-        except:
+        except AttributeError:
             errs = res.hess_inv.todense()
 
         if self._b is None:
