@@ -4,7 +4,7 @@
 Base class definitions are here, implementations in `model_toolkit.py`.
 """
 
-from __future__ import print_function
+from __future__ import print_function, absolute_import
 
 import abc
 import numpy as np
@@ -22,7 +22,7 @@ class SignalInjector(object):
     Signal Injector base class
     """
     __metaclass__ = abc.ABCMeta
-
+    # Public defaults
     _rndgen = None
     _srcs = None
 
@@ -63,6 +63,7 @@ class SignalInjector(object):
 
 class MultiSignalInjector(SignalInjector):
     """ Interface for managing multiple SignalInjector type classes """
+    # Public defaults
     _names = None
 
     @property
@@ -77,12 +78,13 @@ class MultiSignalInjector(SignalInjector):
 ##############################################################################
 class TimeSampler(object):
     """
-    Class to collect time samplers used by SignalFluenceInjector
+    Base class to describe time samplers used by SignalFluenceInjector.
     """
     __metaclass__ = abc.ABCMeta
-
-    _SECINDAY = 24. * 60. * 60
+    # Public defaults
     _rndgen = None
+    # Interal defaults
+    _SECINDAY = 24. * 60. * 60
 
     @property
     def rndgen(self):
@@ -93,7 +95,7 @@ class TimeSampler(object):
         self._rndgen = check_random_state(random_state)
 
     @abc.abstractmethod
-    def sample():
+    def sample(self):
         pass
 
 
@@ -102,39 +104,12 @@ class TimeSampler(object):
 ##############################################################################
 class BGDataInjector(object):
     """
-    Background Data Injector Base Class
-
-    Base class for generating events from a given data record array.
-    Classes must implement methods:
-
-    - ``fun``
-    - ``sample``
-
-    Class object then provides public methods:
-
-    - ``fun``
-    - ``sample``
-
-    Parameters
-    ----------
-    random_state : None, int or np.random.RandomState, optional
-        Turn seed into a ``np.random.RandomState`` instance. (default: None)
-
-    Example
-    -------
-    >>> # Example for a special class which resamples directly from an array
-    >>> from tdepps.model_toolkit import DataGPInjector as inj
-    >>> # Generate some test data
-    >>> n_evts, n_features = 100, 3
-    >>> X = np.random.uniform(0, 1, size=(n_evts, n_features))
-    >>> X = np.core.records.fromarrays(X.T, names=["logE", "dec", "sigma"])
-    >>> # Fit injector and let it resample from the pool of testdata
-    >>> inj.fit(X)
-    >>> sample = inj.sample(n_samples=1000)
+    Base class for classes generating events from a given data record array.
     """
     __metaclass__ = abc.ABCMeta
-
+    # Public defaults
     _rndgen = None
+    # Interal defaults
     _X_names = None
     _n_features = None
 
@@ -148,57 +123,13 @@ class BGDataInjector(object):
 
     @abc.abstractmethod
     def fit(self, X):
-        """
-        Build the injection model with the provided data.
-
-        Parameters
-        ----------
-        X : record-array
-            Data named array.
-        """
+        """ Build the injection model with the provided data """
         pass
 
     @abc.abstractmethod
-    def sample(self, n_samples=1):
-        """
-        Generate random samples from the fitted model.
-
-        Parameters
-        ----------
-        n_samples : int, optional
-            Number of samples to generate. (default: 1)
-
-        Returns
-        -------
-        X : record-array
-            Generated samples from the fitted model. Has the same names as the
-            given record-array X in `fit`.
-        """
+    def sample(self):
+        """ Generate random samples from the fitted model """
         pass
-
-    def _check_bounds(self, bounds):
-        """
-        Check if bounds are OK. Create numerical values when None is given.
-
-        Returns
-        -------
-        bounds : array-like, shape (n_features, 2)
-            Boundary conditions for each dimension. Unconstrained axes have
-            bounds ``[-np.inf, +np.inf]``.
-        """
-        if bounds is None:
-            bounds = np.repeat([[-np.inf, np.inf], ],
-                               repeats=self._n_features, axis=0)
-
-        bounds = np.array(bounds)
-        if bounds.shape[1] != 2 or (bounds.shape[0] != len(self._X_names)):
-            raise ValueError("Invalid `bounds`. Must be shape (n_features, 2).")
-
-        # Convert None to +-np.inf depnding on low/hig bound
-        bounds[:, 0][bounds[:, 0] == np.array(None)] = -np.inf
-        bounds[:, 1][bounds[:, 1] == np.array(None)] = +np.inf
-
-        return bounds
 
     def _check_X_names(self, X):
         """ Check if given input ``X`` is valid and extract names. """
@@ -218,61 +149,11 @@ class BGDataInjector(object):
 ##############################################################################
 class RateFunction(object):
     """
-    Rate Function Base Class
-
-    Base class for rate functions describing time dependent background
-    rates. Rate function must be interpretable as a PDF and must not be
-    negative.
-
-    Classes must implement methods:
-
-    - ``fun``
-    - ``integral``
-    - ``sample``
-    - ``_get_default_seed``
-
-    Class object then provides public methods:
-
-    - ``fun``
-    - ``integral``
-    - ``fit``
-    - ``sample``
-
-    Parameters
-    ----------
-    random_state : seed, optional
-        Turn seed into a ``np.random.RandomState`` instance. See
-        ``sklearn.utils.check_random_state``. (default: None)
+    Base class for rate functions describing time dependent background rates.
     """
     __metaclass__ = abc.ABCMeta
+    # Interal defaults
     _SECINDAY = 24. * 60. * 60.
-
-    def __init__(self, random_state=None):
-        self.rndgen = random_state
-        # Get set when fitted
-        self._bf_pars = None
-        self._bf_fun = None
-        self._bf_int = None
-
-    @property
-    def rndgen(self):
-        return self._rndgen
-
-    @rndgen.setter
-    def rndgen(self, random_state):
-        self._rndgen = check_random_state(random_state)
-
-    @property
-    def bf_pars(self):
-        return self._bf_pars
-
-    @property
-    def bf_fun(self):
-        return self._bf_fun
-
-    @property
-    def bf_int(self):
-        return self._bf_int
 
     @abc.abstractmethod
     def fun(self, t, pars):
@@ -362,6 +243,33 @@ class RateFunction(object):
             uses as a staerting point in the :py:meth:`fit`.
         """
         pass
+
+    def __init__(self, random_state=None):
+        self.rndgen = random_state
+        # Get set when fitted
+        self._bf_pars = None
+        self._bf_fun = None
+        self._bf_int = None
+
+    @property
+    def rndgen(self):
+        return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
+
+    @property
+    def bf_pars(self):
+        return self._bf_pars
+
+    @property
+    def bf_fun(self):
+        return self._bf_fun
+
+    @property
+    def bf_int(self):
+        return self._bf_int
 
     def fit(self, t, rate, p0=None, w=None, **minopts):
         """
