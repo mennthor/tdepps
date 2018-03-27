@@ -1,6 +1,6 @@
 # coding: utf-8
 
-from __future__ import print_function, division
+from __future__ import print_function, division, absolute_import
 
 import abc
 import numpy as np
@@ -59,6 +59,9 @@ class MultiModelInjector(ModelInjector):
         pass
 
 
+# #############################################################################
+# GRB style injector
+# #############################################################################
 class GRBModelInjector(ModelInjector):
     """
     Models the injection part for the GRB LLH, implements: ``get_sample()``.
@@ -287,17 +290,17 @@ class MultiGRBModelInjector(MultiModelInjector):
 
         self._injectors = injectors
 
-        # TODO: Hier weiter
-        # Collect sub signal injectors in the multi injector
+        # Additionaly collect sub signal injectors in the multi injector
+        # TODO: This injector should group instances of bg and sig injectors
+        # but the bg injector is implemented in the GRB injector...
+        # When this is outsourced, it can get more modular again.
         self._sig_inj = MultiSignalInjector()
+        self._sig_inj.fit({n: inj.sig_inj for n, inj
+                           in self._injectors.items()})
 
     def get_sample(self, n_signal=None):
         """
-        Background sampling is straightforward, because each sampler knows
-        how many events to sample on its own.
-        The requested signal events must be split to the single injector
-        instances based on the signal source weights and the relative effective
-        area each sample contributes.
+        Split background samples manually
         """
         # We need to re-normalize w_theo over all samples instead of all sources in a
         # single samples for a single injector, because sources are disjunct in each one

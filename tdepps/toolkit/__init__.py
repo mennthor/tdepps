@@ -5,6 +5,8 @@ Collection of higher level classes and methods to build a specific injector
 or PDF model class.
 """
 
+from __future__ import absolute_import
+
 from .model_toolkit import (SignalFluenceInjector, HealpySignalFluenceInjector,
                             MultiSignalFluenceInjector)
 from .model_toolkit import UniformTimeSampler
