@@ -21,76 +21,21 @@ import scipy.interpolate as sci
 from sklearn.utils import check_random_state
 import healpy as hp
 from astropy.time import Time as astrotime
+from ..utils import (random_choice, fill_dict_defaults, ThetaPhiToDecRa, logger,
+                     rotator, spl_normed, fit_spl_to_hist, get_stddev_from_scan)
+log = logger(name="toolkit", level="ALL")
 
 try:
     from awkde import GaussianKDE as KDE
 except ImportError as e:
-    print(e)
-    print("model_toolkit :: KDE injector is not available because package " +
-          "`awkde` is missing.")
-
-from .utils import (random_choice, fill_dict_defaults, ThetaPhiToDecRa,
-                    rotator, spl_normed, fit_spl_to_hist, get_stddev_from_scan)
+    print(log.ERROR(e))
+    print(log.ERROR("KDE injector is not available, because package " +
+                    "`awkde` is missing."))
 
 
 ##############################################################################
 # Signal injector classes
 ##############################################################################
-class SignalInjector(object):
-    """
-    Signal Injector base class
-    """
-    __metaclass__ = abc.ABCMeta
-
-    _rndgen = None
-    _srcs = None
-
-    @property
-    def rndgen(self):
-        """ numpy RNG instance used to sample """
-        return self._rndgen
-
-    @rndgen.setter
-    def rndgen(self, rndgen):
-        self._rndgen = check_random_state(rndgen)
-
-    @property
-    def srcs(self):
-        """ Source recarray the injector was fitted to """
-        return self._srcs
-
-    @abc.abstractmethod
-    def mu2flux(self):
-        """ Converts a number of injected events to a flux """
-        pass
-
-    @abc.abstractmethod
-    def flux2mu(self):
-        """ Converts a flux to injected number of events """
-        pass
-
-    @abc.abstractmethod
-    def fit(self):
-        """ Sets up the injector and makes it ready to use """
-        pass
-
-    @abc.abstractmethod
-    def sample(self):
-        """ Get a signal sample for a single trial to use in a LLH object """
-        pass
-
-
-class MultiSignalInjector(SignalInjector):
-    """ Interface for managing multiple SignalInjector type classes """
-    _names = None
-
-    @property
-    @abc.abstractmethod
-    def names(self):
-        """ Subinjector names, identifies this as a MultiModelInjector """
-        pass
-
-
 class SignalFluenceInjector(SignalInjector):
     """
     Signal Fluence Injector
@@ -1017,32 +962,9 @@ class MultiSignalFluenceInjector(SignalInjector):
             return np.random.multinomial(n, p, size=None)
 
 
-
 ##############################################################################
 # Time sampler
 ##############################################################################
-class TimeSampler(object):
-    """
-    Class to collect time samplers used by SignalFluenceInjector
-    """
-    __metaclass__ = abc.ABCMeta
-
-    _SECINDAY = 24. * 60. * 60
-    _rndgen = None
-
-    @property
-    def rndgen(self):
-        return self._rndgen
-
-    @rndgen.setter
-    def rndgen(self, random_state):
-        self._rndgen = check_random_state(random_state)
-
-    @abc.abstractmethod
-    def sample():
-        pass
-
-
 class UniformTimeSampler(TimeSampler):
     def __init__(self, random_state=None):
         self.rndgen = random_state
@@ -1074,119 +996,6 @@ class UniformTimeSampler(TimeSampler):
 ##############################################################################
 # Background injector classes
 ##############################################################################
-class BGDataInjector(object):
-    """
-    Background Data Injector Base Class
-
-    Base class for generating events from a given data record array.
-    Classes must implement methods:
-
-    - ``fun``
-    - ``sample``
-
-    Class object then provides public methods:
-
-    - ``fun``
-    - ``sample``
-
-    Parameters
-    ----------
-    random_state : None, int or np.random.RandomState, optional
-        Turn seed into a ``np.random.RandomState`` instance. (default: None)
-
-    Example
-    -------
-    >>> # Example for a special class which resamples directly from an array
-    >>> from tdepps.model_toolkit import DataGPInjector as inj
-    >>> # Generate some test data
-    >>> n_evts, n_features = 100, 3
-    >>> X = np.random.uniform(0, 1, size=(n_evts, n_features))
-    >>> X = np.core.records.fromarrays(X.T, names=["logE", "dec", "sigma"])
-    >>> # Fit injector and let it resample from the pool of testdata
-    >>> inj.fit(X)
-    >>> sample = inj.sample(n_samples=1000)
-    """
-    __metaclass__ = abc.ABCMeta
-
-    _rndgen = None
-    _X_names = None
-    _n_features = None
-
-    @property
-    def rndgen(self):
-        return self._rndgen
-
-    @rndgen.setter
-    def rndgen(self, random_state):
-        self._rndgen = check_random_state(random_state)
-
-    @abc.abstractmethod
-    def fit(self, X):
-        """
-        Build the injection model with the provided data.
-
-        Parameters
-        ----------
-        X : record-array
-            Data named array.
-        """
-        pass
-
-    @abc.abstractmethod
-    def sample(self, n_samples=1):
-        """
-        Generate random samples from the fitted model.
-
-        Parameters
-        ----------
-        n_samples : int, optional
-            Number of samples to generate. (default: 1)
-
-        Returns
-        -------
-        X : record-array
-            Generated samples from the fitted model. Has the same names as the
-            given record-array X in `fit`.
-        """
-        pass
-
-    def _check_bounds(self, bounds):
-        """
-        Check if bounds are OK. Create numerical values when None is given.
-
-        Returns
-        -------
-        bounds : array-like, shape (n_features, 2)
-            Boundary conditions for each dimension. Unconstrained axes have
-            bounds ``[-np.inf, +np.inf]``.
-        """
-        if bounds is None:
-            bounds = np.repeat([[-np.inf, np.inf], ],
-                               repeats=self._n_features, axis=0)
-
-        bounds = np.array(bounds)
-        if bounds.shape[1] != 2 or (bounds.shape[0] != len(self._X_names)):
-            raise ValueError("Invalid `bounds`. Must be shape (n_features, 2).")
-
-        # Convert None to +-np.inf depnding on low/hig bound
-        bounds[:, 0][bounds[:, 0] == np.array(None)] = -np.inf
-        bounds[:, 1][bounds[:, 1] == np.array(None)] = +np.inf
-
-        return bounds
-
-    def _check_X_names(self, X):
-        """ Check if given input ``X`` is valid and extract names. """
-        try:
-            _X_names = X.dtype.names
-        except AttributeError:
-            raise AttributeError("`X` must be a record array with dtype.names.")
-
-        self._n_features = len(_X_names)
-        self._X_names = _X_names
-
-        return X
-
-
 class KDEBGDataInjector(BGDataInjector):
     """
     Adaptive Bandwidth Kernel Density Background Injector.
@@ -1509,261 +1318,197 @@ class Binned3DBGDataInjector(BGDataInjector):
                                                      ax2_pts)).T, dtype=dtype)
 
 
+class TimeDecDependentBGDataInjector(BGDataInjector):
+    """
+    Models the injection part for the GRB LLH, implements: ``get_sample()``.
+    This model is used for the GRB-like HESE stacking analysis.
+
+    BG injection is allsky and time and declination dependent:
+      1. For each source time build a declination dependent detector profile
+         from which the declination is sampled weighted.
+      2. For each source the integrated event rate over the time interval is
+         used to draw the number of events to sample.
+      3. Then the total number of events for the source is sampled from the
+         total pool of experimental data weighted in declination.
+      4. RA is sampled uniformly in ``[0, 2pi]`` and times are sampled from the
+         rate function (uniform for small time windows.)
+    """
+    _nsrcs = None
+    _src_t = None
+    _src_trange = None
+    _allsky_rate_func = None
+    _allsky_pars = None
+    _nb = None
+
+    # Debug info
+    _data_spl = None
+    _sin_dec_splines = None
+    _param_splines = None
+    _best_pars = None
+    _best_stddevs = None
+
+    def _INFO_(self, s=""):
+        return "{} :: {}".format(self.__class__.__name__, s)
+
+    def __init__(self, bg_inj_args, rndgen=None):
+        self._provided_data_names = np.array(
+            ["timeMJD", "dec", "ra", "sigma", "logE"])
+
+        # Check BG inj args
+        req_keys = ["sindec_bins", "rate_rebins"]
+        opt_keys = {"spl_s": None}
+        self.bg_inj_args = fill_dict_defaults(bg_inj_args, req_keys, opt_keys)
+
+        self._sin_dec_bins = np.atleast_1d(self.bg_inj_args["sindec_bins"])
+        self._rate_rebins = np.atleast_1d(self.bg_inj_args["rate_rebins"])
+        self.rndgen = rndgen
+
+    def fit(self, X, srcs, run_dict, sig_inj):
+        """
+        Take data, MC and sources and build injection models. This is the place
+        to actually stitch together a custom injector from the toolkit modules.
+
+        Parameters
+        ----------
+        X : recarray
+            Experimental data for BG injection.
+        srcs : recarray
+            Source information.
+        run_dict : dict
+            Run information used in combination with data.
+        sig_inj : SignalFluenceInjector
+            Ready to sample SignalFluenceInjector instance
+        """
+        X_names = np.array(X.dtype.names)
+        for name in self._provided_data_names:
+            if name not in X_names:
+                raise ValueError("`X` is missing name '{}'.".format(name))
+        drop = np.isin(X_names, self._provided_data_names,
+                       assume_unique=True, invert=True)
+        drop_names = X_names[drop]
+        print(self._INFO_("Dropping names '{}' ".format(arr2str(drop_names)) +
+                          "from data recarray."))
+
+        self.X = drop_fields(X, drop_names, usemask=False)
+        self.srcs = srcs
+        self._setup_data_injector(self.X, self.srcs, run_dict)
+
+        self._sig_inj = sig_inj
+
+        return
+
+    def get_sample(self, n_signal=None):
+        """
+        Get a complete data sample for one trial.
+
+        Parameters
+        ----------
+        n_signal : int or None, opional
+            How many signal events to sample in addition to the BG events.
+            If ``None`` no signal is sampled. (default: ``None``)
+
+        1. Get expected nb per source from allsky rate spline
+        2. Sample times from allsky rate splines
+        3. Sample same number of events from data using the CDF per source
+           for the declination distribution
+        4. Combine to a single recarray X
+        5. Concat BG and signal samples
+        Internally keep track of which event was injected from which injector
+        """
+        # Get number of BG events to sample in this trial
+        expected_evts = self._rndgen.poisson(self._nb)
+        # Sample times from rate function for all sources
+        times = self._allsky_rate_func.sample(expected_evts)
+
+        sam = []
+        for j in range(self._nsrcs):
+            nevts = expected_evts[j]
+            if nevts > 0:
+                # Resample dec, logE, sigma from exp data with each source CDF
+                idx = random_choice(self._rndgen, CDF=self._sample_CDFs[j],
+                                    n=nevts)
+                sam_i = self.X[idx]
+                # Sample missing ra uniformly
+                sam_i["ra"] = self._rndgen.uniform(0., 2. * np.pi, size=nevts)
+                # Append times
+                sam_i["timeMJD"] = times[j]
+            else:
+                sam_i = np.empty((0,), dtype=[(n, float) for n in
+                                              self._provided_data_names])
+            sam.append(sam_i)
+
+        self._bg_cur_sam = sam
+
+        # Make signal contribution
+        if n_signal > 0:
+            sig = self._sig_inj.sample(n_signal)
+            sam.append(sig)
+            self._sig_cur_sam = sig
+
+        # Concat to a single recarray
+        return np.concatenate(sam)
+
+    def _setup_data_injector(self, X, srcs, run_dict):
+        """
+        Create a time and declination dependent background model.
+
+        Fit rate functions to time dependent rate in sindec bins. Normalize PDFs
+        over the sindec range and fit splines to the fitted parameter points to
+        continiously describe a rate model for a declination. Then choose a
+        specific source time and build weights to inject according to the sindec
+        dependent rate PDF from the whole pool of BG events.
+        """
+        ev_t = X["timeMJD"]
+        ev_sin_dec = np.sin(X["dec"])
+        self._nsrcs = len(srcs)
+        self._src_t = np.atleast_1d(srcs["t"])
+        self._src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
+        assert len(self._src_trange) == len(self._src_t) == self._nsrcs
+
+        # Get sindec PDF spline for each source, averaged over its time window
+        print(self._INFO_("Create time dep sindec splines."))
+        sin_dec_splines, info = make_time_dep_dec_splines(
+            ev_t, ev_sin_dec, srcs, run_dict, self._sin_dec_bins,
+            self._rate_rebins, spl_s=self.bg_inj_args["spl_s"])
+
+        # Cache expected nb for each source from allsky rate func integral
+        self._param_splines = info["param_splines"]
+        self._best_pars = info["best_pars"]
+        self._best_stddevs = info["best_stddevs"]
+        self._allsky_rate_func = info["allsky_rate_func"]
+        self._allsky_pars = info["allsky_best_params"]
+        self._nb = self._allsky_rate_func.integral(
+            self._src_t, self._src_trange, self._allsky_pars)
+        assert len(self._nb) == len(self._src_t)
+
+        # Make sampling CDFs to sample sindecs per source per trial
+        hist = np.histogram(ev_sin_dec, bins=self._sin_dec_bins,
+                            density=False)[0]
+        stddev = np.sqrt(hist)
+        norm = np.diff(self._sin_dec_bins) * np.sum(hist)
+        hist = hist / norm
+        stddev = stddev / norm
+        weight = 1. / stddev
+        # Spline to estimate intrinsic data sindec distribution
+        data_spl = fit_spl_to_hist(hist, bins=self._sin_dec_bins, w=weight)[0]
+        self._sin_dec_splines = sin_dec_splines
+        self._data_spl = data_spl
+
+        # Build sampling weights from PDF ratios
+        sample_w = np.empty((len(sin_dec_splines), len(ev_sin_dec)),
+                            dtype=float)
+        for i, spl in enumerate(sin_dec_splines):
+            sample_w[i] = spl(ev_sin_dec) / data_spl(ev_sin_dec)
+
+        # Cache fixed sampling CDFs for fast random choice
+        CDFs = np.cumsum(sample_w, axis=1)
+        self._sample_CDFs = CDFs / CDFs[:, [-1]]
+
+        return
+
 ##############################################################################
 # Rate function classes to fit a BG rate model
 ##############################################################################
-class RateFunction(object):
-    """
-    Rate Function Base Class
-
-    Base class for rate functions describing time dependent background
-    rates. Rate function must be interpretable as a PDF and must not be
-    negative.
-
-    Classes must implement methods:
-
-    - ``fun``
-    - ``integral``
-    - ``sample``
-    - ``_get_default_seed``
-
-    Class object then provides public methods:
-
-    - ``fun``
-    - ``integral``
-    - ``fit``
-    - ``sample``
-
-    Parameters
-    ----------
-    random_state : seed, optional
-        Turn seed into a ``np.random.RandomState`` instance. See
-        ``sklearn.utils.check_random_state``. (default: None)
-    """
-    __metaclass__ = abc.ABCMeta
-    _SECINDAY = 24. * 60. * 60.
-
-    def __init__(self, random_state=None):
-        self.rndgen = random_state
-        # Get set when fitted
-        self._bf_pars = None
-        self._bf_fun = None
-        self._bf_int = None
-
-    @property
-    def rndgen(self):
-        return self._rndgen
-
-    @rndgen.setter
-    def rndgen(self, random_state):
-        self._rndgen = check_random_state(random_state)
-
-    @property
-    def bf_pars(self):
-        return self._bf_pars
-
-    @property
-    def bf_fun(self):
-        return self._bf_fun
-
-    @property
-    def bf_int(self):
-        return self._bf_int
-
-    @abc.abstractmethod
-    def fun(self, t, pars):
-        """
-        Returns the rate in Hz at a given time t in MJD.
-
-        Parameters
-        ----------
-        t : array-like, shape (nevts)
-            MJD times of experimental data.
-        pars : tuple
-            Further parameters the function depends on.
-
-        Returns
-        -------
-        rate : array-like
-            Rate in Hz for each time ``t``.
-        """
-        pass
-
-    @abc.abstractmethod
-    def integral(self, t, trange, pars):
-        """
-        Integral of rate function in intervals trange around source times t.
-
-        Parameters
-        ----------
-        t : array-like, shape (nsrcs)
-            MJD times of sources.
-        trange : array-like, shape(nsrcs, 2)
-            Time windows ``[[t0, t1], ...]`` in seconds around each time ``t``.
-        pars : tuple
-            Further parameters :py:meth:`fun` depends on.
-
-        Returns
-        -------
-        integral : array-like, shape (nsrcs)
-            Integral of :py:meth:`fun` within given time windows ``trange``.
-        """
-        pass
-
-    @abc.abstractmethod
-    def sample(self, n_samples, t, trange, pars):
-        """
-        Generate random samples from the rate function for multiple source times
-        and time windows.
-
-        Parameters
-        ----------
-        n_samples : array-like, shape (nsrcs)
-            Number of events to sample per source.
-        t : array-like, shape (nsrcs)
-            MJD times of sources to sample around.
-        trange : array-like, shape(nsrcs, 2)
-            Time windows ``[[t0, t1], ...]`` in seconds around each time ``t``.
-        pars : tuple
-            Parameters :py:meth:`fun` depends on.
-
-        Returns
-        -------
-        times : list of arrays, len (nsrcs)
-            Sampled times in MJD of background events per source. If
-            ``n_samples`` is 0 for a source, an empty array is placed at that
-            position.
-        """
-        pass
-
-    @abc.abstractmethod
-    def _get_default_seed(self, t, trange, w):
-        """
-        Default seed values for the specifiv RateFunction fit.
-
-        Parameters
-        ----------
-        t : array-like
-            MJD times of experimental data.
-        rate : array-like, shape (len(t))
-            Rates at given times `t` in Hz.
-        w : array-like, shape(len(t)), optional
-            Weights for least squares fit: :math:`\sum_i (w_i * (y_i - f_i))^2`.
-            (default: None)
-
-        Returns
-        -------
-        p0 : tuple
-            Seed values for each parameter the specific :py:class:`RateFunction`
-            uses as a staerting point in the :py:meth:`fit`.
-        """
-        pass
-
-    def fit(self, t, rate, p0=None, w=None, **minopts):
-        """
-        Fits the function parameters to experimental data using a weighted
-        least squares fit.
-
-        Parameters
-        ----------
-        t : array-like
-            MJD times of experimental data.
-        rate : array-like, shape (len(t))
-            Rates at given times `t` in Hz.
-        p0 : tuple, optional
-            Seed values for the fit parameters. If None, default ones are used,
-            that may or may not work. (default: None)
-        w : array-like, shape(len(t)), optional
-            Weights for least squares fit: :math:`\sum_i (w_i * (y_i - f_i))^2`.
-            (default: None)
-        minopts : dict, optional
-            Minimizer options passed to
-            ``scipy.optimize.minimize(method='L-BFGS-B')``. Default settings if
-            given as ``None`` or for missing keys are
-            ``{'ftol': 1e-15, 'gtol': 1e-10, 'maxiter': int(1e3)}``.
-
-        Returns
-        -------
-        res : scipy.optimize.OptimizeResult
-            Dict wrapper with fot results.
-        """
-        if w is None:
-            w = np.ones_like(rate)
-
-        if p0 is None:
-            p0 = self._get_default_seed(t, rate, w)
-
-        # Setup minimizer options
-        required_keys = []
-        opt_keys = {"ftol": 1e-15, "gtol": 1e-10, "maxiter": int(1e3)}
-        minopts["options"] = fill_dict_defaults(
-            minopts.get("options", None), required_keys, opt_keys)
-
-        # Scale times to be in range [0, 1] for a proper fit
-        bounds = minopts.pop("bounds", None)
-        # t, p0, bounds, min_t, max_t = self._scale(t, p0, bounds)
-        res = sco.minimize(fun=self._lstsq, x0=p0, args=(t, rate, w),
-                           method="L-BFGS-B", bounds=bounds, **minopts)
-        # Re-scale fit result back to original scale
-        # res = self._rescale(res, min_t, max_t)
-
-        self._bf_fun = (lambda t: self.fun(t, res.x))
-        self._bf_int = (lambda t, trange: self.integral(t, trange, res.x))
-        self._bf_pars = res.x
-        return res
-
-    def _lstsq(self, pars, *args):
-        """
-        Weighted leastsquares loss: :math:`\sum_i (w_i * (y_i - f_i))^2`
-
-        Parameters
-        ----------
-        pars : tuple
-            Fitparameter for :py:meth:`fun` that gets fitted.
-        args : tuple
-            Fixed values `(t, rate, w)` for the loss function:
-
-            - t, array-like: See :py:meth:`RateFunction.fit`, Parameters
-            - rate, array-like, shape (len(t)): See :py:meth:`RateFunction.fit`,
-              Parameters
-            - w, array-like, shape(len(t)): See :py:meth:`RateFunction.fit`,
-              Parameters
-
-        Returns
-        -------
-        loss : float
-            The weighted least squares loss for the given `pars` and `args`.
-        """
-        t, rate, w = args
-        fun = self.fun(t, pars)
-        return np.sum((w * (rate - fun))**2)
-
-    def _transform_trange_mjd(self, t, trange):
-        """
-        Transform time window to MJD and check on correct shapes
-
-        Parameters
-        ----------
-        t : array-like, shape (nsrcs)
-            MJD times of sources.
-        trange : array-like, shape(nsrcs, 2)
-            Time windows `[[t0, t1], ...]` in seconds around each time `t`.
-
-        Returns
-        -------
-        t : array-like, shape (nsrcs)
-            MJD times of sources.
-        trange : array-like, shape(nsrcs, 2)
-            Time windows `[[t0, t1], ...]` in MJD around each time `t`.
-        """
-        t = np.atleast_1d(t)
-        nsrcs = len(t)
-        # Proper braodcasting to process multiple srcs at once
-        t = t.reshape(nsrcs, 1)
-        trange = np.atleast_2d(trange).reshape(nsrcs, 2)
-        return t, t + trange / self._SECINDAY
-
-
 class SinusRateFunction(RateFunction):
     """
     Sinus Rate Function
@@ -2100,7 +1845,6 @@ class SinusFixedRateFunction(SinusRateFunction):
 
         dt = (max_t - min_t)
 
-
         try:
             errs = res.hess_inv
         except:
@@ -2269,432 +2013,3 @@ class ConstantRateFunction(RateFunction):
             Seed values ``rate0 = np.average(rate, weights=w**2)``
         """
         return (np.average(rate, weights=w**2), )
-
-
-##############################################################################
-# Misc helper methods
-##############################################################################
-def _INFO_(s=""):
-    """ Print string s, prepended with information where it came from. """
-    return "module_toolkit :: {}".format(s)
-
-
-def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
-    """
-    Returns the unbroken power law flux :math:`\sim \phi_0 (E/E_0)^{-\gamma}`
-    where the normlaization is summer over both particle types nu and anti-nu.
-    Default have no physical meaning. Unit must be adapted to used weights.
-
-    Parameters
-    ----------
-    trueE : array-like
-        True particle energy.
-    gamma : float
-        Positive power law index. (default: 2.)
-    phi0 : float
-        Flux normalization. Resembles value at ``E0``. (default: 1.)
-    E0 : float
-        Support point at which ``phi(E0) = phi0``. (default: 1.)
-
-    Returns
-    -------
-    flux : array-like
-        Per nu+anti-nu particle flux :math:`\phi \sim E^{-\gamma}`.
-    """
-    return phi0 * (trueE / E0)**(-gamma)
-
-
-def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
-                              rate_rebins, spl_s=None):
-    """
-    Make a declination PDF spline averaged over each sources time window.
-
-    Parameters
-    ----------
-    ev_t : array-like, shape (nevts)
-        Experimental per event event times in MJD days.
-    ev_sin_dec : array-like, shape (nevts)
-        Experimental per event ``sin(declination)`` values.
-    srcs : record-array
-        Must have names ``'t', 'dt0', 'dt1'`` describing the time intervals
-        around the source times to sample from.
-    run_dict : dictionary
-        Dictionary with run information, matching the experimental data. Can be
-        obtained from ``create_run_dict``.
-    sin_dec_bins : array-like
-        Explicit bin edges in ``sin(dec)`` used to bin ``sin_decs``.
-    rate_rebins : array-like
-        Explicit bin edges used to rebin the rates before fitting the model to
-        achieve more stable fit conditions.
-    spl_s : float, optional
-        Smoothing condition for the parameter spline fits, controlling how much
-        the spline is allowed to deviate from the data points, where ``spl_s=0``
-        means interpolation. If ``None`` the default for
-        ``scipy.interpolate.UnivariateSpline`` is used. (Default: ``None``)
-
-    Returns
-    -------
-    sin_dec_splines : list of scipy.interpolate.UnivariateSpline
-        For each given source time and range, a declination PDF spline, so that
-        the integral over the spline over the given sin dec range is 1.
-    info : dict
-        Collection of various intermediate results and fit information.
-    """
-    ev_t = np.atleast_1d(ev_t)
-    ev_sin_dec = np.atleast_1d(ev_sin_dec)
-    src_t = np.atleast_1d(srcs["t"])
-    src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
-    sin_dec_bins = np.atleast_1d(sin_dec_bins)
-    rate_rebins = np.atleast_1d(rate_rebins)
-
-    rate_rec = make_rate_records(run_dict=run_dict, T=ev_t)
-    norm = np.diff(sin_dec_bins)
-
-    # 1) Get phase offset from allsky fit for good amp and baseline fits.
-    #    Only fix the period to 1 year, as expected from seasons.
-    p_fix = 365.
-    rate_func_allsky = SinusFixedConstRateFunction(p_fix=p_fix)
-    #    Fit amp, phase and base using rebinned rates
-    rates, new_rate_bins, rates_std, _ = rebin_rate_rec(
-        rate_rec, bins=rate_rebins, ignore_zero_runs=True)
-    rate_bin_mids = 0.5 * (new_rate_bins[:-1] + new_rate_bins[1:])
-    weights = 1. / rates_std
-    #    Empirical seeds to get a good fit
-    min_rate, max_rate = np.amin(rates), np.amax(rates)
-    min_ev_t = np.amin(ev_t)
-    seed_reb = (-0.5 * (max_rate - min_rate),  # Optimized for southern hemisp.
-                min_ev_t,
-                np.average(rates, weights=weights))
-    bounds = [[-2. * max_rate, 2. * max_rate],
-              [seed_reb[1] - 180., seed_reb[1] + 180.],
-              [0., None]]
-    fitres_allsky = rate_func_allsky.fit(t=rate_bin_mids, rate=rates,
-                                         srcs=srcs, p0=seed_reb, w=weights,
-                                         bounds=bounds)
-    #    This is used to fix the time phase approximately at the correct
-    #    baseline in the following fits, because a 3 param fit yields large
-    #    errors, due to strong correlation between amp and phase, so we can't
-    #    use them to build a proper spline representation.
-    phase_bf_fix = fitres_allsky.x[1]
-
-    # 2) For each sin_dec_bin fit a separate rate model in amp and base.
-    rate_func = SinusFixedConstRateFunction(p_fix=p_fix, t0_fix=phase_bf_fix)
-    names = ["amp", "base"]
-    nbins = len(sin_dec_bins) - 1
-    best_pars = np.empty((nbins, ), dtype=[(n, float) for n in names])
-    std_devs = np.empty_like(best_pars)
-    for i, (lo, hi) in enumerate(zip(sin_dec_bins[:-1], sin_dec_bins[1:])):
-        print(_INFO_("sindec bin {} / {}".format(i + 1, nbins)))
-        # Only make rates for the current bin and fit rate func in amp and base
-        mask = (ev_sin_dec >= lo) & (ev_sin_dec < hi)
-        rate_rec = make_rate_records(ev_t[mask], run_dict, eps=0.,
-                                     all_in_err=False)
-        rates, _, rates_std, _ = rebin_rate_rec(
-            rate_rec, bins=rate_rebins, ignore_zero_runs=True)
-        weights = 1. / rates_std
-        min_rate, max_rate = np.amin(rates), np.amax(rates)
-        p0 = (-0.5 * (max_rate - min_rate), np.average(rates, weights=weights))
-        bounds = [[-2. * max_rate, 2. * max_rate], [0., None]]
-        fitres = rate_func.fit(t=rate_bin_mids, rate=rates, srcs=srcs, p0=p0,
-                               w=weights, bounds=bounds)
-
-        # Scan the LLH to get stdev estimates.
-        args = (rate_bin_mids, rates, weights)
-        # Use empirical range estimates, amp seems to have larger errors
-        rngs = np.array([fitres.x[0] / 10., fitres.x[1] / 100.])
-        stds = get_stddev_from_scan(rate_func._lstsq, args, bfs=fitres.x,
-                                    rngs=rngs, nbins=50)[0]
-
-        # Store normalized best pars and fit stddevs to build a spline model
-        for j, n in enumerate(names):
-            best_pars[n][i] = fitres.x[j] / norm[i]
-            std_devs[n][i] = stds[j] / norm[i]
-
-    # 3) Interpolate discrete fit points with a continous smoothing spline
-    def spl_normed_factory(spl, lo, hi, norm):
-        """ Renormalize spline, so ``int_lo^hi renorm_spl dx = norm`` """
-        return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
-
-    param_splines = {}
-    lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
-    norm_allsky = {
-        names[0]: fitres_allsky.x[0], names[-1]: fitres_allsky.x[-1]}
-    for n in names:
-        # Use normalized amplitude and baseline in units HZ/dec
-        weights = 1. / std_devs[n]
-        spl = fit_spl_to_hist(best_pars[n], sin_dec_bins, weights, s=spl_s)[0]
-        # Renormalize to match the allsky params, because the model is additive
-        param_splines[n] = spl_normed_factory(
-            spl, lo=lo, hi=hi, norm=norm_allsky[n])
-
-    # 4) For each source time window build a sindec PDF spline.
-    #    Each spline is averaged over the time range, so this only works for
-    #    reasonably small windows in which fluctuations don't get averaged out.
-    #    Get all rate model params from splines at sin_dec support points. Nr of
-    #    is arbitrary and chosen to have enough resolution in sin_dec, using
-    #    linear splines as they are fastest and good enough with many pts.
-    def spl_factory(x, y, k=1, ext="raise"):
-        """ Factory returning a new UnivariateSpline object """
-        return sci.InterpolatedUnivariateSpline(x, y, k=k, ext=ext)
-
-    sin_dec_pts = np.linspace(lo, hi, 1000)
-    # Broadcast params to get the rate func vals for each sindec
-    amp = param_splines["amp"](sin_dec_pts)
-    base = param_splines["base"](sin_dec_pts)
-    sin_dec_splines = []
-    for ti, tri in zip(src_t, src_trange):
-        vals = rate_func.integral(t=ti, trange=tri, pars=(amp, base))
-        spl = sci.InterpolatedUnivariateSpline(
-            sin_dec_pts, vals, k=1, ext="raise")
-        norm = spl.integral(lo, hi)
-        sin_dec_splines.append(spl_factory(sin_dec_pts, vals / norm))
-
-    info = {"allsky_rate_func": rate_func_allsky,
-            "allsky_best_params": fitres_allsky.x,
-            "param_splines": param_splines,
-            "best_pars": best_pars,
-            "best_stddevs": std_devs}
-    return sin_dec_splines, info
-
-
-def create_run_dict(run_list, filter_runs=None):
-    """
-    Create a dict of lists from a run list in JSON format (list of dicts).
-
-    Parameters
-    ----------
-    run_list : list of dicts
-            Dict made from a good run runlist snapshot from [1]_ in JSON format.
-            Must be a list of single runs of the following structure
-
-                [{
-                  "good_tstart": "YYYY-MM-DD HH:MM:SS",
-                  "good_tstop": "YYYY-MM-DD HH:MM:SS",
-                  "run": 123456, ...,
-                  },
-                 {...}, ..., {...}]
-
-            Each run dict must at least have keys ``'good_tstart'``,
-            ``'good_tstop'`` and ``'run'``. Times are given in iso formatted
-            strings and run numbers as integers as shown above.
-    filter_runs : function, optional
-        Filter function to remove unwanted runs from the goodrun list.
-        Called as ``filter_runs(dict)``. Function must operate on a single
-        run dictionary element strucutred as shown above. If ``None``, every run
-        is used. (default: ``None``)
-
-    Returns
-    -------
-    run_dict : dict
-        Dictionary with run attributes as keys. The values are stored in arrays
-        for each key.
-    """
-    # run_list must be a list of dicts (one dict to describe one run)
-    if not np.all(map(lambda item: isinstance(item, dict), run_list)):
-        raise TypeError("Not all entries in 'run_list' are dicts.")
-
-    required_names = ["good_tstart", "good_tstop", "run"]
-    for i, item in enumerate(run_list):
-        for key in required_names:
-            if key not in item.keys():
-                raise KeyError("Runlist item '{}' ".format(i) +
-                               "is missing required key '{}'.".format(key))
-
-    # Filter to remove unwanted runs
-    run_list = list(filter(filter_runs, run_list))
-
-    # Convert the run list of dicts to a dict of arrays for easier handling
-    run_dict = dict(zip(run_list[0].keys(),
-                        zip(*[r.values() for r in run_list])))
-
-    # Dict keys were not necessarly sorted, so sort the new lists after run id
-    srt_idx = np.argsort(run_dict["run"])
-    for k in run_dict.keys():
-        run_dict[k] = np.atleast_1d(run_dict[k])[srt_idx]
-
-    # Convert and add times in MJD float format
-    run_dict["good_start_mjd"] = astrotime(run_dict["good_tstart"],
-                                           format="iso").mjd
-    run_dict["good_stop_mjd"] = astrotime(run_dict["good_tstop"],
-                                          format="iso").mjd
-    # Add runtimes in MJD days
-    run_dict["runtime_days"] = (run_dict["good_stop_mjd"] -
-                                run_dict["good_start_mjd"])
-
-    return run_dict
-
-
-def make_rate_records(T, run_dict, eps=0., all_in_err=False):
-    """
-    Creates time bins ``[start_MJD_i, stop_MJD_i]`` for each run in ``run_dict``
-    and bins the experimental data to calculate the rate for each run. Data
-    selection should match the used run list to give reasonable results.
-
-    Parameters
-    ----------
-    T : array_like, shape (n_samples)
-        Per event times in MJD days of experimental data.
-    run_dict
-        Dictionary with run attributes as keys and values stored in arrays for
-        each key. Must at least have keys ``'good_tstart'``, ``'good_tstop'``
-        and ``'run'``. Can be created by method ``create_run_dict``.
-    eps : float, optional
-        Extra margin in mirco seconds added to run bins to account for possible
-        floating point errors during binning. (default: 0.)
-    all_in_err : bool, optional
-        If ``True`` raises an error if not all times ``T`` have been sorted in
-        the run bins defined in ``rund_dict``. (default: False)
-
-    Returns
-    -------
-    rate_rec : recarray, shape(nruns)
-        Record array with keys:
-
-        - "run" : int, ID of the run.
-        - "rate" : float, rate in Hz in this run.
-        - "runtime" : float, livetime of this run in MJD days.
-        - "start_mjd" : float, MJD start time of the run.
-        - "stop_mjd" : float, MJD end time of the run.
-        - "nevts" : int, numver of events in this run.
-        - "rates_std" : float, ``sqrt(nevts) / runtime`` scaled poisson standard
-          deviation of the rate in Hz in this run.
-    """
-    _SECINDAY = 24. * 60. * 60.
-    T = np.atleast_1d(T)
-    if eps < 0.:
-        raise ValueError("`eps` must be >0.")
-
-    # Store events in bins with run borders, broadcast for fast masking
-    start_mjd = run_dict["good_start_mjd"]
-    stop_mjd = run_dict["good_stop_mjd"]
-    run = run_dict["run"]
-
-    # Histogram time values in each run manually, eps = micro sec extra margin
-    eps *= 1.e-3 / _SECINDAY
-    mask = ((T[:, None] >= start_mjd[None, :] - eps) &
-            (T[:, None] <= stop_mjd[None, :] + eps))
-
-    evts = np.sum(mask, axis=0)  # Events per run. mask: (dim(T), dim(runs))
-    tot_evts = np.sum(evts)      # All selected
-    assert tot_evts == np.sum(mask)
-
-    # Sometimes runlists given for the used samples don't seem to include all
-    # events correctly contradicting to what is claimed on wiki pages
-    if all_in_err and tot_evts > len(T):
-        # We seem to have double counted times, try again with eps = 0
-        dble_m = (np.sum(mask, axis=0) > 1.)  # Each time in more than 1 run
-        dble_t = T[dble_m]
-        idx_dble = np.where(np.isin(T, dble_t))[0]
-        err = ("Double counted times. Try a smaller `eps` or check " +
-               "if there are overlapping runs in `run_dict`.\n")
-        err += "  Events selected : {}\n".format(tot_evts)
-        err += "  Events in T     : {}\n".format(len(T))
-        err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
-            ["{}".format(ti) for ti in dble_t]))
-        err += "  Indices:\n    {}".format(", ".join(
-            ["{}".format(i) for i in idx_dble]))
-        raise ValueError()
-    elif all_in_err and tot_evts < len(T):
-        # We didn't get all events into our bins
-        not_cntd_m = (~np.any(mask, axis=0))  # All times not in any run
-        left_t = T[not_cntd_m]
-        idx_left = np.where(np.isin(T, left_t))[0]
-        err = ("Not all events in `T` were sorted in runs. If this is " +
-               "intended, please remove them beforehand.\n")
-        err += "  Events selected : {}\n".format(tot_evts)
-        err += "  Events in T     : {}\n".format(len(T))
-        err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
-            ["{}".format(ti) for ti in left_t]))
-        err += "  Indices:\n    {}".format(", ".join(
-            ["{}".format(i) for i in idx_left]))
-        raise ValueError(err)
-
-    # Normalize to rate in Hz
-    runtime = stop_mjd - start_mjd
-    rate = evts / (runtime * _SECINDAY)
-
-    # Calculate poisson sqrt(N) stddev for scaled rates
-    rate_std = np.sqrt(evts) / (runtime * _SECINDAY)
-
-    # Create record-array
-    names = ["run", "rate", "runtime", "start_mjd",
-             "stop_mjd", "nevts", "rate_std"]
-    types = [int, np.float, np.float, np.float, np.float, int, np.float]
-    dtype = [(n, t) for n, t in zip(names, types)]
-
-    a = np.vstack((run, rate, runtime, start_mjd, stop_mjd, evts, rate_std))
-    rate_rec = np.core.records.fromarrays(a, dtype=dtype)
-    return rate_rec
-
-
-def rebin_rate_rec(rate_rec, bins, ignore_zero_runs=True):
-    """
-    Rebin rate per run information. The binning is right exclusice on the start
-    time of an run:
-      ``bins[i] <= rate_rec["start_mjd"] < bins[i+1]``.
-    Therefore the bin borders are not 100% exact, but the included rates are.
-    New bin borders adjustet to start at the first included run are returned, to
-    miniimize the error, but we still shouldn't calculate the event numbers by
-    multiplying bin widths with rates.
-
-    Parameters
-    ----------
-    rate_rec : record-array
-        Rate information as coming out of RunlistBGRateInjector._rate_rec.
-        Needs names ``'start_mjd', 'stop_mjd', 'rate'``.
-    bins : array-like or int
-        New time binning used to rebin the rates.
-    ignore_zero_runs : bool, optional
-        If ``True`` runs with zero events are ignored. This method of BG
-        estimation doesn't work well, if we have many zero events runs because
-        the baseline gets biased towards zero. If this is an effect of the
-        events selection then a different method should be used. (Default: True)
-
-    Returns
-    -------
-    rates : array-like
-        Rebinned rates per bin.
-    bins : array-like
-        Adjusted bins so that the left borders always start at the first
-        included run and the last right bin at the end of the last included run.
-    rate_std : array-like
-        Poisson ``sqrt(N)`` standard error of the rates per bin.
-    deadtime : array-like
-        How much livetime is 'dead' in the given binning, because runs do not
-        start immideiately one after another or there are bad runs that got
-        filtered out. Subtracting the missing livetime from the bin width
-        enables us to use the resulting time to recreate the event numbers.
-    """
-    _SECINDAY = 24. * 60. * 60.
-    rates = rate_rec["rate"]
-    start = rate_rec["start_mjd"]
-    stop = rate_rec["stop_mjd"]
-
-    bins = np.atleast_1d(bins)
-    if len(bins) == 1:
-        # Use min max and equidistant binning if only a number is given
-        bins = np.linspace(np.amin(start), np.amax(stop), int(bins[0]) + 1)
-
-    new_bins = np.empty_like(bins)
-    rate = np.empty(len(bins) - 1, dtype=float)
-    rate_std = np.empty(len(bins) - 1, dtype=float)
-    livetime_per_bin = np.empty_like(rate)
-
-    assert np.allclose(rate_rec["nevts"],
-                       rate_rec["rate"] * (stop - start) * _SECINDAY)
-
-    for i, (lo, hi) in enumerate(zip(bins[:-1], bins[1:])):
-        mask = (lo <= start) & (start < hi)
-        if ignore_zero_runs:
-            mask = mask & (rates > 0)
-        livetime_per_bin[i] = np.sum(stop[mask] - start[mask])
-        # New mean rate: sum(all events in runs) / sum(real livetimes in runs)
-        nevts = np.sum(rates[mask] * (stop[mask] - start[mask]))
-        rate[i] = nevts / livetime_per_bin[i]
-        rate_std[i] = np.sqrt(nevts / _SECINDAY) / livetime_per_bin[i]
-        # Adapt bin edges
-        new_bins[i] = np.amin(start[mask])
-    new_bins[-1] = np.amax(stop[mask])
-
-    deadtime = np.diff(new_bins) - livetime_per_bin
-    return rate, new_bins, rate_std, deadtime
