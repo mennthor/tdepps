@@ -14,12 +14,17 @@ class BaseLLH(object):
     """ Interface for LLH type classes """
     __metaclass__ = abc.ABCMeta
 
-    _needed_data_names = None
+    _model_pdf = None
 
-    @property
-    def needed_data_names(self):
-        """ Data recarray attributes this LLH needs to evaluate lnllh_ratio """
-        return self._needed_data_names
+    @abc.abstractproperty
+    def model_pdf(self):
+        """ The underlying model this LLH is based on """
+        pass
+
+    @abc.abstractproperty
+    def needed_args(self):
+        """ Additional LLH arguments, must match with model `provided_args` """
+        pass
 
     @abc.abstractmethod
     def lnllh_ratio(self):
@@ -35,11 +40,16 @@ class BaseLLH(object):
 class BaseMultiLLH(BaseLLH):
     """ Interface for managing multiple LLH type classes """
     _names = None
+    _llhs = None
 
-    @property
-    @abc.abstractmethod
+    @abc.abstractproperty
     def names(self):
-        """ Names of all subinjectors, identifies this as a MulitLLH """
+        """ Unique sub-llh names, identifies this as a MultiLLH """
+        pass
+
+    @abc.abstractproperty
+    def llhs(self):
+        """ List of unique sub-llh instances """
         pass
 
 
@@ -54,8 +64,13 @@ class GRBLLH(BaseLLH):
     signal strength parameter ns is fitted.
     """
     def __init__(self, model_pdf, llh_args=None):
+        self._needed_args = ["src_w", "nb"]
         self.model_pdf = model_pdf
         self.llh_args = llh_args
+
+    @property
+    def needed_args(self):
+        return self._needed_args
 
     @property
     def model_pdf(self):
@@ -88,7 +103,7 @@ class GRBLLH(BaseLLH):
             raise ValueError("'sob_abs_eps' must be >= 0.")
         if _llh_args["sindec_band"] < 0.:
             raise ValueError("'sindec_band' must be > 0.")
-        if len(_llh_args["ns_bounds"] != 2):
+        if len(_llh_args["ns_bounds"]) != 2:
             raise ValueError("'ns_bounds' must be `[lo, hi]`.")
         if type(_llh_args["minimizer_opts"]) is not dict:
             raise ValueError("'minimizer_opts' must be a dictionary.")
@@ -96,7 +111,7 @@ class GRBLLH(BaseLLH):
 
     def lnllh_ratio(self, ns, X):
         """ Public method wrapper """
-        sob = self._soverb(self._select_X(X))
+        sob = self._soverb(X)
         return self._lnllh_ratio(ns, sob)
 
     def fit_lnllh_ratio(self, ns0, X):
@@ -106,7 +121,7 @@ class GRBLLH(BaseLLH):
 
         # Get the best fit parameter and TS. Analytic cases are handled:
         # For nevts = [1 | 2] we get a [linear | quadratic] equation to solve.
-        sob = self._soverb(self._select_X(X))
+        sob = self._soverb(X)
         nevts = len(sob)
 
         # Test again, because we applied some threshold cuts
@@ -156,7 +171,7 @@ class GRBLLH(BaseLLH):
             return np.empty(0, dtype=np.float)
 
         # Signal stacking case: Weighted signal sum per source
-        sob = self._model_pdf.get_soverb(self._select_X(X))
+        sob = self._model_pdf.get_soverb(X)
         args = self._model_pdf.get_args()
         sob = np.sum(sob * args["src_w"] / args["nb"], axis=0)
 
@@ -170,14 +185,6 @@ class GRBLLH(BaseLLH):
         sob_abs_mask = sob < self._llh_args["sob_abs_eps"]
         return sob[np.logical_not(np.logical_or(sob_rel_mask, sob_abs_mask))]
 
-    def _select_X(self, X):
-        """
-        Select events in a band around the source declinations and discard those
-        outside, which have a negligible contribtion on the the result.
-        """
-        # TODO
-        return X
-
 
 class MultiGRBLLH(BaseMultiLLH):
     """
@@ -185,9 +192,7 @@ class MultiGRBLLH(BaseMultiLLH):
     from all single GRBLLHs.
     """
     def __init__(self):
-        self._llhs = {}
         self._ns_weights = None
-        super(MultiGRBLLH, self).__init__()
 
     @property
     def names(self):
@@ -195,7 +200,15 @@ class MultiGRBLLH(BaseMultiLLH):
 
     @property
     def llhs(self):
-        return self._llhs
+        return list(self._llhs.values())
+
+    @property
+    def model_pdf(self):
+        return [llhi.model_pdf for llhi in self.llhs]
+
+    @property
+    def needed_args(self):
+        return [llhi.needed_args for llhi in self.llhs]
 
     def fit(self, llhs):
         """
@@ -205,12 +218,14 @@ class MultiGRBLLH(BaseMultiLLH):
         ----------
         llhs : dict
             LLHs to be managed by this multi LLH class. Names must match with
-            dict keys of provided multiinjector data.
+            dict keys of provided multi-injector data.
         """
         for name, llh in llhs.items():
             if not isinstance(llh, GRBLLH):
                 raise ValueError("LLH object " +
                                  "`{}` is not of type `GRBLLH`.".format(name))
+
+        self._llhs = llhs
 
     def lnllh_ratio(self, ns, X):
         raise NotImplementedError("TODO")
