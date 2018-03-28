@@ -10,7 +10,7 @@ import scipy.optimize as sco
 from .utils import fill_dict_defaults
 
 
-class LLH(object):
+class BaseLLH(object):
     """ Interface for LLH type classes """
     __metaclass__ = abc.ABCMeta
 
@@ -32,7 +32,7 @@ class LLH(object):
         pass
 
 
-class MultiLLH(LLH):
+class BaseMultiLLH(BaseLLH):
     """ Interface for managing multiple LLH type classes """
     _names = None
 
@@ -46,7 +46,7 @@ class MultiLLH(LLH):
 # #############################################################################
 # GRB style LLH
 # #############################################################################
-class GRBLLH(LLH):
+class GRBLLH(BaseLLH):
     """
     Stacking GRB LLH
 
@@ -179,7 +179,7 @@ class GRBLLH(LLH):
         return X
 
 
-class MultiGRBLLH(MultiLLH):
+class MultiGRBLLH(BaseMultiLLH):
     """
     Class holding multiple GRBLLH objects, implementing the combined GRBLLH
     from all single GRBLLHs.
