@@ -79,15 +79,16 @@ class SignalFluenceInjector(BaseSignalInjector):
         Global declination interval in which events can be injected in rotated
         coordinates. Events rotated outside are dropped even if selected, which
         drops sensitivity as desired. (default: ``[-pi/2, pi/2]``)
-    random_state : seed, optional
-        Turn seed into a ``np.random.RandomState`` instance. See
-        ``sklearn.utils.check_random_state``. (default: None)
+    random_state : None, int or np.random.RandomState, optional
+        Used as PRNG, see ``sklearn.utils.check_random_state``. (default: None)
     """
-    def __init__(self, model, time_sampler, mode="band", sindec_inj_width=0.035,
-                 dec_range=None, random_state=None):
-        if not callable(model):
+    def __init__(self, flux_model, time_sampler, mode="band",
+                 sindec_inj_width=0.035, dec_range=None, random_state=None):
+        try:
+            flux_model(1.)  # Standard units are E = 1GeV
+        except Exception:
             raise TypeError("`model` must be a function `f(trueE)`.")
-        self._model = model
+        self._flux_model = flux_model
 
         if not isinstance(time_sampler, BaseTimeSampler):
             raise ValueError("`time_sampler` must have type `BaseTimeSampler`.")
@@ -137,7 +138,15 @@ class SignalFluenceInjector(BaseSignalInjector):
 
         return
 
+    @property
+    def flux_model(self):
+        return self._flux_model
+
     # No setters, use the `fit` method for that or create a new object
+    @property
+    def provided_data(self):
+        return self._exp_names
+
     @property
     def mode(self):
         return self._mode
@@ -412,7 +421,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         # Broadcast solid angles and w_theo to corrsponding sources for each evt
         omega = self._omega[src_idx]
         w_theo = self._w_theo_norm[src_idx]
-        flux = self._model(mc["trueE"])
+        flux = self._flux_model(mc["trueE"])
         assert len(omega) == len(w_theo) == len(flux)
 
         w = mc["ow"] * flux / omega * w_theo
@@ -568,9 +577,8 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         Global declination interval in which events can be injected in rotated
         coordinates. Events rotated outside are dropped even if selected, which
         drops sensitivity as desired. (default: ``[-pi/2, pi/2]``)
-    random_state : seed, optional
-        Turn seed into a ``np.random.RandomState`` instance. See
-        ``sklearn.utils.check_random_state``. (default: ``None``)
+    random_state : None, int or np.random.RandomState, optional
+        Used as PRNG, see ``sklearn.utils.check_random_state``. (default: None)
     """
     def __init__(self, model, time_sampler, sindec_inj_width=0.035,
                  inj_sigma=3., dec_range=None, random_state=None):
@@ -800,16 +808,29 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         assert np.all((0. < self._omega) & (self._omega <= 4. * np.pi))
 
 
-class MultiSignalFluenceInjector(BaseSignalInjector):
+class MultiSignalFluenceInjector(BaseMultiSignalInjector):
     """
     Collect multiple SignalFluenceInjector classes, implements collective
     sampling, flux2mu and mu2flux methods.
     """
-    _injectors = {}
+    def __init__(self, random_state=None):
+        self.rndgen = random_state
 
     @property
     def names(self):
-        return list(self._injectors.keys())
+        return list(self._injs.keys())
+
+    @property
+    def injs(self):
+        return list(self._injs.values())
+
+    @property
+    def provided_data(self):
+        return [inji.model_pdf for inji in self.injs]
+
+    @property
+    def srcs(self):
+        return [inji.srcs for inji in self.injs]
 
     def mu2flux(self, mu, per_source=False):
         """
@@ -833,14 +854,14 @@ class MultiSignalFluenceInjector(BaseSignalInjector):
             Source flux in total, or split for each source, in unit(s)
             ``[GeV^-1 cm^-2]``.
         """
-        raw_fluxes, w_theos, _ = self._get_raw_fluxes(self._injectors.values())
+        raw_fluxes, _, w_theos = self._combine_raw_fluxes(self._injs.values())
         raw_fluxes_sum = np.sum(raw_fluxes)
         if per_source:
             return {key: mu * wts / raw_fluxes_sum for key, wts
                     in zip(self.names, w_theos)}
         return mu / raw_fluxes_sum
 
-    def flux2mu(self, flux, per_source=True):
+    def flux2mu(self, flux, per_source=False):
         """
         Calculates the number of events ``mu`` corresponding to a given particle
         flux for the current setup:
@@ -867,8 +888,8 @@ class MultiSignalFluenceInjector(BaseSignalInjector):
             Expected number of event in total or per source and sample at the
             detector.
         """
-        raw_fluxes, _, raw_fluxes_per_src = self._get_raw_fluxes(
-            self._injectors.values())
+        raw_fluxes, raw_fluxes_per_src, _ = self._combine_raw_fluxes(
+            self._injs.values())
         if per_source:
             return {key: flux * rfs for key, rfs
                     in zip(self.names, raw_fluxes_per_src)}
@@ -890,15 +911,14 @@ class MultiSignalFluenceInjector(BaseSignalInjector):
                                  " is not of type `BaseSignalInjector`.")
 
         # Cache sampling weights
-        raw_fluxes = self._get_raw_fluxes(injectors.values())
+        raw_fluxes, _, _ = self._combine_raw_fluxes(injectors.values())
         self._distribute_weights = raw_fluxes / np.sum(raw_fluxes)
         assert np.isclose(np.sum(self._distribute_weights), 1.)
 
-        self._injectors = injectors
+        self._injs = injectors
 
         return
 
-    @abc.abstractmethod
     def sample(self, n_samples=1):
         """
         Split n_samples across single injectors and combine to combined sample
@@ -926,12 +946,12 @@ class MultiSignalFluenceInjector(BaseSignalInjector):
 
         # Sample per injector
         sam_ev = {}
-        for i, (key, inj) in enumerate(self._injectors.items()):
+        for i, (key, inj) in enumerate(self._injs.items()):
             sam_ev[key] = inj.sample(n_samples=n_per_sam[i])
 
         return sam_ev
 
-    def _get_raw_fluxes(self, injectors):
+    def _combine_raw_fluxes(self, injectors):
         """
         Renormalize raw fluxes from each injector which can be used to
         distribute the amount of signal to sample across multiple injectors.
