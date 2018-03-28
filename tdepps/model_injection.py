@@ -7,11 +7,12 @@ import numpy as np
 from numpy.lib.recfunctions import drop_fields
 from sklearn.utils import check_random_state
 
-from .model_toolkit import make_time_dep_dec_splines, MultiSignalInjector
-from .utils import fit_spl_to_hist, random_choice, arr2str, fill_dict_defaults
+from .toolkit import MultiSignalFluenceInjector
+from .utils import (fit_spl_to_hist, random_choice, make_time_dep_dec_splines,
+                    fill_dict_defaults, arr2str, logger)
 
 
-class ModelInjector(object):
+class BaseModelInjector(object):
     """ Interface for ModelInjector type classes """
     __metaclass__ = abc.ABCMeta
 
@@ -48,7 +49,7 @@ class ModelInjector(object):
         pass
 
 
-class MultiModelInjector(ModelInjector):
+class BaseMultiModelInjector(BaseModelInjector):
     """ Interface for managing multiple LLH type classes """
     _names = None
 
@@ -62,49 +63,11 @@ class MultiModelInjector(ModelInjector):
 # #############################################################################
 # GRB style injector
 # #############################################################################
-class GRBModelInjector(ModelInjector):
+class GRBModelInjector(BaseModelInjector):
     """
-    Models the injection part for the GRB LLH, implements: ``get_sample()``.
-    This model is used for the GRB-like HESE stacking analysis.
-
-    BG injection is allsky and time and declination dependent:
-      1. For each source time build a declination dependent detector profile
-         from which the declination is sampled weighted.
-      2. For each source the integrated event rate over the time interval is
-         used to draw the number of events to sample.
-      3. Then the total number of events for the source is sampled from the
-         total pool of experimental data weighted in declination.
-      4. RA is sampled uniformly in ``[0, 2pi]`` and times are sampled from the
-         rate function (uniform for small time windows.)
-
-    Signal injection is done similar to skylab:
-      1. Spatial and energy attributes are resampled from MC weighted to the
-         detector response for a specific signal model and source position.
+    Coordinates injection from background and signal injectors.
     """
-    _sig_inj = None
-    _nsrcs = None
-    _src_t = None
-    _src_trange = None
-    _allsky_rate_func = None
-    _allsky_pars = None
-    _nb = None
-
-    # Debug info
-    _bg_cur_sam = None
-    _sig_cur_sam = None
-    _data_spl = None
-    _sin_dec_splines = None
-    _param_splines = None
-    _best_pars = None
-    _best_stddevs = None
-
-    def _INFO_(self, s=""):
-        return "{} :: {}".format(self.__class__.__name__, s)
-
     def __init__(self, bg_inj_args, rndgen=None):
-        self._provided_data_names = np.array(
-            ["timeMJD", "dec", "ra", "sigma", "logE"])
-
         # Check BG inj args
         req_keys = ["sindec_bins", "rate_rebins"]
         opt_keys = {"spl_s": None}
@@ -114,19 +77,37 @@ class GRBModelInjector(ModelInjector):
         self._rate_rebins = np.atleast_1d(self.bg_inj_args["rate_rebins"])
         self.rndgen = rndgen
 
-    def fit(self, X, srcs, run_dict, sig_inj):
+        self._provided_data_names = np.array(
+            ["timeMJD", "dec", "ra", "sigma", "logE"])
+
+        self._log = logger(name=self.__class__.__name__, level="ALL")
+
+        # Private attribute defaults
+        self._nsrcs = None
+        self._src_t = None
+        self._src_trange = None
+        self._allsky_rate_func = None
+        self._allsky_pars = None
+        self._nb = None
+
+        # Debug info
+        self._bg_cur_sam = None
+        self._sig_cur_sam = None
+        self._data_spl = None
+        self._sin_dec_splines = None
+        self._param_splines = None
+        self._best_pars = None
+        self._best_stddevs = None
+
+        return
+
+    def fit(self, bg_inj, sig_inj):
         """
         Take data, MC and sources and build injection models. This is the place
         to actually stitch together a custom injector from the toolkit modules.
 
         Parameters
         ----------
-        X : recarray
-            Experimental data for BG injection.
-        srcs : recarray
-            Source information.
-        run_dict : dict
-            Run information used in combination with data.
         sig_inj : SignalFluenceInjector
             Ready to sample SignalFluenceInjector instance
         """
@@ -258,7 +239,7 @@ class GRBModelInjector(ModelInjector):
         return
 
 
-class MultiGRBModelInjector(MultiModelInjector):
+class MultiGRBModelInjector(BaseMultiModelInjector):
     """
     Class holding multiple GRBModelInjector objects, managing the combined
     sampling from all single injectors.
@@ -294,7 +275,7 @@ class MultiGRBModelInjector(MultiModelInjector):
         # TODO: This injector should group instances of bg and sig injectors
         # but the bg injector is implemented in the GRB injector...
         # When this is outsourced, it can get more modular again.
-        self._sig_inj = MultiSignalInjector()
+        self._sig_inj = MultiSignalFluenceInjector()
         self._sig_inj.fit({n: inj.sig_inj for n, inj
                            in self._injectors.items()})
 
