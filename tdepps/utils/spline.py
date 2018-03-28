@@ -111,7 +111,7 @@ def fit_spl_to_hist(h, bins, w=None, s=None, k=3, ext="raise"):
 
 
 def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
-                              rate_rebins, spl_s=None):
+                              rate_rebins, spl_s=None, n_scan_bins=50):
     """
     Make a declination PDF spline averaged over each sources time window.
 
@@ -212,7 +212,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         # Use empirical range estimates, amp seems to have larger errors
         rngs = np.array([fitres.x[0] / 10., fitres.x[1] / 100.])
         stds = get_stddev_from_scan(rate_func._lstsq, args, bfs=fitres.x,
-                                    rngs=rngs, nbins=50)[0]
+                                    rngs=rngs, nbins=n_scan_bins)[0]
 
         # Store normalized best pars and fit stddevs to build a spline model
         for j, n in enumerate(names):
