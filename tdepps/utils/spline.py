@@ -226,13 +226,31 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
 
     param_splines = {}
     lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
+    sin_dec_pts = np.linspace(lo, hi, 1000)
     norm_allsky = {
         names[0]: fitres_allsky.x[0], names[-1]: fitres_allsky.x[-1]}
     for n in names:
         # Use normalized amplitude and baseline in units HZ/dec
         weights = 1. / std_devs[n]
-        spl = fit_spl_to_hist(best_pars[n], sin_dec_bins, weights, s=spl_s)[0]
+        # Small feedback loop to catch large 2nd derivates, meaning extremely
+        # large fluctuations between the points. Empirical correction values...
+        OK = False
+        spl_s_ = spl_s
+        while not OK:
+            spl = fit_spl_to_hist(
+                best_pars[n], sin_dec_bins, weights, s=spl_s_)[0]
+            spl2 = spl.derivative(n=2)
+            derivative2 = np.abs(spl2(sin_dec_pts))
+            # Empirically found value that is working OK
+            OK = np.all(derivative2 < 1.)
+            if not OK:
+                spl_s_ *= 0.9
+                print(log.INFO("Degraded smoothing factor, 2nd derivative " +
+                               " was {:.2f}".format(np.amax(derivative2))))
         # Renormalize to match the allsky params, because the model is additive
+        scale = norm_allsky[n] / spl.integral(lo, hi)
+        best_pars[n] = best_pars[n] * scale
+        std_devs[n] = std_devs[n] * scale
         param_splines[n] = spl_normed_factory(
             spl, lo=lo, hi=hi, norm=norm_allsky[n])
 
@@ -246,7 +264,6 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         """ Factory returning a new UnivariateSpline object """
         return sci.InterpolatedUnivariateSpline(x, y, k=k, ext=ext)
 
-    sin_dec_pts = np.linspace(lo, hi, 1000)
     # Broadcast params to get the rate func vals for each sindec
     amp = param_splines["amp"](sin_dec_pts)
     base = param_splines["base"](sin_dec_pts)
