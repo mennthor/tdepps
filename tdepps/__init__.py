@@ -6,4 +6,3 @@ in the toolkit sub module.
 """
 
 from __future__ import absolute_import
-
