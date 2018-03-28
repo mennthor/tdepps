@@ -11,6 +11,7 @@ from .model_toolkit import (SignalFluenceInjector, HealpySignalFluenceInjector,
                             MultiSignalFluenceInjector)
 from .model_toolkit import UniformTimeSampler
 from .model_toolkit import (ResampleBGDataInjector, Binned3DBGDataInjector,
-                            TimeDecDependentBGDataInjector, KDEBGDataInjector)
+                            TimeDecDependentBGDataInjector, KDEBGDataInjector,
+                            MultiBGDataInjector)
 from .model_toolkit import (SinusRateFunction, SinusFixedRateFunction,
                             SinusFixedConstRateFunction, ConstantRateFunction)
