@@ -22,9 +22,16 @@ class BaseSignalInjector(object):
     Signal Injector base class
     """
     __metaclass__ = abc.ABCMeta
+
     # Public defaults
+    _provided_data = None
     _rndgen = None
     _srcs = None
+
+    @abc.abstractproperty
+    def provided_data(self):
+        """ Data attributes this injector provides. """
+        pass
 
     @abc.abstractmethod
     def mu2flux(self):
@@ -63,12 +70,17 @@ class BaseSignalInjector(object):
 
 class BaseMultiSignalInjector(BaseSignalInjector):
     """ Interface for managing multiple BaseSignalInjector type classes """
-    # Public defaults
     _names = None
+    _injs = None
 
     @abc.abstractproperty
     def names(self):
-        """ Subinjector names, identifies this as a MultiModelInjector """
+        """ Unique sub-injector names, identifies this as a MultiInjector """
+        pass
+
+    @abc.abstractproperty
+    def injs(self):
+        """ List of unique sub-injector instances """
         pass
 
 
@@ -82,7 +94,7 @@ class BaseTimeSampler(object):
     __metaclass__ = abc.ABCMeta
     # Public defaults
     _rndgen = None
-    # Interal defaults
+    # Internal defaults
     _SECINDAY = 24. * 60. * 60
 
     @abc.abstractmethod
@@ -108,9 +120,14 @@ class BaseBGDataInjector(object):
     __metaclass__ = abc.ABCMeta
     # Public defaults
     _rndgen = None
-    # Interal defaults
+    # Internal defaults
     _X_names = None
     _n_features = None
+
+    @abc.abstractproperty
+    def provided_data(self):
+        """ Data attributes this injector provides. """
+        pass
 
     @abc.abstractmethod
     def fit(self, X):
@@ -143,6 +160,22 @@ class BaseBGDataInjector(object):
         self._rndgen = check_random_state(random_state)
 
 
+class BaseMultiBGDataInjector(BaseBGDataInjector):
+    """ Interface for managing multiple BaseBGDataInjector type classes """
+    _names = None
+    _injs = None
+
+    @abc.abstractproperty
+    def names(self):
+        """ Unique sub-injector names, identifies this as a MultiInjector """
+        pass
+
+    @abc.abstractproperty
+    def injs(self):
+        """ List of unique sub-injector instances """
+        pass
+
+
 ##############################################################################
 # Rate function
 ##############################################################################
@@ -151,7 +184,7 @@ class BaseRateFunction(object):
     Base class for rate functions describing time dependent background rates.
     """
     __metaclass__ = abc.ABCMeta
-    # Interal defaults
+    # Internal defaults
     _SECINDAY = 24. * 60. * 60.
 
     @abc.abstractmethod
