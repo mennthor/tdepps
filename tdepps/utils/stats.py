@@ -10,6 +10,9 @@ standard_library.install_aliases()
 
 import numpy as np
 from scipy.stats import rv_continuous, chi2
+import scipy.optimize as sco
+from .io import logger
+log = logger(name="utils.stats", level="ALL")
 
 
 def random_choice(rndgen, CDF, n=None):
@@ -82,6 +85,62 @@ def weighted_cdf(x, val, weights=None):
     err = np.sqrt(cdf * (1. - cdf) * np.sum(weights**2))
 
     return cdf, err
+
+
+def fit_chi2_cdf(ts_val, beta, TS, mus):
+    """
+    Use collection of trials with different injected mean signal events to
+    calculate the CDF values above a certain test statistic value ``ts_val``
+    and fit a ``chi2`` CDF to it.
+    From this ``chi2``function we can get the desired percentile ``beta`` above
+    ``ts_val``.
+
+    Parameters
+    ----------
+    ts_val : float
+        Test statistic value of the BG distribution, which is connected to the
+        alpha value (Type I error).
+    beta : float
+        Fraction of signal injected PDF that should lie right of the ``ts_val``.
+    mus : array-like
+        Mean injected signal events per bunch of trials.
+    TS : array-like, shape (len(mus), ntrials_per_mu)
+        Test statistic values for each ``mu`` in ``mus``. These are used to
+        calculate the CDF values used in the fit.
+
+    Returns
+    -------
+    mu_bf : float
+        Best fit mean injected number of signal events to fullfill the
+        tested performance level from ``ts_val`` and ``beta``.
+    cdfs : array-like, shape (len(mus))
+
+    pars : tuple
+        Best fit parameters ``(df, loc, scale)`` for the ``chi2`` CDF.
+    """
+    # Get location of beta percentile per bunch of trial TS values
+    cdfs = []
+    errs = []
+    for TSi in TS:
+        cdf_i, err_i = weighted_cdf(TSi, val=ts_val, weights=None)
+        cdfs.append(cdf_i)
+        errs.append(err_i)
+    cdfs, errs = np.array(cdfs), np.array(errs)
+
+    def _cdf_func(x, df, loc, scale):
+        """ Somehow can't use scs.chi2.cdf directly for curve fit... """
+        return chi2.cdf(x, df, loc, scale)
+
+    try:
+        pars, _ = sco.curve_fit(
+            _cdf_func, xdata=mus, ydata=1. - cdfs, sigma=errs, p0=[1., 1., 1.])
+        mu_bf = chi2.ppf(beta, *pars)
+    except RuntimeError:
+        print(log.WARN("Couldn't find best params, returning `None` instead."))
+        mu_bf = None
+        pars = None
+
+    return mu_bf, cdfs, pars
 
 
 class delta_chi2_gen(rv_continuous):
