@@ -14,7 +14,7 @@ from astropy.time import Time as astrotime
 
 class logger(object):
     """ Bad attempt to a simple logger. TODO: Replace with logging module """
-    _modes = ["DEBUG", "INFO", "WARN", "ERROR", "ALL"]
+    _modes = ["DEBUG", "INFO", "WARN", "ERROR", "ALL", "NONE"]
 
     def __init__(self, name="", level="INFO"):
         if level not in self._modes:
