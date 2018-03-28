@@ -17,7 +17,7 @@ log = logger(name="toolkit", level="ALL")
 ##############################################################################
 # Signal injector
 ##############################################################################
-class SignalInjector(object):
+class BaseSignalInjector(object):
     """
     Signal Injector base class
     """
@@ -25,20 +25,6 @@ class SignalInjector(object):
     # Public defaults
     _rndgen = None
     _srcs = None
-
-    @property
-    def rndgen(self):
-        """ numpy RNG instance used to sample """
-        return self._rndgen
-
-    @rndgen.setter
-    def rndgen(self, rndgen):
-        self._rndgen = check_random_state(rndgen)
-
-    @property
-    def srcs(self):
-        """ Source recarray the injector was fitted to """
-        return self._srcs
 
     @abc.abstractmethod
     def mu2flux(self):
@@ -60,14 +46,27 @@ class SignalInjector(object):
         """ Get a signal sample for a single trial to use in a LLH object """
         pass
 
+    @property
+    def rndgen(self):
+        """ numpy RNG instance used to sample """
+        return self._rndgen
 
-class MultiSignalInjector(SignalInjector):
-    """ Interface for managing multiple SignalInjector type classes """
+    @rndgen.setter
+    def rndgen(self, rndgen):
+        self._rndgen = check_random_state(rndgen)
+
+    @property
+    def srcs(self):
+        """ Source recarray the injector was fitted to """
+        return self._srcs
+
+
+class BaseMultiSignalInjector(BaseSignalInjector):
+    """ Interface for managing multiple BaseSignalInjector type classes """
     # Public defaults
     _names = None
 
-    @property
-    @abc.abstractmethod
+    @abc.abstractproperty
     def names(self):
         """ Subinjector names, identifies this as a MultiModelInjector """
         pass
@@ -76,7 +75,7 @@ class MultiSignalInjector(SignalInjector):
 ##############################################################################
 # Time sampler
 ##############################################################################
-class TimeSampler(object):
+class BaseTimeSampler(object):
     """
     Base class to describe time samplers used by SignalFluenceInjector.
     """
@@ -86,6 +85,10 @@ class TimeSampler(object):
     # Interal defaults
     _SECINDAY = 24. * 60. * 60
 
+    @abc.abstractmethod
+    def sample(self):
+        pass
+
     @property
     def rndgen(self):
         return self._rndgen
@@ -94,15 +97,11 @@ class TimeSampler(object):
     def rndgen(self, random_state):
         self._rndgen = check_random_state(random_state)
 
-    @abc.abstractmethod
-    def sample(self):
-        pass
-
 
 ##############################################################################
 # Background injector
 ##############################################################################
-class BGDataInjector(object):
+class BaseBGDataInjector(object):
     """
     Base class for classes generating events from a given data record array.
     """
@@ -112,14 +111,6 @@ class BGDataInjector(object):
     # Interal defaults
     _X_names = None
     _n_features = None
-
-    @property
-    def rndgen(self):
-        return self._rndgen
-
-    @rndgen.setter
-    def rndgen(self, random_state):
-        self._rndgen = check_random_state(random_state)
 
     @abc.abstractmethod
     def fit(self, X):
@@ -143,11 +134,19 @@ class BGDataInjector(object):
 
         return X
 
+    @property
+    def rndgen(self):
+        return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
+
 
 ##############################################################################
 # Rate function
 ##############################################################################
-class RateFunction(object):
+class BaseRateFunction(object):
     """
     Base class for rate functions describing time dependent background rates.
     """
@@ -224,7 +223,7 @@ class RateFunction(object):
     @abc.abstractmethod
     def _get_default_seed(self, t, trange, w):
         """
-        Default seed values for the specifiv RateFunction fit.
+        Default seed values for the specifiv BaseRateFunction fit.
 
         Parameters
         ----------
@@ -239,8 +238,9 @@ class RateFunction(object):
         Returns
         -------
         p0 : tuple
-            Seed values for each parameter the specific :py:class:`RateFunction`
-            uses as a staerting point in the :py:meth:`fit`.
+            Seed values for each parameter the specific
+            :py:class:`BaseRateFunction` uses as a staerting point in the
+            :py:meth:`fit`.
         """
         pass
 
@@ -335,10 +335,10 @@ class RateFunction(object):
         args : tuple
             Fixed values `(t, rate, w)` for the loss function:
 
-            - t, array-like: See :py:meth:`RateFunction.fit`, Parameters
-            - rate, array-like, shape (len(t)): See :py:meth:`RateFunction.fit`,
-              Parameters
-            - w, array-like, shape(len(t)): See :py:meth:`RateFunction.fit`,
+            - t, array-like: See :py:meth:`BaseRateFunction.fit`, Parameters
+            - rate, array-like, shape (len(t)): See
+              :py:meth:`BaseRateFunction.fit`, Parameters
+            - w, array-like, shape(len(t)): See :py:meth:`BaseRateFunction.fit`,
               Parameters
 
         Returns
