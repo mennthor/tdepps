@@ -4,28 +4,48 @@ from __future__ import print_function, division, absolute_import
 
 import numpy as np
 from sklearn.utils import check_random_state
+from itertools import repeat
 
-from .utils import fit_chi2_cdf
+from .utils import fit_chi2_cdf, logger, arr2str
 
 
 class GRBLLHAnalysis(object):
     """
     Providing methods to do analysis stuff on a GRBLLH.
+
+    Parameters
+    ----------
+    llh : BaseLLH or BaseMultiLLH instance
+        LLH model used for testing hypothesis.
+    bg_inj : BaseBGDataInjector
+        Background injector model injecting background-like events in trials.
+    bg_inj : BaseSignalInjector
+        Signal injector model injecting signal-like events in trials.
+    random_state : None, int or np.random.RandomState, optional
+        Used as PRNG, see ``sklearn.utils.check_random_state``. (default: None)
     """
-    def __init__(self, model_injector, llh, random_state=None):
-        self._check_inj_llh_harmony(model_injector, llh)
-        self._model_injector = model_injector
+    def __init__(self, llh, bg_inj, sig_inj, random_state=None):
+        self._log = logger(name=self.__class__.__name__, level="ALL")
+
+        self._check_llh_inj_harmony(llh, bg_inj, sig_inj)
         self._llh = llh
+        self._bg_inj = bg_inj
+        self._sig_inj = sig_inj
+
         self.rndgen = random_state
 
     @property
-    def model_injector(self):
-        return self._model_injector
+    def bg_inj(self):
+        return self._bg_inj
 
-    @model_injector.setter
-    def model_injector(self, model_injector):
-        self._check_inj_llh_harmony(model_injector, self._llh)
-        self._model_injector = model_injector
+    @property
+    def sig_inj(self):
+        return self._sig_inj
+
+    # @model_injector.setter
+    # def model_injector(self, model_injector):
+    #     self._check_inj_llh_harmony(model_injector, self._llh)
+    #     self._model_injector = model_injector
 
     @property
     def llh(self):
@@ -44,46 +64,120 @@ class GRBLLHAnalysis(object):
     def rndgen(self, random_state):
         self._rndgen = check_random_state(random_state)
 
-    def _check_inj_llh_harmony(inj_mod, llh):
+    def _check_llh_inj_harmony(self, llh, bg_inj, sig_inj):
         """
-        Check if injector model and llh fit together. Both must be single or
-        multi sample type.
-        """
-        if hasattr(inj_mod, "names"):      # Injector is multi sample
-            if not hasattr(llh, "names"):  # But LLH is not
-                raise TypeError("'injector_model' is a multi sample injector " +
-                                "but 'llh' is a single sample LLH.")
-            # Check if exchanged data is compatible. Must be dicts of lists here
-            for sam in inj_mod.names:
-                for name in inj_mod.provided_data_names[sam]:
-                    if name not in llh.needed_data_names[sam]:
-                        e = ("'model_injector' for sample '{}' ".format(sam) +
-                             "is not providing data name '{}' ".format(name) +
-                             "needed for the corresponding LLH model.")
-                        raise ValueError(e)
-        else:                          # Injector is single sample
-            if hasattr(llh, "names"):  # But LLH is not
-                raise TypeError("'llh' is a multi sample LLH but the " +
-                                "'injector_model' is a single sample injector.")
-            # Check if exchanged data is compatible. Must be list here
-            for name in inj_mod.provided_data_names:
-                if name not in llh.needed_data_names:
-                    raise ValueError("'model_injector' is not providing " +
-                                     "data name '{}' ".format(name) +
-                                     "needed for the LLH model.")
+        Check if llh and injectors fit together. Both must be single or multi
+        sample type and provide / receive matching record array data object.
 
-    def do_trials(self, n_trials, n_signal=0, ns0=1., poisson=True,
+        A multi injector has an additional 'names' attribute which must match
+        across all injectors and llhs. Each single injector must match its
+        provided data with the requirements from the lll receiving it.
+        """
+        def _all_equal(a1, a2):
+            """ ``True`` if a1 and a2 are equal (unsorted test) """
+            if (len(a1) == len(a2)) and np.all(np.isin(a1, a2)):
+                return True
+            return False
+
+        def _all_match(llh, inj, multi):
+            if multi:
+                keys, models, injs = llh.names, llh.model_pdf, inj.injs
+            else:
+                keys, models, injs = ["none"], [llh.model_pdf], [inj]
+
+            for key, model, inj in zip(keys, models, injs):
+                if not _all_equal(model.needed_data, inj.provided_data):
+                    e = "Provided and needed names don't match"
+                    if multi:
+                        e += " for sample '{}'".format(key)
+                    e += ": ['{}'] != ['{}'].".format(
+                        arr2str(model.needed_data, sep="', '"),
+                        arr2str(inj.provided_data, sep="', '"))
+                    raise KeyError(e)
+            return True
+
+        # First check if all are single or multi types
+        has_names = [hasattr(inst, "names") for inst in [llh, bg_inj, sig_inj]]
+        if all(has_names):
+            print(self._log.INFO("Dealing with multi types."))
+            # All names must match in the multi case
+            if not (_all_equal(llh.names, bg_inj.names) and
+                    _all_equal(llh.names, sig_inj.names)):
+                raise AttributeError("LLH and / or injector names don't match.")
+            multi = True
+        elif not all(has_names):
+            print(self._log.INFO("Dealing with single types."))
+            multi = False
+        else:
+            raise TypeError(
+                "LLH and injectors are not all single or multi types.")
+
+        # Now check if exchanged data recarrays are matching
+        try:
+            _all_match(llh, bg_inj, multi)
+        except KeyError as e:
+            print(self._log.ERROR(e))
+            raise KeyError("Provided and needed names " +
+                           "don't match for `llh` and `bg_inj`.")
+        try:
+            _all_match(llh, sig_inj, multi)
+        except KeyError as e:
+            print(self._log.ERROR(e))
+            raise KeyError("Provided and needed names " +
+                           "don't match for `llh` and `sig_inj`.")
+        return
+
+    def do_trials(self, n_trials, n_signal=None, ns0=1., poisson=True,
                   full_out=False):
         """
         Do pseudo experiment trials using events from the injector model.
+
+        Parameters
+        ----------
+        n_trials : int
+            Number of trials to perform.
+        n_signal : int or None, optional
+            Number of mean signal events to inject per trial. If ``None``, no
+            signal is injected, only do background trials. (Default: ``None``)
+        ns0 : float, optional
+            Seed value for the ns fit parameter. (Default: 1.)
+        poisson : bool, optional
+            If ``True`` sample the injected number of signal events per trial
+            from a poisson distribution with mean ``n_signal``.
+            (Default: ``True``)
+        full_out : bool, optioanl
+            If ``True`` also append zero trials to the output array, else only
+            return how many zero trials occured. Also return number of injected
+            signal events per trial. (Default: ``False``)
+
+        Returns
+        -------
+        res : record-array
+            Has names ``'TS', 'ns'`` and holds the fit results of each trial.
+        nzeros : int
+            How many zero trials occured.
+        nsig : array-like, optional
+            Only if ``full_out`` is ``True``. Then contains the number of
+            sampled signal events per trial.
         """
-        gen = self.make_trial_gen(ns0)
+        if n_signal is None:
+            n_signal = 0
+
+        if poisson:
+            nsig = self._rndgen.poisson(n_signal, size=n_trials)
+        else:
+            nsig = repeat(0., n_trials)
 
         ns, TS = [], []
         nzeros = 0
-        for i in range(n_trials):
-            # TODO: Get ninj from injector model?
-            ns_i, TS_i, X_i = next(gen)
+        for i, nsig_i in enumerate(nsig):
+            X = self._bg_inj.sample()
+            if nsig_i > 0:
+                Xsig = self._sig_inj.sample(nsig_i)
+                X = np.concatenate((X, Xsig))
+
+            ns_i, TS_i = self.llh.fit_lnllh_ratio(ns0, X)
+
             if (ns_i == 0) and (TS_i == 0):
                 nzeros += 1
                 if full_out:
@@ -102,7 +196,10 @@ class GRBLLHAnalysis(object):
         res["ns"] = np.array(ns)
         res["TS"] = np.array(TS)
 
-        return res, nzeros
+        if full_out:
+            return res, nzeros, np.array(nsig, dtype=int)
+        else:
+            return res, nzeros
 
     def make_trial_gen(self, n_signal=0, ns0=1., poisson=True):
         """
@@ -119,6 +216,7 @@ class GRBLLHAnalysis(object):
             trial from a poisson distribution with mean ``n_signal``. If
             ``False``, ``n_signal`` is ceiled to the next integer.
         """
+        raise DeprecationWarning("Just call do_trials.")
         if poisson:
             while True:
                 nsig = self._rndgen.poisson(n_signal, size=1)
@@ -132,7 +230,7 @@ class GRBLLHAnalysis(object):
                 ns, TS = self.llh.fit_lnllh_ratio(ns0, X)
                 yield ns, TS, X
 
-    def performance(self, ts_val, beta, mus, par0=[1., 1., 1.], ntrials=1000):
+    def performance(self, ts_val, beta, mus, par0=[1., 1., 1.], n_trials=1000):
         """
         Make independent trials within given range and fit a ``chi2`` CDF to the
         resulting percentiles, becasue they are surprisingly well described by
@@ -157,7 +255,7 @@ class GRBLLHAnalysis(object):
         par0 : list, optional
             Seed values ``[df, loc, scale]`` for the ``chi2`` CDF fit.
             (default: ``[1., 1., 1.]``)
-        ntrials : int, optional
+        n_trials : int, optional
             How many new trials to make per independent trial. (default: 1000)
         verb : bool, optional
             If ``True`` print progress message during fit. (default: False)
@@ -189,7 +287,7 @@ class GRBLLHAnalysis(object):
         ns = []
         nsig = []
         for mui in mus:
-            res, nzeros, nsig_i = self.do_trials(n_trials=ntrials, ns0=mui,
+            res, nzeros, nsig_i = self.do_trials(n_trials=n_trials, ns0=mui,
                                                  full_out=True)
             TS.append(res["TS"])
             ns.append(res["ns"])
