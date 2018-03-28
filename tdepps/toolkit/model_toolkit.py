@@ -1390,16 +1390,16 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
          rate function (uniform for small time windows.)
     """
     def __init__(self, bg_inj_args, rndgen=None):
-        self._provided_data_names = np.array(
+        self._provided_data = np.array(
             ["timeMJD", "dec", "ra", "sigma", "logE"])
 
         # Check BG inj args
         req_keys = ["sindec_bins", "rate_rebins"]
-        opt_keys = {"spl_s": None}
-        self.bg_inj_args = fill_dict_defaults(bg_inj_args, req_keys, opt_keys)
+        opt_keys = {"spl_s": None, "n_scan_bins": 50}
+        self._bg_inj_args = fill_dict_defaults(bg_inj_args, req_keys, opt_keys)
 
-        self._sin_dec_bins = np.atleast_1d(self.bg_inj_args["sindec_bins"])
-        self._rate_rebins = np.atleast_1d(self.bg_inj_args["rate_rebins"])
+        self._sin_dec_bins = np.atleast_1d(self._bg_inj_args["sindec_bins"])
+        self._rate_rebins = np.atleast_1d(self._bg_inj_args["rate_rebins"])
         self.rndgen = rndgen
 
         # Defaults for private class variables
@@ -1420,6 +1420,14 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
 
         self._log = logger(name=self.__class__.__name__, level="ALL")
 
+    @property
+    def provided_data(self):
+        return self._provided_data
+
+    @property
+    def bg_inj_args(self):
+        return self._bg_inj_args
+
     def fit(self, X, srcs, run_dict):
         """
         Take data, MC and sources and build injection models. This is the place
@@ -1435,10 +1443,10 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             Run information used in combination with data.
         """
         X_names = np.array(X.dtype.names)
-        for name in self._provided_data_names:
+        for name in self._provided_data:
             if name not in X_names:
                 raise ValueError("`X` is missing name '{}'.".format(name))
-        drop = np.isin(X_names, self._provided_data_names,
+        drop = np.isin(X_names, self._provided_data,
                        assume_unique=True, invert=True)
         drop_names = X_names[drop]
         print(self._log.INFO("Dropping names '{}'".format(arr2str(drop_names)) +
@@ -1479,7 +1487,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
                 sam_i["timeMJD"] = times[j]
             else:
                 sam_i = np.empty((0,), dtype=[(n, float) for n in
-                                              self._provided_data_names])
+                                              self._provided_data])
             sam.append(sam_i)
 
         # Concat to a single recarray
@@ -1507,7 +1515,8 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         print(self._log.INFO("Create time dep sindec splines."))
         sin_dec_splines, info = make_time_dep_dec_splines(
             ev_t, ev_sin_dec, srcs, run_dict, self._sin_dec_bins,
-            self._rate_rebins, spl_s=self.bg_inj_args["spl_s"])
+            self._rate_rebins, spl_s=self._bg_inj_args["spl_s"],
+            n_scan_bins=self._bg_inj_args["n_scan_bins"])
 
         # Cache expected nb for each source from allsky rate func integral
         self._param_splines = info["param_splines"]
