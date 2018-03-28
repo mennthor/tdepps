@@ -3,20 +3,20 @@
 from __future__ import print_function, division, absolute_import
 
 import numpy as np
-import scipy.stats as scs
-import scipy.optimize as sco
+from sklearn.utils import check_random_state
 
-from .utils import weighted_cdf
+from .utils import fit_chi2_cdf
 
 
 class GRBLLHAnalysis(object):
     """
     Providing methods to do analysis stuff on a GRBLLH.
     """
-    def __init__(self, model_injector, llh):
+    def __init__(self, model_injector, llh, random_state=None):
         self._check_inj_llh_harmony(model_injector, llh)
         self._model_injector = model_injector
         self._llh = llh
+        self.rndgen = random_state
 
     @property
     def model_injector(self):
@@ -35,6 +35,14 @@ class GRBLLHAnalysis(object):
     def llh(self, llh):
         self._check_inj_llh_harmony(self._model_injector, llh)
         self.llh = llh
+
+    @property
+    def rndgen(self):
+        return self._rndgen
+
+    @rndgen.setter
+    def rndgen(self, random_state):
+        self._rndgen = check_random_state(random_state)
 
     def _check_inj_llh_harmony(inj_mod, llh):
         """
@@ -64,7 +72,8 @@ class GRBLLHAnalysis(object):
                                      "data name '{}' ".format(name) +
                                      "needed for the LLH model.")
 
-    def do_trials(self, n_trials, ns0, full_out=False):
+    def do_trials(self, n_trials, n_signal=0, ns0=1., poisson=True,
+                  full_out=False):
         """
         Do pseudo experiment trials using events from the injector model.
         """
@@ -95,12 +104,33 @@ class GRBLLHAnalysis(object):
 
         return res, nzeros
 
-    def make_trial_gen(self, ns0):
-        """ Creates a generator which yields on full trial per iteration. """
-        while True:
-            X = self._model_injector.get_sample()
-            ns, TS = self.llh.fit_lnllh_ratio(ns0, X)
-            yield ns, TS, X
+    def make_trial_gen(self, n_signal=0, ns0=1., poisson=True):
+        """
+        Creates a generator which yields one full dataset per trial.
+
+        Parameters
+        ----------
+        n_signal : float
+            Mean number of signal events to sample each trial.
+        ns0 : float
+            Seed for the LLh fit for each trial.
+        poisson : bool, optional
+            If ``True`` sample a new number of signal events to inject for each
+            trial from a poisson distribution with mean ``n_signal``. If
+            ``False``, ``n_signal`` is ceiled to the next integer.
+        """
+        if poisson:
+            while True:
+                nsig = self._rndgen.poisson(n_signal, size=1)
+                X = self._model_injector.get_sample(nsig)
+                ns, TS = self.llh.fit_lnllh_ratio(ns0, X)
+                yield ns, TS, X
+        else:
+            nsig = int(np.ceil(nsig))
+            while True:
+                X = self._model_injector.get_sample(nsig)
+                ns, TS = self.llh.fit_lnllh_ratio(ns0, X)
+                yield ns, TS, X
 
     def performance(self, ts_val, beta, mus, par0=[1., 1., 1.], ntrials=1000):
         """
@@ -166,7 +196,7 @@ class GRBLLHAnalysis(object):
             nsig.append(nsig_i)
 
         # Create the requested CDF values and fit the chi2
-        mu_bf, cdfs, pars = self.fit_chi2_cdf(ts_val, beta, TS, mus)
+        mu_bf, cdfs, pars = fit_chi2_cdf(ts_val, beta, TS, mus)
 
         return {"mu_bf": mu_bf, "ts": TS, "ns": ns, "mus": mus, "ninj": nsig,
                 "beta": beta, "tsval": ts_val, "cdfs": cdfs, "pars": pars}
@@ -178,58 +208,3 @@ class GRBLLHAnalysis(object):
         injected data with a LLH having each of the different timewindows.
         """
         pass
-
-    @staticmethod
-    def fit_chi2_cdf(ts_val, beta, TS, mus):
-        """
-        Use collection of trials with different numbers injected mean signal
-        events to calculate the CDF values above a certain test statistic
-        value ``ts_val`` and fit a ``chi2`` CDF to it.
-        From this ``chi2``function we can get the desired percentile ``beta``
-        above ``ts_val``.
-
-        Trials can systematically be made using :py:meth:`performance_chi2`.
-
-        Parameters
-        ----------
-        ts_val : float
-            Test statistic value of the BG distribution, which is connected to
-            the alpha value (Type I error).
-        beta : float
-            Fraction of signal injected PDF that should lie right of the
-            ``ts_val```.
-        mus : array-like
-            How much mean poisson signal shall was injected for each bunch of
-            trials.
-        TS : array-like, shape (len(mus), ntrials_per_mu)
-            Test statistic values for each ``mu`` in ``mus``. These are used to
-            calculate the CDF values used in the fit.
-
-        Returns
-        -------
-        mu_bf : float
-            Best fit mean injected number of signal events to fullfill the
-            tested performance level from ``ts_val`` and ``beta``.
-        cdfs : array-like, shape (len(mus))
-
-        pars : tuple
-            Best fit parameters ``(df, loc, scale)`` for the ``chi2`` CDF.
-        """
-        cdfs = []
-        for TSi in TS:
-            cdfs.append(weighted_cdf(TSi, val=ts_val)[0])
-        cdfs = np.array(cdfs)
-
-        def cdf_func(x, df, loc, scale):
-            """Can't use scs.chi2.cdf directly in curve fit."""
-            return scs.chi2.cdf(x, df, loc, scale)
-
-        try:
-            pars, _ = sco.curve_fit(cdf_func, xdata=mus, ydata=1. - cdfs)
-            mu_bf = scs.chi2.ppf(beta, *pars)
-        except RuntimeError:
-            print("Couldn't find best params, returning `None` instead.")
-            mu_bf = None
-            pars = None
-
-        return mu_bf, cdfs, pars
