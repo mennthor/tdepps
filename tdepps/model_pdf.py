@@ -4,7 +4,7 @@ from __future__ import absolute_import
 import abc
 
 
-class PDF(object):
+class BasePDF(object):
     """ Interface for unbinned LLH PDF type classes """
     __metaclass__ = abc.ABCMeta
 
@@ -22,7 +22,7 @@ class PDF(object):
 # #############################################################################
 # GRB style PDFs
 # #############################################################################
-class GRBPDF(PDF):
+class GRBPDF(BasePDF):
     """
     Models the PDF part for the GRB LLH function.
     """
