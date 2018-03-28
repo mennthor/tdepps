@@ -19,6 +19,7 @@ import scipy.stats as scs
 import healpy as hp
 from .model_base import (BaseSignalInjector, BaseBGDataInjector,
                          BaseRateFunction, BaseTimeSampler)
+from .model_base import BaseMultiBGDataInjector, BaseMultiSignalInjector
 from ..utils import (random_choice, fill_dict_defaults, thetaphi2decra, logger,
                      rotator, fit_spl_to_hist, make_time_dep_dec_splines,
                      arr2str)
@@ -1522,6 +1523,47 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         self._sample_CDFs = CDFs / CDFs[:, [-1]]
 
         return
+
+
+class MultiBGDataInjector(BaseMultiBGDataInjector):
+    @property
+    def names(self):
+        return list(self._injs.keys())
+
+    @property
+    def injs(self):
+        return list(self._injs.values())
+
+    @property
+    def provided_data(self):
+        return [inji.provided_data for inji in self.injs]
+
+    def fit(self, injs):
+        """
+        Takes multiple single injectors in a dict and manages them.
+
+        Parameters
+        ----------
+        injs : dict
+            Injectors to be managed by this multi injector class. Names must
+            match with dict keys of required multi-LLH data.
+        """
+        for name, inj in injs.items():
+            if not isinstance(inj, BaseBGDataInjector):
+                raise ValueError("LLH object `{}` ".format(name) +
+                                 "is not of type `BaseBGDataInjector`.")
+
+        self._injs = injs
+
+    def sample(self):
+        """
+        Sample each injector and combine to a dict of recarrays.
+        """
+        sam = {}
+        for key, inj in self._injs.items():
+            sam[key] = inj.sample()
+
+        return sam
 
 
 ##############################################################################
