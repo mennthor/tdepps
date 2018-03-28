@@ -10,11 +10,12 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
-from matplotlib import contour
+import matplotlib.pyplot as plt
 import scipy.interpolate as sci
 from scipy.stats import chi2
 
-from . import logger
+from .phys import make_rate_records, rebin_rate_rec
+from .io import logger
 log = logger(name="utils.spline", level="ALL")
 
 
@@ -145,6 +146,9 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
     info : dict
         Collection of various intermediate results and fit information.
     """
+    # http://stackabuse.com/python-circular-imports
+    from ..toolkit import SinusFixedConstRateFunction
+
     ev_t = np.atleast_1d(ev_t)
     ev_sin_dec = np.atleast_1d(ev_sin_dec)
     src_t = np.atleast_1d(srcs["t"])
@@ -189,7 +193,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
     best_pars = np.empty((nbins, ), dtype=[(n, float) for n in names])
     std_devs = np.empty_like(best_pars)
     for i, (lo, hi) in enumerate(zip(sin_dec_bins[:-1], sin_dec_bins[1:])):
-        print(_INFO_("sindec bin {} / {}".format(i + 1, nbins)))
+        print(log.INFO("sindec bin {} / {}".format(i + 1, nbins)))
         # Only make rates for the current bin and fit rate func in amp and base
         mask = (ev_sin_dec >= lo) & (ev_sin_dec < hi)
         rate_rec = make_rate_records(ev_t[mask], run_dict, eps=0.,
@@ -307,9 +311,9 @@ def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
         llh = llh.reshape(x.shape)
         # Get the contour points and average over min, max per parameter
         one_sigma_level = np.amin(llh) - chi2.logsf(df=2, x=[1**2])
-        # Call undocumented base of plt.contour, to avoid creating a figure ...
-        cntr = contour(x, y, llh, one_sigma_level)
-        paths = cntr.collection[0].get_paths()
+        cntr = plt.contour(x, y, llh, one_sigma_level)
+        plt.close("all")
+        paths = [lincol.vertices for lincol in cntr.collections[0].get_paths()]
         return paths, llh, [x, y]
 
     def _is_path_closed(paths, rng_x, rng_y):
