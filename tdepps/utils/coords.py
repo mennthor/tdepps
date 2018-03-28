@@ -12,7 +12,7 @@ standard_library.install_aliases()
 import numpy as np
 
 
-def ThetaPhiToDecRa(theta, phi):
+def thetaphi2decra(theta, phi):
     """
     Convert healpy theta, phi coordinates to equatorial ra, dec coordinates.
     ``phi`` and right-ascension are assumed to be the same value, declination is
