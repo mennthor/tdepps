@@ -5,8 +5,8 @@ import abc
 import numpy as np
 
 
-class BasePDF(object):
-    """ Interface for unbinned LLH PDF type classes """
+class BaseModel(object):
+    """ Interface for unbinned LLH model type classes """
     __metaclass__ = abc.ABCMeta
 
     _needed_data = None
@@ -33,9 +33,9 @@ class BasePDF(object):
 
 
 # #############################################################################
-# GRB style PDFs
+# GRB style Model
 # #############################################################################
-class GRBPDF(BasePDF):
+class GRBModel(BaseModel):
     """
     Models the PDF part for the GRB LLH function.
     """
