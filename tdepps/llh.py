@@ -39,17 +39,11 @@ class BaseLLH(object):
 
 class BaseMultiLLH(BaseLLH):
     """ Interface for managing multiple LLH type classes """
-    _names = None
     _llhs = None
 
     @abc.abstractproperty
-    def names(self):
-        """ Unique sub-llh names, identifies this as a MultiLLH """
-        pass
-
-    @abc.abstractproperty
     def llhs(self):
-        """ List of unique sub-llh instances """
+        """ List of sub-llhs, identifies this as a MultiLLH """
         pass
 
 
@@ -200,7 +194,7 @@ class MultiGRBLLH(BaseMultiLLH):
 
     @property
     def llhs(self):
-        return list(self._llhs.values())
+        return self._llhs
 
     @property
     def model_pdf(self):
