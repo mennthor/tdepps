@@ -123,6 +123,7 @@ class BaseBGDataInjector(object):
     # Internal defaults
     _X_names = None
     _n_features = None
+    _sample_dtype = None
 
     @abc.abstractproperty
     def provided_data(self):
@@ -148,6 +149,7 @@ class BaseBGDataInjector(object):
 
         self._n_features = len(_X_names)
         self._X_names = _X_names
+        self._sample_dtype = [(n, float) for n in self._X_names]
 
         return X
 

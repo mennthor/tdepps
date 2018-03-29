@@ -1044,6 +1044,7 @@ class KDEBGDataInjector(BaseBGDataInjector):
         Turn seed into a ``np.random.RandomState`` instance. (default: None)
     """
     def __init__(self, kde, random_state=None):
+        raise DeprecationWarning("KDEInjector not yet adapted to new layout.")
         self.rndgen = random_state
         self.kde_model = kde
 
@@ -1109,8 +1110,7 @@ class KDEBGDataInjector(BaseBGDataInjector):
 
         # Return empty recarray with all keys, when n_samples < 1
         if n_samples < 1:
-            dtype = [(n, float) for n in self._X_names]
-            return np.empty(0, dtype=dtype)
+            return np.empty(0, dtype=self._sample_dtype)
 
         # Resample until all sample points are inside bounds
         X = []
@@ -1124,7 +1124,8 @@ class KDEBGDataInjector(BaseBGDataInjector):
             X.append(gen[accepted])
 
         # Concat sampled array list and convert to single record-array
-        return np.core.records.fromarrays(np.concatenate(X).T, dtype=dtype)
+        return np.core.records.fromarrays(np.concatenate(X).T,
+                                          dtype=self._sample_dtype)
 
     def _check_bounds(self, bounds):
         """
@@ -1156,6 +1157,7 @@ class ResampleBGDataInjector(BaseBGDataInjector):
     Data injector resampling weighted data events from the given array.
     """
     def __init__(self, random_state=None):
+        raise DeprecationWarning("ResamInjector not yet adapted to new layout.")
         self.rndgen = random_state
 
     def fit(self, X, weights=None):
@@ -1187,8 +1189,7 @@ class ResampleBGDataInjector(BaseBGDataInjector):
         """
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
-            dtype = [(n, float) for n in self._X_names]
-            return np.empty(0, dtype=dtype)
+            return np.empty(0, dtype=self._sample_dtype)
 
         # Choose uniformly from given data
         idx = random_choice(rndgen=self._rndgen, CDF=self._CDF, n=n_samples)
@@ -1202,7 +1203,9 @@ class Binned3DBGDataInjector(BaseBGDataInjector):
     data arrays.
     """
     def __init__(self, random_state=None):
+        raise DeprecationWarning("BinInjector not yet adapted to new layout.")
         self.rdngen = random_state
+
         self._ax0_bins = None
         self._ax1_bins = None
         self._ax2_bins = None
@@ -1344,8 +1347,7 @@ class Binned3DBGDataInjector(BaseBGDataInjector):
 
         # Return empty array with all keys, when n_samples < 1
         if n_samples < 1:
-            dtype = [(n, float) for n in self._X_names]
-            return np.empty(0, dtype=dtype)
+            return np.empty(0, dtype=self._sample_dtype)
 
         # Sample indices to select from which bin is injected
         ax0_idx = self._rndgen.randint(0, self._nbins[0], size=n_samples)
@@ -1371,8 +1373,8 @@ class Binned3DBGDataInjector(BaseBGDataInjector):
         ax2_pts = ax2_edges[:, 0] + r[:, 2] * np.diff(ax2_edges, axis=1).T
 
         # Combine and convert to record-array
-        return np.core.records.fromarrays(np.vstack((ax0_pts, ax1_pts,
-                                                     ax2_pts)).T, dtype=dtype)
+        return np.core.records.fromarrays(
+            np.vstack((ax0_pts, ax1_pts, ax2_pts)).T, dtype=self._sample_dtype)
 
 
 class TimeDecDependentBGDataInjector(BaseBGDataInjector):
@@ -1392,6 +1394,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
     def __init__(self, bg_inj_args, rndgen=None):
         self._provided_data = np.array(
             ["timeMJD", "dec", "ra", "sigma", "logE"])
+        self._sample_dtype = [(n, float) for n in self._provided_data]
 
         # Check BG inj args
         req_keys = ["sindec_bins", "rate_rebins"]
@@ -1408,6 +1411,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
 
         # Debug info
         self._spl_info = None
+        self._sample_idx = None
 
         self._log = logger(name=self.__class__.__name__, level="ALL")
 
@@ -1459,12 +1463,14 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
            for the declination distribution
         4. Combine to a single recarray X
         """
-        # Get number of BG events to sample in this trial
+        # Get number of BG events to sample per source in this trial
         expected_evts = self._rndgen.poisson(self._nb)
         # Sample times from rate function for all sources
         times = self._spl_info["allsky_rate_func"].sample(expected_evts)
 
         sam = []
+        ev_idx = []
+        src_idx = []
         for j in range(self._nsrcs):
             nevts = expected_evts[j]
             if nevts > 0:
@@ -1476,9 +1482,11 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
                 sam_i["ra"] = self._rndgen.uniform(0., 2. * np.pi, size=nevts)
                 # Append times
                 sam_i["timeMJD"] = times[j]
+                # Debug purpose
+                ev_idx.append(idx)
+                src_idx.append(nevts * [j])
             else:
-                sam_i = np.empty((0,), dtype=[(n, float) for n in
-                                              self._provided_data])
+                sam_i = np.empty(0, dtype=self._sample_dtype)
             sam.append(sam_i)
 
         return np.concatenate(sam)
