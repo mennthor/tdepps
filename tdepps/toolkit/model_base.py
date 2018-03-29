@@ -70,17 +70,11 @@ class BaseSignalInjector(object):
 
 class BaseMultiSignalInjector(BaseSignalInjector):
     """ Interface for managing multiple BaseSignalInjector type classes """
-    _names = None
     _injs = None
 
     @abc.abstractproperty
-    def names(self):
-        """ Unique sub-injector names, identifies this as a MultiInjector """
-        pass
-
-    @abc.abstractproperty
     def injs(self):
-        """ List of unique sub-injector instances """
+        """ Dict of sub-injectors, identifies this as a MultiInjector """
         pass
 
 
@@ -120,10 +114,6 @@ class BaseBGDataInjector(object):
     __metaclass__ = abc.ABCMeta
     # Public defaults
     _rndgen = None
-    # Internal defaults
-    _X_names = None
-    _n_features = None
-    _sample_dtype = None
 
     @abc.abstractproperty
     def provided_data(self):
@@ -140,19 +130,6 @@ class BaseBGDataInjector(object):
         """ Generate random samples from the fitted model """
         pass
 
-    def _check_X_names(self, X):
-        """ Check if given input ``X`` is valid and extract names. """
-        try:
-            _X_names = X.dtype.names
-        except AttributeError:
-            raise AttributeError("`X` must be a record array with dtype.names.")
-
-        self._n_features = len(_X_names)
-        self._X_names = _X_names
-        self._sample_dtype = [(n, float) for n in self._X_names]
-
-        return X
-
     @property
     def rndgen(self):
         return self._rndgen
@@ -164,17 +141,11 @@ class BaseBGDataInjector(object):
 
 class BaseMultiBGDataInjector(BaseBGDataInjector):
     """ Interface for managing multiple BaseBGDataInjector type classes """
-    _names = None
     _injs = None
 
     @abc.abstractproperty
-    def names(self):
-        """ Unique sub-injector names, identifies this as a MultiInjector """
-        pass
-
-    @abc.abstractproperty
     def injs(self):
-        """ List of unique sub-injector instances """
+        """ Dict of sub-injectors, identifies this as a MultiInjector """
         pass
 
 
