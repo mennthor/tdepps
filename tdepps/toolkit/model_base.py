@@ -185,6 +185,9 @@ class BaseRateFunction(object):
     """
     __metaclass__ = abc.ABCMeta
     # Internal defaults
+    _bf_pars = None
+    _bf_fun = None
+    _bf_int = None
     _SECINDAY = 24. * 60. * 60.
 
     @abc.abstractmethod
@@ -276,13 +279,6 @@ class BaseRateFunction(object):
             :py:meth:`fit`.
         """
         pass
-
-    def __init__(self, random_state=None):
-        self.rndgen = random_state
-        # Get set when fitted
-        self._bf_pars = None
-        self._bf_fun = None
-        self._bf_int = None
 
     @property
     def rndgen(self):
