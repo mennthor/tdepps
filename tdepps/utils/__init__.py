@@ -8,7 +8,7 @@ directly in the top level code.
 from __future__ import absolute_import
 
 from .coords import thetaphi2decra, cos_angdist, rotator
-from .io import arr2str, fill_dict_defaults, logger, create_run_dict
+from .io import arr2str, fill_dict_defaults, logger, create_run_dict, all_equal
 from .phys import power_law_flux, make_rate_records, rebin_rate_rec
 from .spline import (make_spl_edges, fit_spl_to_hist, get_stddev_from_scan,
                      spl_normed, make_time_dep_dec_splines)

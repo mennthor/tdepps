@@ -40,6 +40,13 @@ class logger(object):
             return "ERROR :: {} :: {}".format(self._name, s)
 
 
+def all_equal(a1, a2):
+    """ ``True`` if ``a1`` and ``a2`` are equal (unsorted test) """
+    if (len(a1) == len(a2)) and np.all(np.isin(a1, a2)):
+        return True
+    return False
+
+
 def arr2str(arr, sep=", ", fmt="{}"):
     """
     Make a string from a list seperated by ``sep`` and each item formatted
