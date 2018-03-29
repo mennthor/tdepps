@@ -1398,25 +1398,16 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         opt_keys = {"spl_s": None, "n_scan_bins": 50}
         self._bg_inj_args = fill_dict_defaults(bg_inj_args, req_keys, opt_keys)
 
-        self._sin_dec_bins = np.atleast_1d(self._bg_inj_args["sindec_bins"])
-        self._rate_rebins = np.atleast_1d(self._bg_inj_args["rate_rebins"])
         self.rndgen = rndgen
 
         # Defaults for private class variables
+        self._X = None
         self._nsrcs = None
-        self._src_t = None
-        self._src_trange = None
-        self._allsky_rate_func = None
-        self._allsky_pars = None
         self._nb = None
+        self._sample_CDFs = None
 
         # Debug info
-        self._data_spl = None
-        self._sin_dec_splines = None
-        self._param_splines = None
-        self._best_pars = None
-        self._best_stddevs = None
-        self._bg_cur_sam = None
+        self._spl_info = None
 
         self._log = logger(name=self.__class__.__name__, level="ALL")
 
@@ -1452,9 +1443,9 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         print(self._log.INFO("Dropping names '{}'".format(arr2str(drop_names)) +
                              " from data recarray."))
 
-        self.X = drop_fields(X, drop_names, usemask=False)
+        self._X = drop_fields(X, drop_names, usemask=False)
         self.srcs = srcs
-        self._setup_data_injector(self.X, self.srcs, run_dict)
+        self._setup_data_injector(self._X, self.srcs, run_dict)
 
         return
 
@@ -1471,7 +1462,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         # Get number of BG events to sample in this trial
         expected_evts = self._rndgen.poisson(self._nb)
         # Sample times from rate function for all sources
-        times = self._allsky_rate_func.sample(expected_evts)
+        times = self._spl_info["allsky_rate_func"].sample(expected_evts)
 
         sam = []
         for j in range(self._nsrcs):
@@ -1480,7 +1471,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
                 # Resample dec, logE, sigma from exp data with each source CDF
                 idx = random_choice(self._rndgen, CDF=self._sample_CDFs[j],
                                     n=nevts)
-                sam_i = self.X[idx]
+                sam_i = self._X[idx]
                 # Sample missing ra uniformly
                 sam_i["ra"] = self._rndgen.uniform(0., 2. * np.pi, size=nevts)
                 # Append times
@@ -1490,8 +1481,6 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
                                               self._provided_data])
             sam.append(sam_i)
 
-        # Concat to a single recarray
-        self._bg_cur_sam = sam
         return np.concatenate(sam)
 
     def _setup_data_injector(self, X, srcs, run_dict):
@@ -1507,39 +1496,36 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         ev_t = X["timeMJD"]
         ev_sin_dec = np.sin(X["dec"])
         self._nsrcs = len(srcs)
-        self._src_t = np.atleast_1d(srcs["t"])
-        self._src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
-        assert len(self._src_trange) == len(self._src_t) == self._nsrcs
+        src_t = np.atleast_1d(srcs["t"])
+        src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
+
+        sin_dec_bins = np.atleast_1d(self._bg_inj_args["sindec_bins"])
+        rate_rebins = np.atleast_1d(self._bg_inj_args["rate_rebins"])
 
         # Get sindec PDF spline for each source, averaged over its time window
         print(self._log.INFO("Create time dep sindec splines."))
-        sin_dec_splines, info = make_time_dep_dec_splines(
-            ev_t, ev_sin_dec, srcs, run_dict, self._sin_dec_bins,
-            self._rate_rebins, spl_s=self._bg_inj_args["spl_s"],
+        sin_dec_splines, self._spl_info = make_time_dep_dec_splines(
+            ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins, rate_rebins,
+            spl_s=self._bg_inj_args["spl_s"],
             n_scan_bins=self._bg_inj_args["n_scan_bins"])
 
         # Cache expected nb for each source from allsky rate func integral
-        self._param_splines = info["param_splines"]
-        self._best_pars = info["best_pars"]
-        self._best_stddevs = info["best_stddevs"]
-        self._allsky_rate_func = info["allsky_rate_func"]
-        self._allsky_pars = info["allsky_best_params"]
-        self._nb = self._allsky_rate_func.integral(
-            self._src_t, self._src_trange, self._allsky_pars)
-        assert len(self._nb) == len(self._src_t)
+        self._nb = self._spl_info["allsky_rate_func"].integral(
+            src_t, src_trange, self._spl_info["allsky_best_params"])
+        assert len(self._nb) == len(src_t)
 
         # Make sampling CDFs to sample sindecs per source per trial
-        hist = np.histogram(ev_sin_dec, bins=self._sin_dec_bins,
+        hist = np.histogram(ev_sin_dec, bins=sin_dec_bins,
                             density=False)[0]
         stddev = np.sqrt(hist)
-        norm = np.diff(self._sin_dec_bins) * np.sum(hist)
+        norm = np.diff(sin_dec_bins) * np.sum(hist)
         hist = hist / norm
         stddev = stddev / norm
         weight = 1. / stddev
         # Spline to estimate intrinsic data sindec distribution
-        data_spl = fit_spl_to_hist(hist, bins=self._sin_dec_bins, w=weight)[0]
-        self._sin_dec_splines = sin_dec_splines
-        self._data_spl = data_spl
+        data_spl = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight)[0]
+        self._spl_info["sin_dec_splines"] = sin_dec_splines
+        self._spl_info["data_spl"] = data_spl
 
         # Build sampling weights from PDF ratios
         sample_w = np.empty((len(sin_dec_splines), len(ev_sin_dec)),
@@ -1614,14 +1600,13 @@ class SinusRateFunction(BaseRateFunction):
     - c, float: x-axis offset in MJD.
     - d, float: y-axis offset in Hz
     """
-    # Just to have some info encoded in the class which params we have
-    _PARAMS = ["amplitude", "period", "toff", "baseline"]
-
     def __init__(self, random_state=None):
-        super(SinusRateFunction, self).__init__(random_state)
-        # Cached in `fit` for faster rejection sampling
+        self.rndgen = random_state
+
         self._fmax = None
         self._trange = None
+        # Just to have some info encoded in the class which params we have
+        self._PARAMS = np.array(["amplitude", "period", "toff", "baseline"])
 
     def fit(self, t, rate, srcs, p0=None, w=None, **minopts):
         """
@@ -1838,8 +1823,7 @@ class SinusFixedRateFunction(SinusRateFunction):
             self._c = t0_fix
 
         self._fit_idx = np.arange(4)[self._fit_idx]
-        self._PARAMS = np.array(super(SinusFixedRateFunction,
-                                      self)._PARAMS)[self._fit_idx]
+        self._PARAMS = self._PARAMS[self._fit_idx]
 
     def fun(self, t, pars):
         pars = self._make_params(pars)
@@ -1851,8 +1835,7 @@ class SinusFixedRateFunction(SinusRateFunction):
 
     def _get_default_seed(self, t, rate, w):
         """ Same default seeds as SinusRateFunction, but drop fixed params. """
-        seed = super(SinusFixedRateFunction,
-                     self)._get_default_seed(t, rate, w)
+        seed = super(SinusFixedRateFunction, self)._get_default_seed(t, rate, w)
         # Drop b0 and / or c0 seed, when it's marked as fixed
         return tuple(seed[i] for i in self._fit_idx)
 
@@ -1998,8 +1981,8 @@ class SinusFixedConstRateFunction(SinusFixedRateFunction):
     giving a speed boost.
     """
     def __init__(self, p_fix=None, t0_fix=None, random_state=None):
-        super(SinusFixedConstRateFunction, self).__init__(
-            p_fix, t0_fix, random_state)
+        super(SinusFixedConstRateFunction, self).__init__(p_fix, t0_fix,
+                                                          random_state)
 
     def sample(self, n_samples):
         """
@@ -2035,11 +2018,10 @@ class ConstantRateFunction(BaseRateFunction):
 
     - rate, float: Constant rate in Hz.
     """
-    _PARAMS = ["baseline"]
-
     def __init__(self, random_state=None):
         self.rndgen = random_state
         self._trange = None
+        self._PARAMS = np.array(["baseline"])
 
     def fit(self, rate, srcs, w=None):
         """ Cache source values for sampling. Fit is the weighted average """
