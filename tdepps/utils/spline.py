@@ -192,6 +192,8 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
     nbins = len(sin_dec_bins) - 1
     best_pars = np.empty((nbins, ), dtype=[(n, float) for n in names])
     std_devs = np.empty_like(best_pars)
+    best_pars_norm = np.empty_like(best_pars)
+    std_devs_norm = np.empty_like(std_devs)
     for i, (lo, hi) in enumerate(zip(sin_dec_bins[:-1], sin_dec_bins[1:])):
         print(log.INFO("sindec bin {} / {}".format(i + 1, nbins)))
         # Only make rates for the current bin and fit rate func in amp and base
@@ -216,8 +218,10 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
 
         # Store normalized best pars and fit stddevs to build a spline model
         for j, n in enumerate(names):
-            best_pars[n][i] = fitres.x[j] / norm[i]
-            std_devs[n][i] = stds[j] / norm[i]
+            best_pars[n][i] = fitres.x[j]
+            std_devs[n][i] = stds[j]
+            best_pars_norm[n][i] = fitres.x[j] / norm[i]
+            std_devs_norm[n][i] = stds[j] / norm[i]
 
     # 3) Interpolate discrete fit points with a continous smoothing spline
     def spl_normed_factory(spl, lo, hi, norm):
@@ -227,18 +231,18 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
     param_splines = {}
     lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
     sin_dec_pts = np.linspace(lo, hi, 1000)
-    norm_allsky = {
-        names[0]: fitres_allsky.x[0], names[-1]: fitres_allsky.x[-1]}
+    norm_allsky = {names[0]: fitres_allsky.x[0],
+                   names[-1]: fitres_allsky.x[-1]}
     for n in names:
         # Use normalized amplitude and baseline in units HZ/dec
-        weights = 1. / std_devs[n]
+        weights = 1. / std_devs_norm[n]
         # Small feedback loop to catch large 2nd derivates, meaning extremely
         # large fluctuations between the points. Empirical correction values...
         OK = False
         spl_s_ = spl_s
         while not OK:
             spl = fit_spl_to_hist(
-                best_pars[n], sin_dec_bins, weights, s=spl_s_)[0]
+                best_pars_norm[n], sin_dec_bins, weights, s=spl_s_)[0]
             spl2 = spl.derivative(n=2)
             derivative2 = np.abs(spl2(sin_dec_pts))
             # Empirically found value that is working OK
@@ -249,8 +253,8 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
                                " was {:.2f}".format(np.amax(derivative2))))
         # Renormalize to match the allsky params, because the model is additive
         scale = norm_allsky[n] / spl.integral(lo, hi)
-        best_pars[n] = best_pars[n] * scale
-        std_devs[n] = std_devs[n] * scale
+        best_pars_norm[n] = best_pars_norm[n] * scale
+        std_devs_norm[n] = std_devs_norm[n] * scale
         param_splines[n] = spl_normed_factory(
             spl, lo=lo, hi=hi, norm=norm_allsky[n])
 
@@ -279,7 +283,9 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
             "allsky_best_params": fitres_allsky.x,
             "param_splines": param_splines,
             "best_pars": best_pars,
-            "best_stddevs": std_devs}
+            "best_stddevs": std_devs,
+            "best_pars_norm": best_pars_norm,
+            "best_stddevs_norm": std_devs_norm}
     return sin_dec_splines, info
 
 
