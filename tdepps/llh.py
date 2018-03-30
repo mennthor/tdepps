@@ -7,17 +7,17 @@ import math
 import numpy as np
 import scipy.optimize as sco
 
-from .utils import fill_dict_defaults
+from .utils import fill_dict_defaults, all_equal
 
 
 class BaseLLH(object):
     """ Interface for LLH type classes """
     __metaclass__ = abc.ABCMeta
 
-    _model_pdf = None
+    _model = None
 
     @abc.abstractproperty
-    def model_pdf(self):
+    def model(self):
         """ The underlying model this LLH is based on """
         pass
 
@@ -43,7 +43,7 @@ class BaseMultiLLH(BaseLLH):
 
     @abc.abstractproperty
     def llhs(self):
-        """ List of sub-llhs, identifies this as a MultiLLH """
+        """ Dict of sub-llhs, identifies this as a MultiLLH """
         pass
 
 
@@ -57,9 +57,9 @@ class GRBLLH(BaseLLH):
     Stacking weights are a-priori fixed with w_theo * w_dec and only a single
     signal strength parameter ns is fitted.
     """
-    def __init__(self, model_pdf, llh_args=None):
+    def __init__(self, llh_model, llh_args=None):
         self._needed_args = ["src_w", "nb"]
-        self.model_pdf = model_pdf
+        self.model = llh_model
         self.llh_args = llh_args
 
     @property
@@ -67,12 +67,14 @@ class GRBLLH(BaseLLH):
         return self._needed_args
 
     @property
-    def model_pdf(self):
-        return self._model_pdf
+    def model(self):
+        return self._model
 
-    @model_pdf.setter
-    def model_pdf(self, model_pdf):
-        self._model_pdf = model_pdf
+    @model.setter
+    def model(self, model):
+        if not all_equal(self._needed_args, model.provided_args):
+            raise(KeyError("Model `provided_args` don't match `needed_args`."))
+        self._model = model
 
     @property
     def llh_args(self):
@@ -165,8 +167,8 @@ class GRBLLH(BaseLLH):
             return np.empty(0, dtype=np.float)
 
         # Signal stacking case: Weighted signal sum per source
-        sob = self._model_pdf.get_soverb(X)
-        args = self._model_pdf.get_args()
+        sob = self._model.get_soverb(X)
+        args = self._model.get_args()
         sob = np.sum(sob * args["src_w"] / args["nb"], axis=0)
 
         # Apply a SoB ratio cut, to save computation time on events that don't
@@ -197,12 +199,12 @@ class MultiGRBLLH(BaseMultiLLH):
         return self._llhs
 
     @property
-    def model_pdf(self):
-        return [llhi.model_pdf for llhi in self.llhs]
+    def model(self):
+        return {key: llhi.model for key, llhi in self._llhs.items()}
 
     @property
     def needed_args(self):
-        return [llhi.needed_args for llhi in self.llhs]
+        return {key: llhi.needed_args for key, llhi in self._llhs.items()}
 
     def fit(self, llhs):
         """
