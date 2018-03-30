@@ -4,17 +4,13 @@
 
 // Time critical function are coded in C++ here.
 // pybind11 allows us to just write snippets in C++ and integrate them easily
-// and intuitively in out python package.
-// I tried my best to make the C++ code a readable as possible and only use it,
-// where we would have to use heavy broadcasting in python otherwise.
+// in the python package.
 
 static const double pi = 4. * std::atan(1.);
 static const double sqrt2 = std::sqrt(2.);
 static const double sqrt2pi = std::sqrt(2. * pi);
 static const double secinday = 24. * 60. * 60.;
 
-
-// Actual C++ snippets. See docstrings at the bottom for argument info.
 namespace py = pybind11;
 
 
@@ -87,13 +83,18 @@ py::array_t<T> pdf_spatial_signal(const py::array_t<T> src_ra,
 
 
 template <typename T>
-py::array_t<T> soverb_time (const py::array_t<T>& t,
+py::array_t<T> soverb_time_gausbox (const py::array_t<T>& t,
                             const py::array_t<T>& src_t,
                             const py::array_t<T>& dt0,
                             const py::array_t<T>& dt1,
                             const py::array_t<T>& sig_t,
                             const py::array_t<T>& sig_t_clip,
                             const T nsig) {
+    /*
+    * Signal PDF is a box function with gaussian edges clipped at nsig sigma.
+    * This adds a little bit of signal over background ratio for small windows
+    * and cuts off smoothly at the edges.
+    */
     // Gather input shape info (b = buffer, the way pybind11 handles data)
     auto b_t = t.template unchecked<1>();
     auto b_src_t = src_t.template unchecked<1>();
@@ -162,6 +163,48 @@ py::array_t<T> soverb_time (const py::array_t<T>& t,
 }
 
 
+template <typename T>
+py::array_t<T> soverb_time_box (const py::array_t<T>& ev_t,
+                            const py::array_t<T>& src_t,
+                            const py::array_t<T>& src_dt0,
+                            const py::array_t<T>& src_dt1) {
+    /*
+    * Signal and background PDFs are both uniform in each sources time window
+    * acting as a theta function only considering signal inside the box.
+    */
+    // Gather input shape info (b = buffer, the way pybind11 handles data)
+    auto _ev_t = ev_t.template unchecked<1>();
+    auto _src_t = src_t.template unchecked<1>();
+    auto _src_dt0 = src_dt0.template unchecked<1>();
+    auto _src_dt1 = src_dt1.template unchecked<1>();
+    auto nevts = ev_t.shape(0);
+    auto nsrcs = src_t.shape(0);
+
+    // Allocate output array: shape (nsrcs, nevts)
+    py::array_t<T> soverb({nsrcs, nevts});
+    auto b_soverb = soverb.template mutable_unchecked<2>();
+
+    // Ratio is either 1 if event time is in the sources time window or 0 if not
+    T t_rel;
+    for (unsigned i = 0; i < nevts; ++i) {
+        for (unsigned j = 0; j < nsrcs; ++j) {
+            // Normaliez event time relative to src time in seconds
+            t_rel = (_ev_t[i] - _src_t[j]) * secinday;
+            // Can be inside or outside. Sorted after most probable occurrence
+            // to skip as much as possible
+            if ((t_rel < _src_dt0(j)) || (t_rel > _src_dt1(j))){  // outside
+                b_soverb(j, i) = 0.;
+            }
+            else {  // Inside box
+                b_soverb(j, i) = 1.;
+            }
+        }
+    }
+
+    return soverb;
+}
+
+
 PYBIND11_PLUGIN(backend) {
     py::module m("backend", R"pbdoc(
         Pybind11 C++ backend for tdepps
@@ -176,94 +219,129 @@ PYBIND11_PLUGIN(backend) {
            pdf_spatial_signal
     )pbdoc");
 
-    auto soverb_time_docstr = R"pbdoc(
-                    Time signal over background ratio.
+    auto soverb_time_gausbox_docstr = R"pbdoc(
+Time signal over background ratio.
 
-                    Signal and background PDFs are each normalized over seconds.
-                    Signal PDF has gaussian edges to smoothly let it fall of to
-                    zero, the standard deviation is controlled by
-                    `sigma_t_[min|max]` in `time_pdf_args`.
+Signal and background PDFs are each normalized over seconds.
+Signal PDF has gaussian edges to smoothly let it fall of to
+zero, the standard deviation is controlled by
+`sigma_t_[min|max]` in `time_pdf_args`.
 
-                    To ensure finite support, the edges of the gaussian are
-                    truncated after `time_pdf_args['nsig'] * dt`.
+To ensure finite support, the edges of the gaussian are
+truncated after `time_pdf_args['nsig'] * dt`.
 
-                    Parameters
-                    ----------
-                    t : array-like, shape (nevts)
-                        Times given in MJD for which we want to evaluate the
-                        ratio.
-                    src_t : array-like, shape (nsrcs)
-                        Times of each source event in MJD days.
-                    dt0 : array-like, shape (nsrcs)
-                        Time windows start time in seconds relative to each
-                        `src_t`. Marks the start point of the interval per src
-                        in which the signal PDF is assumed to be uniform.
-                    dt1 : array-like, shape (nsrcs)
-                        Time windows end time in seconds relative to each
-                        `src_t`. Marks the end point of the interval per src
-                        in which the signal PDF is assumed to be uniform.
-                    sig_t : array-like, shape (nsrcs)
-                        sigma of the gaussian edges of the time signal PDF.
-                    sig_t_clip : array-like, shape (nsrcs)
-                        Total length `time_pdf_args['nsig'] * sig_t` of the
-                        gaussian edges of each time window.
-                    nsig : int
-                        At how many sigmas the gaussian egdes are clipped.
+Parameters
+----------
+t : array-like, shape (nevts)
+    Times given in MJD for which we want to evaluate the
+    ratio.
+src_t : array-like, shape (nsrcs)
+    Times of each source event in MJD days.
+dt0 : array-like, shape (nsrcs)
+    Time windows start time in seconds relative to each
+    `src_t`. Marks the start point of the interval per src
+    in which the signal PDF is assumed to be uniform.
+dt1 : array-like, shape (nsrcs)
+    Time windows end time in seconds relative to each
+    `src_t`. Marks the end point of the interval per src
+    in which the signal PDF is assumed to be uniform.
+sig_t : array-like, shape (nsrcs)
+    sigma of the gaussian edges of the time signal PDF.
+sig_t_clip : array-like, shape (nsrcs)
+    Total length `time_pdf_args['nsig'] * sig_t` of the
+    gaussian edges of each time window.
+nsig : int
+    At how many sigmas the gaussian egdes are clipped.
 
-                    Returns
-                    -------
-                    soverb_time_ratio : array-like, shape (nsrcs, nevts)
-                        Ratio of the time signal and background PDF for each
-                        given time `t` and per source time `src_t`.
-                  )pbdoc";
+Returns
+-------
+soverb_time_ratio : array-like, shape (nsrcs, nevts)
+    Ratio of the time signal and background PDF for each
+    given time `t` and per source time `src_t`.
+)pbdoc";
+
+    auto soverb_time_box_docstr = R"pbdoc(
+Time signal over background ratio.
+
+Simple uniform signal and background PDFs. Ratio is 1 for
+events inside a source's time window and 0 else.
+
+Parameters
+----------
+t : array-like, shape (nevts)
+    Times given in MJD for which we want to evaluate the
+    ratio.
+src_t : array-like, shape (nsrcs)
+    Times of each source event in MJD days.
+dt0 : array-like, shape (nsrcs)
+    Time windows start time in seconds relative to each
+    `src_t`. Marks the start point of the interval per src
+    in which the signal PDF is assumed to be uniform.
+dt1 : array-like, shape (nsrcs)
+    Time windows end time in seconds relative to each
+    `src_t`. Marks the end point of the interval per src
+    in which the signal PDF is assumed to be uniform.
+
+Returns
+-------
+soverb_time_ratio : array-like, shape (nsrcs, nevts)
+    Ratio of the time signal and background PDF for each
+    given time `t` and per source time `src_t`.
+)pbdoc";
 
     auto pdf_spatial_signal_docstr = R"pbdoc(
-                    Spatial distance PDF between source position(s) and event
-                    positions.
+Spatial distance PDF between source position(s) and event
+positions.
 
-                    Signal is assumed to cluster around source position(s).
-                    The PDF is a convolution of a delta function for the
-                    localized sources and a Kent (or gaussian) distribution with
-                    the events positional
-                    reconstruction error as width.
+Signal is assumed to cluster around source position(s).
+The PDF is a convolution of a delta function for the
+localized sources and a Kent (or gaussian) distribution with
+the events positional
+reconstruction error as width.
 
-                    If `spatial_pdf_args["kent"]` is True a Kent distribtuion is
-                    used, where kappa is chosen, so that the same amount of
-                    probability as in the 2D gaussian is inside a circle with
-                    radius `ev_sig` per event.
+If `spatial_pdf_args["kent"]` is True a Kent distribtuion is
+used, where kappa is chosen, so that the same amount of
+probability as in the 2D gaussian is inside a circle with
+radius `ev_sig` per event.
 
-                    Multiple source positions can be given, to use it in a
-                    stacked search.
+Multiple source positions can be given, to use it in a
+stacked search.
 
-                    Parameters
-                    -----------
-                    src_ra, src_dec : array-like, shape (nsrcs)
-                        Source positions in equatorial right-ascension, [0, 2pi]
-                        and declination, [-pi/2, pi/2], given in radian.
-                    ev_ra, ev_sin_dec : array-like, shape (nevts)
-                        Event positions in equatorial right-ascension, [0, 2pi]
-                        in radian and sinus declination, [-1, 1].
-                    ev_sig : array-like, shape (nevts)
-                        Event positional reconstruction errors in radian
-                        (eg. Paraboloid).
-                    kent : bool
-                        If True, the signal PDF uses the Kent distribution,
-                        otherwise 2D gaussian PDF is used.
+Parameters
+-----------
+src_ra, src_dec : array-like, shape (nsrcs)
+    Source positions in equatorial right-ascension, [0, 2pi]
+    and declination, [-pi/2, pi/2], given in radian.
+ev_ra, ev_sin_dec : array-like, shape (nevts)
+    Event positions in equatorial right-ascension, [0, 2pi]
+    in radian and sinus declination, [-1, 1].
+ev_sig : array-like, shape (nevts)
+    Event positional reconstruction errors in radian
+    (eg. Paraboloid).
+kent : bool
+    If True, the signal PDF uses the Kent distribution,
+    otherwise 2D gaussian PDF is used.
 
-                    Returns
-                    --------
-                    S : array-like, shape (nsrcs, nevts)
-                        Spatial signal probability for each event and each
-                        source position.
-                  )pbdoc";
+Returns
+--------
+S : array-like, shape (nsrcs, nevts)
+    Spatial signal probability for each event and each
+    source position.
+)pbdoc";
 
     // Define the actual template types
-    m.def("soverb_time", &soverb_time<double>, soverb_time_docstr,
+    m.def("soverb_time_gausbox", &soverb_time_gausbox<double>,
+          soverb_time_gausbox_docstr,
           py::arg("t"), py::arg("src_t"), py::arg("dt0"), py::arg("dt1"),
           py::arg("sig_t"), py::arg("sig_t_clip"), py::arg("nsig"));
-    m.def("soverb_time", &soverb_time<float>, "",
+    m.def("soverb_time_gausbox", &soverb_time_gausbox<float>, "",
           py::arg("t"), py::arg("src_t"), py::arg("dt0"), py::arg("dt1"),
           py::arg("sig_t"), py::arg("sig_t_clip"), py::arg("nsig"));
+
+    m.def("soverb_time_box", &soverb_time_box<double>, soverb_time_box_docstr,
+          py::arg("t"), py::arg("src_t"), py::arg("dt0"), py::arg("dt1"));
+    m.def("soverb_time_box", &soverb_time_box<float>, "",
+          py::arg("t"), py::arg("src_t"), py::arg("dt0"), py::arg("dt1"));
 
     m.def("pdf_spatial_signal", &pdf_spatial_signal<double>,
           pdf_spatial_signal_docstr,
