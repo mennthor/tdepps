@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.utils import check_random_state
 from itertools import repeat
 
-from .utils import fit_chi2_cdf, logger, arr2str
+from .utils import fit_chi2_cdf, logger, arr2str, all_equal
 
 
 class GRBLLHAnalysis(object):
@@ -35,26 +35,16 @@ class GRBLLHAnalysis(object):
         self.rndgen = random_state
 
     @property
+    def llh(self):
+        return self._llh
+
+    @property
     def bg_inj(self):
         return self._bg_inj
 
     @property
     def sig_inj(self):
         return self._sig_inj
-
-    # @model_injector.setter
-    # def model_injector(self, model_injector):
-    #     self._check_inj_llh_harmony(model_injector, self._llh)
-    #     self._model_injector = model_injector
-
-    @property
-    def llh(self):
-        return self._llh
-
-    @llh.setter
-    def llh(self, llh):
-        self._check_inj_llh_harmony(self._model_injector, llh)
-        self.llh = llh
 
     @property
     def rndgen(self):
@@ -73,54 +63,53 @@ class GRBLLHAnalysis(object):
         across all injectors and llhs. Each single injector must match its
         provided data with the requirements from the lll receiving it.
         """
-        def _all_equal(a1, a2):
-            """ ``True`` if a1 and a2 are equal (unsorted test) """
-            if (len(a1) == len(a2)) and np.all(np.isin(a1, a2)):
-                return True
-            return False
-
-        def _all_match(llh, inj, multi):
-            if multi:
-                keys, models, injs = llh.names, llh.model_pdf, inj.injs
-            else:
-                keys, models, injs = ["none"], [llh.model_pdf], [inj]
-
-            for key, model, inj in zip(keys, models, injs):
-                if not _all_equal(model.needed_data, inj.provided_data):
-                    e = "Provided and needed names don't match"
-                    if multi:
+        def _all_match(llh, inj):
+            """ Check if provided and needed names match for inj, llh pairs """
+            if llh.hasattr("llhs"):
+                for key in llh.llhs.keys():
+                    model = inj.injs[key].model
+                    inj = inj.injs[key]
+                    if not all_equal(model.needed_data, inj.provided_data):
+                        e = "Provided and needed names don't match"
                         e += " for sample '{}'".format(key)
+                        e += ": ['{}'] != ['{}'].".format(
+                            arr2str(model.needed_data, sep="', '"),
+                            arr2str(inj.provided_data, sep="', '"))
+                        raise KeyError(e)
+            else:
+                if not all_equal(llh.model.needed_data, inj.provided_data):
+                    e = "Provided and needed names don't match"
                     e += ": ['{}'] != ['{}'].".format(
-                        arr2str(model.needed_data, sep="', '"),
+                        arr2str(llh.model.needed_data, sep="', '"),
                         arr2str(inj.provided_data, sep="', '"))
                     raise KeyError(e)
+
             return True
 
         # First check if all are single or multi types
-        has_names = [hasattr(inst, "names") for inst in [llh, bg_inj, sig_inj]]
+        has_names = [hasattr(llh, "llhs"), hasattr(bg_inj, "injs"),
+                     hasattr(sig_inj, "injs")]
         if all(has_names):
             print(self._log.INFO("Dealing with multi types."))
             # All names must match in the multi case
-            if not (_all_equal(llh.names, bg_inj.names) and
-                    _all_equal(llh.names, sig_inj.names)):
+            if not (all_equal(llh.llhs.keys(), bg_inj.injs.keys()) and
+                    all_equal(llh.llhs.keys(), sig_inj.injs.keys())):
                 raise AttributeError("LLH and / or injector names don't match.")
-            multi = True
         elif not all(has_names):
             print(self._log.INFO("Dealing with single types."))
-            multi = False
         else:
             raise TypeError(
                 "LLH and injectors are not all single or multi types.")
 
         # Now check if exchanged data recarrays are matching
         try:
-            _all_match(llh, bg_inj, multi)
+            _all_match(llh, bg_inj)
         except KeyError as e:
             print(self._log.ERROR(e))
             raise KeyError("Provided and needed names " +
                            "don't match for `llh` and `bg_inj`.")
         try:
-            _all_match(llh, sig_inj, multi)
+            _all_match(llh, sig_inj)
         except KeyError as e:
             print(self._log.ERROR(e))
             raise KeyError("Provided and needed names " +
