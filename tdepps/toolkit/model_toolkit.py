@@ -12,9 +12,9 @@ benefit from direct class attributes.
 
 from __future__ import print_function, division, absolute_import
 
-import abc
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
+from numpy.core.records import fromarrays
 import scipy.stats as scs
 import healpy as hp
 from .model_base import (BaseSignalInjector, BaseBGDataInjector,
@@ -23,14 +23,6 @@ from .model_base import BaseMultiBGDataInjector, BaseMultiSignalInjector
 from ..utils import (random_choice, fill_dict_defaults, thetaphi2decra, logger,
                      rotator, fit_spl_to_hist, make_time_dep_dec_splines,
                      arr2str)
-
-try:
-    from awkde import GaussianKDE as KDE
-except ImportError as e:
-    log = logger(name="toolkit", level="ALL")
-    print(log.ERROR(e))
-    print(log.ERROR("KDE injector is not available, because package " +
-                    "`awkde` is missing."))
 
 
 ##############################################################################
@@ -822,15 +814,15 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
 
     @property
     def injs(self):
-        return list(self._injs.values())
+        return self._injs
 
     @property
     def provided_data(self):
-        return [inji.model_pdf for inji in self.injs]
+        return {key: inji.provided_data for key, inji in self._injs.items()}
 
     @property
     def srcs(self):
-        return [inji.srcs for inji in self.injs]
+        return [inji.srcs for inji in self._injs.values()]
 
     def mu2flux(self, mu, per_source=False):
         """
@@ -1141,6 +1133,10 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
                 sam_i = np.empty(0, dtype=self._sample_dtype)
             sam.append(sam_i)
 
+        # Debug purpose
+        self._sample_idx = fromarrays(
+            [np.concatenate(ev_idx), np.concatenate(src_idx)],
+            dtype=[("ev_idx", float), ("src_idx", float)])
         return np.concatenate(sam)
 
     def _setup_data_injector(self, X, srcs, run_dict):
@@ -1201,17 +1197,20 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
 
 
 class MultiBGDataInjector(BaseMultiBGDataInjector):
+    """
+    Container class simply collects all samples from the individual injectors.
+    """
     @property
     def names(self):
         return list(self._injs.keys())
 
     @property
     def injs(self):
-        return list(self._injs.values())
+        return self._injs
 
     @property
     def provided_data(self):
-        return [inji.provided_data for inji in self.injs]
+        return {key: inji.provided_data for key, inji in self._injs.items()}
 
     def fit(self, injs):
         """
@@ -1225,7 +1224,7 @@ class MultiBGDataInjector(BaseMultiBGDataInjector):
         """
         for name, inj in injs.items():
             if not isinstance(inj, BaseBGDataInjector):
-                raise ValueError("LLH object `{}` ".format(name) +
+                raise ValueError("Injector `{}` ".format(name) +
                                  "is not of type `BaseBGDataInjector`.")
 
         self._injs = injs
@@ -1234,11 +1233,7 @@ class MultiBGDataInjector(BaseMultiBGDataInjector):
         """
         Sample each injector and combine to a dict of recarrays.
         """
-        sam = {}
-        for key, inj in self._injs.items():
-            sam[key] = inj.sample()
-
-        return sam
+        return {key: inj.sample() for key, inj in self._injs.items()}
 
 
 ##############################################################################
