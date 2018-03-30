@@ -1,7 +1,7 @@
 # coding: utf-8
 
 """
-Base class definitions are here, implementations in `model_toolkit.py`.
+Base definition for injector objects.
 """
 
 from __future__ import print_function, absolute_import
@@ -10,8 +10,7 @@ import abc
 import numpy as np
 import scipy.optimize as sco
 from sklearn.utils import check_random_state
-from ..utils import logger, fill_dict_defaults
-log = logger(name="toolkit", level="ALL")
+from ..utils import fill_dict_defaults
 
 
 ##############################################################################

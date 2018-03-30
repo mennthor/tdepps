@@ -2,54 +2,14 @@
 
 from __future__ import division, absolute_import
 
-import abc
 import math
 import numpy as np
 import scipy.optimize as sco
 
-from .utils import fill_dict_defaults, all_equal
+from ..base import BaseLLH, BaseMultiLLH
+from ..utils import fill_dict_defaults, all_equal
 
 
-class BaseLLH(object):
-    """ Interface for LLH type classes """
-    __metaclass__ = abc.ABCMeta
-
-    _model = None
-
-    @abc.abstractproperty
-    def model(self):
-        """ The underlying model this LLH is based on """
-        pass
-
-    @abc.abstractproperty
-    def needed_args(self):
-        """ Additional LLH arguments, must match with model `provided_args` """
-        pass
-
-    @abc.abstractmethod
-    def lnllh_ratio(self):
-        """ Returns the lnLLH ratio given data and params """
-        pass
-
-    @abc.abstractmethod
-    def fit_lnllh_ratio(self):
-        """ Returns the best fit parameter set under given data """
-        pass
-
-
-class BaseMultiLLH(BaseLLH):
-    """ Interface for managing multiple LLH type classes """
-    _llhs = None
-
-    @abc.abstractproperty
-    def llhs(self):
-        """ Dict of sub-llhs, identifies this as a MultiLLH """
-        pass
-
-
-# #############################################################################
-# GRB style LLH
-# #############################################################################
 class GRBLLH(BaseLLH):
     """
     Stacking GRB LLH
@@ -58,6 +18,22 @@ class GRBLLH(BaseLLH):
     signal strength parameter ns is fitted.
     """
     def __init__(self, llh_model, llh_opts=None):
+        """
+        Parameters
+        ----------
+        llh_model : BaseModel instance
+            Model providing LLH args and signal over background ratio.
+        llh_opts : dict, optional
+            LLH options:
+            - 'sob_rel_eps', optional: Relative threshold under which a single
+              signal over background ratio is considered zero for speed reasons.
+            - 'sob_abs_eps', optional: Absolute threshold under which a single
+              signal over background ratio is considered zero for speed reasons.
+            - 'ns_bounds', optional: ``[lo, hi]`` bounds for the ``ns`` fit
+              parameter.
+            - 'minimizer', optional: String selecting a scipy minizer.
+            - 'minimizer_opts', optional: Options dict for the scipy minimizer.
+        """
         self._needed_args = ["src_w_dec", "src_w_theo" "nb"]
         self.model = llh_model
         self.llh_opts = llh_opts
@@ -77,12 +53,10 @@ class GRBLLH(BaseLLH):
     def model(self, model):
         if not all_equal(self._needed_args, model.provided_args):
             raise(KeyError("Model `provided_args` don't match `needed_args`."))
-        # Cache fixed args for LLH evaluation
+        # Cache fixed src weights over background estimation, shape (nsrcs, 1)
         args = model.get_args()
-        # Make fixed src weights over background estimation, shape (nsrcs, 1)
         src_w = args["src_w_dec"] * args["src_w_theo"]
         self._src_w_over_nb = (src_w[:, None] / np.sum(src_w)) / args["nb"]
-
         self._model = model
 
     @property
@@ -149,11 +123,17 @@ class GRBLLH(BaseLLH):
                 TS = 2. * (-ns + np.sum(np.log1p(ns * sob)))
                 return ns, TS
         else:  # Fit other cases
-            res = sco.minimize(fun=self._neglnllh, x0=[ns0], jac=True,
-                               bounds=self._llh_opts["ns_bounds"], args=(sob,),
+            res = sco.minimize(fun=self._neglnllh, x0=[ns0],
+                               jac=True, args=(sob,),
+                               bounds=self._llh_opts["ns_bounds"],
                                method=self._llh_opts["minimizer"],
                                options=self._llh_opts["minimizer_opts"])
-            return res.x[0], -res.fun[0]
+            # Use `abs`: Very rarely, the minimizer doesn't go the boundary
+            # when the fit should be zero. Then simply negating the function
+            # value would yield a small but negative TS value. `abs` avoids
+            # that accepting the "error" on having a very small positive TS
+            # val instead of a true zero one. "return res.x[0], -res.fun[0]"
+            return res.x[0], abs(res.fun[0])
 
     def _soverb(self, X):
         """ Make an additional cut on small sob values to save time """
@@ -195,8 +175,8 @@ class MultiGRBLLH(BaseMultiLLH):
     from all single GRBLLHs.
     """
     def __init__(self, llh_opts=None):
-        self.llh_opts = llh_opts
         self._ns_weights = None
+        self.llh_opts = llh_opts
 
     @property
     def names(self):
@@ -279,22 +259,39 @@ class MultiGRBLLH(BaseMultiLLH):
         return TS, ns_grad
 
     def fit_lnllh_ratio(self, ns0, X):
-        """ Fit single ns parameter simultaniously for all LLHs """
+        """
+        Fit single ns parameter simultaneously for all LLHs.
+
+        TODO: This relies on calls into private LLH methods directly using sob
+              for speed reasons. Maybe we can change that.
+        """
+        def _neglnllh(ns, sob_dict):
+            """ Multi LLH wrapper directly using a dict of sob values """
+            TS = 0.
+            ns_grad = 0.
+            for key, sob in sob_dict.items():
+                TS_i, ns_grad_i = self._llhs[key]._lnllh_ratio(
+                    ns * self._ns_weights[key], sob)
+                TS -= TS_i
+                ns_grad -= ns_grad_i * self._ns_weights[key]  # Chain rule
+            return TS, ns_grad
+
         # No events given for any LLH, fit is zero
         if sum(map(len, X.values())) == 0:
             return 0., 0.
 
-        # Get soverb for all LLH. TODO: Avoid calling in a private function
+        # Get soverb separately for all LLHs
         sob = []
-        sob_dict = {}  # If we fit, we need it unweighted. If not, it's unused
-        for name in self.names:
-            sob_i = self._llhs[name]._soverb(X[name], args[name])
-            sob.append(ns_weights[name] * sob_i)
+        # sob_dict is only used if we fit, because we need sob unweighted there
+        sob_dict = {}
+        for key, llh in self._llhs.items():
+            sob_i = llh._soverb(X[key])
+            sob.append(self._ns_weights[key] * sob_i)
             if len(sob_i) > 0:
                 # If sob is empty for a LLH, it would return (0, [0]) anyway,
                 # so just add the existing ones. ns_weights are added in
-                # correctly in the fit function later, so just store pure sob.
-                sob_dict[name] = sob_i
+                # correctly in the fit function later
+                sob_dict[key] = sob_i
 
         sob = np.concatenate(sob)
         nevts = len(sob)
@@ -323,19 +320,23 @@ class MultiGRBLLH(BaseMultiLLH):
                 TS = 2. * (-ns + np.sum(np.log1p(ns * sob)))
                 return ns, TS
         else:  # Fit other cases
-            res = sco.minimize(fun=_neglnllh, x0=[ns0], jac=True,
-                               bounds=bounds, args=(sob_dict, ns_weights),
-                               method="L-BFGS-B", options=minimizer_opts)
+            res = sco.minimize(fun=_neglnllh, x0=[ns0],
+                               jac=True, args=(sob_dict,),
+                               bounds=self._llh_opts["ns_bounds"],
+                               method=self._llh_opts["minimizer"],
+                               options=self._llh_opts["minimizer_opts"])
             if not res.success:
-                def _neglnllh_numgrad(ns, sob, ns_weights):
+                def _neglnllh_numgrad(ns, sob_dict):
                     """ Use numerical gradient if LINESRCH problem arises. """
-                    return _neglnllh(ns, sob, ns_weights)[0]
-                res = sco.minimize(fun=_neglnllh_numgrad, x0=[ns0], jac=False,
-                                   bounds=bounds, args=(sob_dict, ns_weights),
-                                   method="L-BFGS-B", options=minimizer_opts)
+                    return _neglnllh(ns, sob_dict)[0]
+                res = sco.minimize(fun=_neglnllh_numgrad, x0=[ns0],
+                                   jac=True, args=(sob_dict,),
+                                   bounds=self._llh_opts["ns_bounds"],
+                                   method=self._llh_opts["minimizer"],
+                                   options=self._llh_opts["minimizer_opts"])
 
             # Use `abs`: Very rarely, the minimizer doesn't go the boundary
-            # if the fit should be zero. Then simply negating the function
+            # when the fit should be zero. Then simply negating the function
             # value would yield a small but negative TS value. `abs` avoids
             # that accepting the "error" on having a very small positive TS
             # val instead of a true zero one.

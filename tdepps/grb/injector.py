@@ -1,13 +1,7 @@
 # coding: utf-8
 
 """
-This is a collection of different function and / or classes that can be used in
-a modular way to create a PDF and injection model class which can be used in the
-LLH analysis.
-When creating a new function it should only work on public interfaces and data
-provided by the model class. If this can't be realized due to performance /
-caching reasons, then consider coding the functionality directly into a model to
-benefit from direct class attributes.
+Collection of base implementations for a GRB style, time dependent analysis.
 """
 
 from __future__ import print_function, division, absolute_import
@@ -17,12 +11,14 @@ from numpy.lib.recfunctions import drop_fields
 from numpy.core.records import fromarrays
 import scipy.stats as scs
 import healpy as hp
-from .model_base import (BaseSignalInjector, BaseBGDataInjector,
-                         BaseRateFunction, BaseTimeSampler)
-from .model_base import BaseMultiBGDataInjector, BaseMultiSignalInjector
-from ..utils import (random_choice, fill_dict_defaults, thetaphi2decra, logger,
-                     rotator, fit_spl_to_hist, make_time_dep_dec_splines,
-                     arr2str)
+
+from ..base import BaseSignalInjector, BaseMultiSignalInjector
+from ..base import BaseBGDataInjector, BaseMultiBGDataInjector
+from ..base import BaseTimeSampler, BaseRateFunction
+from ..utils import random_choice
+from ..utils import fit_spl_to_hist, make_time_dep_dec_splines
+from ..utils import arr2str, fill_dict_defaults, logger
+from ..utils import rotator, thetaphi2decra
 
 
 ##############################################################################
@@ -32,25 +28,28 @@ class SignalFluenceInjector(BaseSignalInjector):
     """
     Signal Fluence Injector
 
-    Inject signal events from Monte Carlo data weighted to a specific fluence
-    model and inject at given source positions. Fluence is assumed to be per
-    "burst" as in GRB models, so the fluence is not depending on the duration
-    of a source's time window. Time sampling is done via a ``TimeSampler``.
+    Inject signal events from Monte Carlo data weighted to a specific flux model
+    and inject at given source positions. Flux is assumed to be per "burst", not
+    depending on the duration of a source's time window.
+
+    Events are injected by rotation true event positions from a diffuse MC set
+    to the source locations. Events are sampled weighted using an external
+    energy dependent flux model. Time is also sampled via an external module.
     """
     def __init__(self, flux_model, time_sampler, inj_opts=None,
                  random_state=None):
         """
         Parameters
         ----------
-        model : callable
+        flux_model : callable
             Function of true energy ``f(MC['trueE'])``, describing the model
             flux that will be injected from. Values are used to weight events to
             a physics scenario by ``w[i] ~ f(MC['trueE'][i] * MC['ow'][i]``.
             Model must fit to the units of true energy and the event weights.
         time_sampler : TimeSampler instance
-            Time sampler for sampling the signal times in addition to the spatial
-            rotation part done by the injector.
-        inj_opts : dict
+            Time sampler for sampling the signal times in addition to the
+            spatial rotation part done by the injector.
+        inj_opts : dict, optional
             Injector options:
             - 'mode', optional: One of ``['circle'|'band']``. Selects MC events
               to inject based on their true location (default: 'band'):
