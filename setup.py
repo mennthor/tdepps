@@ -107,7 +107,7 @@ setup(
     long_description="",
     ext_modules=ext_modules,
     install_requires=["numpy", "scipy", "scikit-learn", "pybind11>=1.7",
-                      "future", "tqdm", "docrep"],
+                      "future"],
     cmdclass={"build_ext": BuildExt},
     zip_safe=False,
 )
