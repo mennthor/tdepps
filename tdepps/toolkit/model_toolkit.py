@@ -36,91 +36,79 @@ class SignalFluenceInjector(BaseSignalInjector):
     model and inject at given source positions. Fluence is assumed to be per
     "burst" as in GRB models, so the fluence is not depending on the duration
     of a source's time window. Time sampling is done via a ``TimeSampler``.
-
-    Parameters
-    ----------
-    model : callable
-        Function of true energy ``f(MC['trueE'])``, describing the model flux
-        that will be injected from. Values are used to weight events to a
-        physics scenario by ``w[i] ~ f(MC['trueE'][i] * MC['ow'][i]``. Make
-        sure the model fits to the units of the true energy and the OneWeights.
-    time_sampler : TimeSampler instance
-        Time sampler for sampling the signal times in addition to the spatial
-        rotation part done by the injector.
-    mode : string, optional
-        One of ``['circle'|'band']``. Selects MC events to inject based
-        on their true location:
-
-        - 'circle': Select ``MC`` events in circle around each source.
-        - 'band': Select ``MC`` events in a declination band around each source.
-
-        (default: 'band')
-
-    sindec_inj_width : float, optional
-        Angular size of the regions from which MC events are injected, in
-        ``sin(dec)`` to preserve solid angle sizes near the poles.
-
-        - If ``mode`` is ``'band'``, this is half the width of the sinues
-          declination band centered at the source positions.
-        - If ``mode`` is ``'circle'`` this is the radius of the circular
-          selection region in sinues declination.
-
-        (default: 0.035 ~ 2°)
-
-    dec_range : array-like, shape (2), optional
-        Global declination interval in which events can be injected in rotated
-        coordinates. Events rotated outside are dropped even if selected, which
-        drops sensitivity as desired. (default: ``[-pi/2, pi/2]``)
-    random_state : None, int or np.random.RandomState, optional
-        Used as PRNG, see ``sklearn.utils.check_random_state``. (default: None)
     """
-    def __init__(self, flux_model, time_sampler, mode="band",
-                 sindec_inj_width=0.035, dec_range=None, random_state=None):
+    def __init__(self, flux_model, time_sampler, inj_opts=None,
+                 random_state=None):
+        """
+        Parameters
+        ----------
+        model : callable
+            Function of true energy ``f(MC['trueE'])``, describing the model
+            flux that will be injected from. Values are used to weight events to
+            a physics scenario by ``w[i] ~ f(MC['trueE'][i] * MC['ow'][i]``.
+            Model must fit to the units of true energy and the event weights.
+        time_sampler : TimeSampler instance
+            Time sampler for sampling the signal times in addition to the spatial
+            rotation part done by the injector.
+        inj_opts : dict
+            Injector options:
+            - 'mode', optional: One of ``['circle'|'band']``. Selects MC events
+              to inject based on their true location (default: 'band'):
+              + 'circle': Select in a circle with radius 'sindec_inj_width'
+                around each source.
+              + 'band': Select in a declination band with width
+                'sindec_inj_width' in each direction symmetrically around each
+                source.
+            - 'dec_range', optional: Global declination interval in which events
+              can be injected in rotated coordinates. Events rotated outside are
+              dropped even if selected, which drops sensitivity as desired.
+              (default: ``[-pi/2, pi/2]``)
+        random_state : None, int or np.random.RandomState, optional
+            Used as PRNG, see ``sklearn.utils.check_random_state``.
+            (default: None)
+        """
         try:
             flux_model(1.)  # Standard units are E = 1GeV
         except Exception:
             raise TypeError("`model` must be a function `f(trueE)`.")
-        self._flux_model = flux_model
 
         if not isinstance(time_sampler, BaseTimeSampler):
             raise ValueError("`time_sampler` must have type `BaseTimeSampler`.")
+
+        # Check injector options
+        req_keys = []
+        opt_keys = {"mode": "band", "sindec_inj_width": 0.035,
+                    "dec_range": np.array([-np.pi / 2., np.pi / 2.])}
+        inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys)
+        if inj_opts["mode"] not in ["band", "circle"]:
+            raise ValueError("'mode' must be one of ['band', 'circle']")
+        _sindw = inj_opts["sindec_inj_width"]
+        if (_sindw <= 0.) or (_sindw > np.pi):
+            raise ValueError("'sindec_inj_width' width must be in (0, pi].")
+        _decrng = np.atleast_1d(inj_opts["dec_range"])
+        if (_decrng[0] < -np.pi / 2.) or (_decrng[1] > np.pi / 2.):
+            raise ValueError("`dec_range` must be in range [-pi/2, pi/2].")
+        if _decrng[0] >= _decrng[1]:
+            raise ValueError("`dec_range=[low, high]` must be increasing.")
+        inj_opts["dec_range"] = _decrng
+
+        self._flux_model = flux_model
         self._time_sampler = time_sampler
-
-        if mode not in ["band", "circle"]:
-            raise ValueError("`mode` must be one of ['band', 'circle']")
-        self._mode = mode
-
-        if (sindec_inj_width <= 0.) or (sindec_inj_width > np.pi):
-            raise ValueError("Injection width must be in (0, pi].")
-        self._sindec_inj_width = sindec_inj_width
-
-        if dec_range is None:
-            dec_range = np.array([-np.pi / 2., np.pi / 2.])
-        else:
-            dec_range = np.atleast_1d(dec_range)
-            if (dec_range[0] < -np.pi / 2.) or (dec_range[1] > np.pi / 2.):
-                raise ValueError("`dec_range` must be in range [-pi/2, pi/2].")
-            if dec_range[0] >= dec_range[1]:
-                raise ValueError("`dec_range=[low, high]` must be increasing.")
-        self._dec_range = dec_range
-
-        self.rndgen = random_state
-        self._mc_arr = None
+        self._inj_opts = inj_opts
+        self._provided_data = np.array(
+            ["timeMJD", "dec", "ra", "sigma", "logE"])
+        self._mc_names = ["trueRa", "trueDec", "trueE", "ow"]
         self._srcs = None
+        self.rndgen = random_state
 
         # Defaults for private class attributes
         self._MC = None
-        self._mc_names = None
-        self._exp_names = None
+        self._mc_idx = None
         self._src_dt = None
-
-        self._min_dec = None
-        self._max_dec = None
-        self._omega = None
-
         self._raw_flux = None
+        self._raw_flux_per_src = None
         self._sample_w_CDF = None
-        self._w_theo_norm = None
+        self._sample_dtype = [(name, float) for name in self._provided_data]
 
         # Debug attributes
         self._sample_idx = None
@@ -131,29 +119,20 @@ class SignalFluenceInjector(BaseSignalInjector):
         return
 
     @property
+    def provided_data(self):
+        return self._provided_data
+
+    @property
+    def srcs(self):
+        return self._srcs
+
+    @property
     def flux_model(self):
         return self._flux_model
 
-    # No setters, use the `fit` method for that or create a new object
     @property
-    def provided_data(self):
-        return self._exp_names
-
-    @property
-    def mode(self):
-        return self._mode
-
-    @property
-    def sindec_inj_width(self):
-        return self._sindec_inj_width
-
-    @property
-    def dec_range(self):
-        return self._dec_range
-
-    @property
-    def mc_arr(self):
-        return self._mc_arr
+    def inj_opts(self):
+        return self._inj_opts
 
     def mu2flux(self, mu, per_source=False):
         """
@@ -174,7 +153,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         per_source : bool, optional
             If ``True`` returns the expected events per source by splitting the
             total flux accroding to the sources' theoretical weights.
-            (Default: ``False``)
+            (default: ``False``)
 
         Returns
         -------
@@ -204,7 +183,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         per_source : bool, optional
             If ``True`` returns the flux per source by splitting the total flux
             according to the expected events per source at detector level.
-            (Default: ``False``)
+            (default: ``False``)
 
         Returns
         -------
@@ -227,7 +206,6 @@ class SignalFluenceInjector(BaseSignalInjector):
         -----------
         srcs : recarray
             Source properties in a record array, must have names:
-
             - 'ra', float: Right-ascension coordinate of each source in
               radian in intervall :math:`[0, 2\pi]`.
             - 'dec', float: Declinatiom coordinate of each source in radian
@@ -238,11 +216,9 @@ class SignalFluenceInjector(BaseSignalInjector):
               window in seconds, centered around each source time ``t``.
             - 'w_theo', float: Theoretical source weight per source, eg. from
               a known gamma flux.
-
         MC : recarray
             Structured array describing Monte Carlo events, must contain the
-            same names as given in ``exp_names`` and additonally MC truths:
-
+            same names as given in ``provided_data`` and additonal MC truths:
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
@@ -251,30 +227,20 @@ class SignalFluenceInjector(BaseSignalInjector):
               Units are 'GeV sr cm^2'. Final event weights are obtained by
               multiplying with desired sum flux for nu and anti-nu flux.
 
-        exp_names : list
-            Names that must be present in ``MC`` to match names for experimental
-            data record array. Must have at least names ``['ra', 'dec']`` needed
-            to rotate injected signal events to the source positions. Names
-            that are present in ``MC`` but not in ``exp_names`` are not used and
-            removed from the sample output. Names other than ``['ra', 'dec']``
-            are not treated any further, but only piped through. So if there is
-            e.g. ``sinDec`` this must be converted manually after receiving the
-            sampled data.
-
         Notes
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
-        self._srcs, MC, exp_names = self._check_fit_input(srcs, MC, exp_names)
-        nsrcs = len(self._srcs)
+        srcs, MC = self._check_fit_input(srcs, MC)
+        nsrcs = len(srcs)
 
         # Set injection solid angles for all sources
-        self._set_solid_angle()
+        omega, min_dec, max_dec = self._set_solid_angle(srcs)
 
         # Select events in the injection regions, masking all srcs at once
-        if self._mode == "band":
-            min_decs = self._min_dec.reshape(nsrcs, 1)
-            max_decs = self._max_dec.reshape(nsrcs, 1)
+        if self._inj_opts["mode"] == "band":
+            min_decs = min_dec.reshape(nsrcs, 1)
+            max_decs = max_dec.reshape(nsrcs, 1)
             mc_true_dec = MC["trueDec"]
             inj_mask = ((mc_true_dec > min_decs) & (mc_true_dec < max_decs))
         else:
@@ -286,7 +252,7 @@ class SignalFluenceInjector(BaseSignalInjector):
             cos_dist = (np.cos(src_ra - mc_true_ra) *
                         np.cos(src_dec) * np.cos(mc_true_dec) +
                         np.sin(src_dec) * np.sin(mc_true_dec))
-            cos_r = np.cos(np.arcsin(self._sindec_inj_width))
+            cos_r = np.cos(np.arcsin(self._inj_opts["sindec_inj_width"]))
             inj_mask = (cos_dist > cos_r)
 
         if not np.any(inj_mask):
@@ -297,7 +263,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         total_mask = np.any(inj_mask, axis=0)
         N_unique = np.count_nonzero(total_mask)
         # Only keep needed MC names (MC truth and those specified by exp_names)
-        keep_names = self._mc_names + self._exp_names
+        keep_names = self._mc_names + self._provided_data
         drop_names = [n for n in MC.dtype.names if n not in keep_names]
         self._MC = drop_fields(MC[total_mask], drop_names)
         assert len(self._MC) == N_unique
@@ -306,16 +272,16 @@ class SignalFluenceInjector(BaseSignalInjector):
         core_mask = (inj_mask.T[total_mask]).T  # Remove all non-selected
         n_tot = np.count_nonzero(core_mask)     # Equal to count inj_mask
 
-        # Only store selected event IDs in mc_arr to sample from the unique MC
+        # Only store selected event IDs in mc_idx to sample from the unique MC
         # pool to save memory.
         # ev_idx: index of evt in _MC; src_idx: index in _srcs for each event
-        dtype = [("ev_idx", np.int), ("src_idx", np.int)]
-        self._mc_arr = np.empty(n_tot, dtype=dtype)
+        self._mc_idx = np.empty(n_tot, dtype=[("ev_idx", np.int),
+                                              ("src_idx", np.int)])
 
         _core = core_mask.ravel()  # [src1_mask, src2_mask, ...]
-        self._mc_arr["ev_idx"] = np.tile(np.arange(N_unique), nsrcs)[_core]
+        self._mc_idx["ev_idx"] = np.tile(np.arange(N_unique), nsrcs)[_core]
         # Same src IDs for each selected evt per src (rows in core_mask)
-        self._mc_arr['src_idx'] = np.repeat(np.arange(nsrcs),
+        self._mc_idx['src_idx'] = np.repeat(np.arange(nsrcs),
                                             np.sum(core_mask, axis=1))
 
         s_ = "Selected {:d} evts at {:d} sources.".format(n_tot, nsrcs) + "\n"
@@ -324,7 +290,15 @@ class SignalFluenceInjector(BaseSignalInjector):
             nsrcs - np.count_nonzero(np.sum(core_mask, axis=1)))
         print(self._log.INFO(s_))
 
-        self._set_sampling_weights()
+        # Build sampling weigths
+        (self._raw_flux, self._raw_flux_per_src, self._w_theo_norm,
+            self._sample_w_CDF) = self._set_sampling_weights(
+            self._MC, self._mc_idx, srcs, omega)
+
+        self._srcs = srcs
+        self._src_dt = np.vstack((srcs["dt0"], srcs["dt1"])).Ts
+
+        return
 
     def sample(self, n_samples=1):
         """
@@ -343,16 +317,12 @@ class SignalFluenceInjector(BaseSignalInjector):
             than the whole sky is used. If ``n_samples<1`` an empty recarray is
             returned.
         """
-        if self._mc_arr is None:
-            raise ValueError("Injector has not been filled with MC data yet.")
-
         if n_samples < 1:
-            dtype = [(name, float) for name in self._exp_names]
-            return np.empty(0, dtype=dtype)
+            return np.empty(0, dtype=self._sample_dtype)
 
         # Draw IDs from the whole stored pool of MC events
         sam_idx = random_choice(self._rndgen, self._sample_w_CDF, n=n_samples)
-        sam_idx = self._mc_arr[sam_idx]
+        sam_idx = self._mc_idx[sam_idx]
 
         # Select events from pool and rotate them to corresponding src positions
         sam_ev = self._MC[sam_idx["ev_idx"]]
@@ -369,7 +339,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         self._sample_idx = sam_idx
         return sam_ev
 
-    def _set_sampling_weights(self):
+    def _set_sampling_weights(self, MC_pool, mc_idx, srcs, omega):
         """
         Setup per event sampling weights from the OneWeights.
 
@@ -403,32 +373,34 @@ class SignalFluenceInjector(BaseSignalInjector):
         in the last step. See :py:meth:`mu2flux` which calculates the
         fluence from a given number of events from that relation.
         """
-        mc = self._MC[self._mc_arr["ev_idx"]]
-        src_idx = self._mc_arr["src_idx"]
+        mc = MC_pool[mc_idx["ev_idx"]]
+        src_idx = mc_idx["src_idx"]
 
         # Normalize w_theos to prevent overestimatiing injected fluxes
-        self._w_theo_norm = self._srcs["w_theo"] / np.sum(self._srcs["w_theo"])
-        assert np.isclose(np.sum(self._w_theo_norm), 1.)
+        w_theo_norm = srcs["w_theo"] / np.sum(srcs["w_theo"])
+        assert np.isclose(np.sum(w_theo_norm), 1.)
 
         # Broadcast solid angles and w_theo to corrsponding sources for each evt
-        omega = self._omega[src_idx]
-        w_theo = self._w_theo_norm[src_idx]
+        omega = omega[src_idx]
+        w_theo = w_theo_norm[src_idx]
         flux = self._flux_model(mc["trueE"])
         assert len(omega) == len(w_theo) == len(flux)
 
         w = mc["ow"] * flux / omega * w_theo
-        assert len(self._mc_arr) == len(w)
+        assert len(mc_idx) == len(w)
 
-        self._raw_flux_per_src = np.array(
+        raw_flux_per_src = np.array(
             [np.sum(w[src_idx == j]) for j in np.unique(src_idx)])
-        self._raw_flux = np.sum(w)
-        assert np.isclose(np.sum(self._raw_flux_per_src), self._raw_flux)
+        raw_flux = np.sum(w)
+        assert np.isclose(np.sum(raw_flux_per_src), raw_flux)
 
         # Cache sampling CDF used for injecting events from the whole MC pool
-        self._sample_w_CDF = np.cumsum(w) / self._raw_flux
-        assert np.isclose(self._sample_w_CDF[-1], 1.)
+        sample_w_CDF = np.cumsum(w) / raw_flux
+        assert np.isclose(sample_w_CDF[-1], 1.)
 
-    def _set_solid_angle(self):
+        return raw_flux, raw_flux_per_src, w_theo_norm, sample_w_CDF
+
+    def _set_solid_angle(self, srcs):
         """
         Setup solid angles of injection area for selected MC events and sources.
 
@@ -444,34 +416,36 @@ class SignalFluenceInjector(BaseSignalInjector):
           each declination band in radians for each source sample. Optional,
           only set if `self._mode` is 'band'.
         """
-        assert self._mode in ["band", "circle"]
-        nsrcs = len(self._srcs)
+        nsrcs = len(srcs)
+        sin_inj_w = self._inj_opts["sindec_inj_width"]
 
-        if self._mode == "band":
-            sinL, sinU = np.sin(self._dec_range)
+        if self._inj_opts["mode"] == "band":
+            sinL, sinU = np.sin(self._inj_opts["dec_range"])
 
             if self._skylab_band:
                 # Recenter sources somewhat so that bands get bigger at poles
-                m = (sinL - sinU + 2. * self._sindec_inj_width) / (sinL - sinU)
-                sinU = self._sindec_inj_width * (sinL + sinU) / (sinU - sinL)
-                sin_dec = m * np.sin(self._srcs["dec"]) + sinU
+                m = (sinL - sinU + 2. * sin_inj_w) / (sinL - sinU)
+                sinU = sin_inj_w * (sinL + sinU) / (sinU - sinL)
+                sin_dec = m * np.sin(srcs["dec"]) + sinU
             else:
-                sin_dec = np.sin(self._srcs["dec"])
+                sin_dec = np.sin(srcs["dec"])
 
-            min_sin_dec = np.maximum(sinL, sin_dec - self._sindec_inj_width)
-            max_sin_dec = np.minimum(sinU, sin_dec + self._sindec_inj_width)
+            min_sin_dec = np.maximum(sinL, sin_dec - sin_inj_w)
+            max_sin_dec = np.minimum(sinU, sin_dec + sin_inj_w)
 
-            self._min_dec = np.arcsin(np.clip(min_sin_dec, -1., 1.))
-            self._max_dec = np.arcsin(np.clip(max_sin_dec, -1., 1.))
+            min_dec = np.arcsin(np.clip(min_sin_dec, -1., 1.))
+            max_dec = np.arcsin(np.clip(max_sin_dec, -1., 1.))
 
             # Solid angles of selected events around each source
-            self._omega = 2. * np.pi * (max_sin_dec - min_sin_dec)
-            assert (len(self._min_dec) == len(self._max_dec) == nsrcs)
+            omega = 2. * np.pi * (max_sin_dec - min_sin_dec)
         else:
-            r = self._inj_width
-            self._omega = np.array(nsrcs * [2 * np.pi * (1. - np.cos(r))])
-            assert len(self._omega) == nsrcs
-        assert np.all((0. < self._omega) & (self._omega <= 4. * np.pi))
+            min_dec, max_dec = None, None  # No meaning in circle mode
+            r = np.arcsin(sin_inj_w)
+            omega = np.array(nsrcs * [2 * np.pi * (1. - np.cos(r))])
+
+        assert len(omega) == len(min_dec) == len(max_dec) == nsrcs
+        assert np.all((0. < omega) & (omega <= 4. * np.pi))
+        return omega, min_dec, max_dec
 
     def _rot_and_strip(self, src_ras, src_decs, MC):
         """
@@ -503,34 +477,21 @@ class SignalFluenceInjector(BaseSignalInjector):
                                       MC["ra"], MC["dec"])          # Rotate
 
         # Remove events that got rotated outside the sin_dec_range
-        m = ((MC["dec"] >= self._dec_range[0]) &
-             (MC["dec"] <= self._dec_range[1]))
+        m = ((MC["dec"] >= self._inj_opts["dec_range"][0]) &
+             (MC["dec"] <= self._inj_opts["dec_range"][1]))
         return drop_fields(MC[m], self._mc_names)
 
-    def _check_fit_input(self, srcs, MC, exp_names):
-        """ Check fit input, setup self._exp_names, self._mc_names """
-        # Check if each recarray has it's required names
-        for n in ["t", "dt0", "dt1", "ra", "dec", "w_theo"]:
-            if n not in srcs.dtype.names:
-                raise ValueError("`srcs` array is missing name '{}'.".format(n))
-        self._src_dt = np.vstack((srcs["dt0"], srcs["dt1"])).T
-
-        self._exp_names = list(exp_names)
-        for n in ["ra", "dec"]:
-            if n not in exp_names:
-                raise ValueError("`exp_names` is missing name '{}'.".format(n))
-
-        self._mc_names = ["trueRa", "trueDec", "trueE", "ow"]
-        MC_names = self._exp_names + self._mc_names
+    def _check_fit_input(self, srcs, MC):
+        """ Check fit input, setup self._provided_data, self._mc_names """
+        MC_names = self._provided_data + self._mc_names
         for n in MC_names:
             if n not in MC.dtype.names:
                 raise ValueError("`MC` array is missing name '{}'.".format(n))
 
-        # Check if sources are outside `dec_range`
-        if (np.any(srcs["dec"] < self._dec_range[0]) or
-                np.any(srcs["dec"] > self._dec_range[1])):
-            raise ValueError("Source position(s) found outside `dec_range`.")
-        return srcs, MC, exp_names
+        if (np.any(srcs["dec"] < self._inj_opts["dec_range"][0]) or
+                np.any(srcs["dec"] > self._inj_opts["dec_range"][1])):
+            raise ValueError("Source position(s) found outside 'dec_range'.")
+        return srcs, MC
 
 
 class HealpySignalFluenceInjector(SignalFluenceInjector):
@@ -574,6 +535,8 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
     """
     def __init__(self, model, time_sampler, sindec_inj_width=0.035,
                  inj_sigma=3., dec_range=None, random_state=None):
+        raise DeprecationWarning("Must be adapted to new super class layout!")
+
         if inj_sigma <= 0.:
             raise ValueError("Injection sigma must be >0.")
         self._inj_sigma = inj_sigma
@@ -597,7 +560,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
     def inj_sigma(self):
         return self._inj_sigma
 
-    def fit(self, srcs, src_maps, MC, exp_names):
+    def fit(self, srcs, src_maps, MC):
         """
         Fill injector with Monte Carlo events, preselecting events in regions
         in the prior maps.
@@ -606,7 +569,6 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         -----------
         srcs : recarray
             Source properties in a record array, must have names:
-
             - 'ra', float: Right-ascension coordinate of each source in
               radian in intervall :math:`[0, 2\pi]`.
             - 'dec', float: Declinatiom coordinate of each source in radian
@@ -627,7 +589,6 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         MC : recarray
             Structured array describing Monte Carlo events, must contain the
             same names as given in ``exp_names`` and additonally MC truths:
-
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
@@ -636,21 +597,11 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
               Units are 'GeV sr cm^2'. Final event weights are obtained by
               multiplying with desired sum flux for nu and anti-nu flux.
 
-        exp_names : list
-            Names that must be present in ``MC`` to match names for experimental
-            data record array. Must have at least names ``['ra', 'dec']`` needed
-            to rotate injected signal events to the source positions. Names
-            that are present in ``MC`` but not in ``exp_names`` are not used and
-            removed from the sample output. Names other than ``['ra', 'dec']``
-            are not treated any further, but only piped through. So if there is
-            e.g. ``sinDec`` this must be converted manually after receiving the
-            sampled data.
-
         Notes
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
-        srcs, MC, exp_names = self._check_fit_input(srcs, MC, exp_names)
+        srcs, MC = self._check_fit_input(srcs, MC)
         nsrcs = len(srcs)
 
         # Check if maps match srcs
@@ -701,7 +652,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         th, phi = hp.pix2ang(self._NSIDE, np.arange(self._NPIX))
         self._pix2dec, self._pix2ra = thetaphi2decra(th, phi)
 
-        return super(HealpySignalFluenceInjector, self).fit(srcs, MC, exp_names)
+        return super(HealpySignalFluenceInjector, self).fit(srcs, MC)
 
     @staticmethod
     def get_nsigma_dec_band(pdf_map, sigma=3.):
@@ -753,11 +704,11 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
             than the whole sky is used. If ``n_samples<1`` an empty recarray is
             returned.
         """
-        if self._mc_arr is None:
+        if self._mc_idx is None:
             raise ValueError("Injector has not been filled with MC data yet.")
 
         if n_samples < 1:
-            dtype = [(name, float) for name in self._exp_names]
+            dtype = [(name, float) for name in self._provided_data]
             return np.empty(0, dtype=dtype)
 
         # Sample new source positions from prior maps
@@ -768,7 +719,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
 
         # Draw IDs from the whole stored pool of MC events
         sam_idx = random_choice(self._rndgen, self._sample_w_CDF, n=n_samples)
-        sam_idx = self._mc_arr[sam_idx]
+        sam_idx = self._mc_idx[sam_idx]
 
         # Select events from pool and rotate them to corresponding src positions
         sam_ev = self._MC[sam_idx["ev_idx"]]
@@ -785,14 +736,13 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         self._src_ra, self._src_dec = src_ras, src_decs
         return sam_ev
 
-    def _set_solid_angle(self):
+    def _set_solid_angle(self, srcs):
         """
         Setup solid angles of injection area for selected MC events and sources.
 
         Only sets up the solid angle here to not break inheritance, band
         boundaries have been calculated from prior maps in ``fit``.
         """
-        assert self._mode == "band"
         # Solid angles of selected events around each source
         min_sin_dec = np.sin(self._min_dec)
         max_sin_dec = np.sin(self._max_dec)
@@ -822,7 +772,7 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
 
     @property
     def srcs(self):
-        return [inji.srcs for inji in self._injs.values()]
+        return {key: inji.srcs for key, inji in self._injs.items()}
 
     def mu2flux(self, mu, per_source=False):
         """
@@ -838,7 +788,7 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
         per_source : bool, optional
             If ``True`` returns the expected events per source by splitting the
             total flux accroding to the sources' theoretical weights.
-            (Default: ``False``)
+            (default: ``False``)
 
         Returns
         -------
@@ -872,7 +822,7 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
         per_source : bool, optional
             If ``True`` returns the flux per source by splitting the total flux
             according to the expected events per source at detector level.
-            (Default: ``False``)
+            (default: ``False``)
 
         Returns
         -------
@@ -920,7 +870,7 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
         ----------
         n_samples : int, optional
             Number of signal events to sample from all injectors in total.
-            (Default: 1)
+            (default: 1)
 
         Returns
         --------
@@ -1035,20 +985,47 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
       4. RA is sampled uniformly in ``[0, 2pi]`` and times are sampled from the
          rate function (uniform for small time windows.)
     """
-    def __init__(self, bg_inj_args, rndgen=None):
+    def __init__(self, inj_opts, rndgen=None):
+        """
+        Parameters
+        ----------
+        inj_opts : dict
+            Injector options:
+            - 'sindec_bins': Explicit bin edges used to bin the data in
+              sinus(dec) to fit a rate model for each bin.
+            - 'rate_rebins': Explicit bin edges used to rebin the rate data
+              before fitting the rate model to improve fit stability.
+            - 'spl_s', optional: Smoothing factor >0 or None, describes how much
+              fitted splines are allowed to stick to data.
+              ``scipy.interpolate.UnivariateSpline`` for more info.
+              (default: ``None``)
+            - 'n_scan_bins', optional: Number of bins used to scan the rate
+              model fir chi2 landscape to obtain errors for the spline fit.
+              (default: 50)
+        random_state : None, int or np.random.RandomState, optional
+            Used as PRNG, see ``sklearn.utils.check_random_state``.
+            (default: None)
+        """
+        # Check injector options
+        req_keys = ["sindec_bins", "rate_rebins"]
+        opt_keys = {"spl_s": None, "n_scan_bins": 50}
+        inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys)
+        inj_opts["sindec_bins"] = np.atleast_1d(inj_opts["sindec_bins"])
+        inj_opts["rate_rebins"] = np.atleast_1d(inj_opts["rate_rebins"])
+        if inj_opts["spl_s"] is not None and inj_opts["spl_s"] < 0:
+            raise ValueError("'spl_s' must be `None` or >= 0.")
+        if inj_opts["n_scan_bins"] < 20:
+            raise ValueError("'n_scan_bins' should be > 20 for proper scans.")
+
         self._provided_data = np.array(
             ["timeMJD", "dec", "ra", "sigma", "logE"])
         self._sample_dtype = [(n, float) for n in self._provided_data]
-
-        # Check BG inj args
-        req_keys = ["sindec_bins", "rate_rebins"]
-        opt_keys = {"spl_s": None, "n_scan_bins": 50}
-        self._bg_inj_args = fill_dict_defaults(bg_inj_args, req_keys, opt_keys)
-
+        self._inj_opts = inj_opts
         self.rndgen = rndgen
 
         # Defaults for private class variables
         self._X = None
+        self._srcs = None
         self._nsrcs = None
         self._nb = None
         self._sample_CDFs = None
@@ -1064,8 +1041,12 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         return self._provided_data
 
     @property
-    def bg_inj_args(self):
-        return self._bg_inj_args
+    def srcs(self):
+        return self._srcs
+
+    @property
+    def inj_opts(self):
+        return self._inj_opts
 
     def fit(self, X, srcs, run_dict):
         """
@@ -1091,9 +1072,12 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         print(self._log.INFO("Dropping names '{}'".format(arr2str(drop_names)) +
                              " from data recarray."))
 
+        _out = self._setup_data_injector(X, srcs, run_dict)
+        self._nb, self._sample_CDFs, self._spl_info = _out
+
         self._X = drop_fields(X, drop_names, usemask=False)
-        self.srcs = srcs
-        self._setup_data_injector(self._X, self.srcs, run_dict)
+        self._srcs = srcs
+        self._nsrcs = len(srcs)
 
         return
 
@@ -1148,27 +1132,36 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         continiously describe a rate model for a declination. Then choose a
         specific source time and build weights to inject according to the sindec
         dependent rate PDF from the whole pool of BG events.
+
+        Returns
+        -------
+        nb : array-like
+            Expected background events per source.
+        sampling_CDF : array-like, shape (nsrcs, nevts)
+            Sampling weight CDF per source for fast random choice sampling.
+        spl_info : dict
+            Collection of spline and rate fit information, also contains the
+            allsky rate function used to sample times from.
         """
         ev_t = X["timeMJD"]
         ev_sin_dec = np.sin(X["dec"])
-        self._nsrcs = len(srcs)
         src_t = np.atleast_1d(srcs["t"])
         src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
 
-        sin_dec_bins = np.atleast_1d(self._bg_inj_args["sindec_bins"])
-        rate_rebins = np.atleast_1d(self._bg_inj_args["rate_rebins"])
+        sin_dec_bins = self._inj_opts["sindec_bins"]
+        rate_rebins = self._inj_opts["rate_rebins"]
 
         # Get sindec PDF spline for each source, averaged over its time window
         print(self._log.INFO("Create time dep sindec splines."))
-        sin_dec_splines, self._spl_info = make_time_dep_dec_splines(
+        sin_dec_splines, spl_info = make_time_dep_dec_splines(
             ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins, rate_rebins,
-            spl_s=self._bg_inj_args["spl_s"],
-            n_scan_bins=self._bg_inj_args["n_scan_bins"])
+            spl_s=self._inj_opts["spl_s"],
+            n_scan_bins=self._inj_opts["n_scan_bins"])
 
         # Cache expected nb for each source from allsky rate func integral
-        self._nb = self._spl_info["allsky_rate_func"].integral(
-            src_t, src_trange, self._spl_info["allsky_best_params"])
-        assert len(self._nb) == len(src_t)
+        nb = spl_info["allsky_rate_func"].integral(
+            src_t, src_trange, spl_info["allsky_best_params"])
+        assert len(nb) == len(src_t)
 
         # Make sampling CDFs to sample sindecs per source per trial
         hist = np.histogram(ev_sin_dec, bins=sin_dec_bins,
@@ -1180,8 +1173,8 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         weight = 1. / stddev
         # Spline to estimate intrinsic data sindec distribution
         data_spl = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight)[0]
-        self._spl_info["sin_dec_splines"] = sin_dec_splines
-        self._spl_info["data_spl"] = data_spl
+        spl_info["sin_dec_splines"] = sin_dec_splines
+        spl_info["data_spl"] = data_spl
 
         # Build sampling weights from PDF ratios
         sample_w = np.empty((len(sin_dec_splines), len(ev_sin_dec)),
@@ -1191,9 +1184,9 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
 
         # Cache fixed sampling CDFs for fast random choice
         CDFs = np.cumsum(sample_w, axis=1)
-        self._sample_CDFs = CDFs / CDFs[:, [-1]]
+        sample_CDFs = CDFs / CDFs[:, [-1]]
 
-        return
+        return nb, sample_CDFs, spl_info
 
 
 class MultiBGDataInjector(BaseMultiBGDataInjector):

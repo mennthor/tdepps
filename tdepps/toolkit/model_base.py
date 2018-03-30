@@ -33,6 +33,11 @@ class BaseSignalInjector(object):
         """ Data attributes this injector provides. """
         pass
 
+    @abc.abstractproperty
+    def srcs(self):
+        """ Source recarray the injector was fitted to """
+        pass
+
     @abc.abstractmethod
     def mu2flux(self):
         """ Converts a number of injected events to a flux """
@@ -61,11 +66,6 @@ class BaseSignalInjector(object):
     @rndgen.setter
     def rndgen(self, rndgen):
         self._rndgen = check_random_state(rndgen)
-
-    @property
-    def srcs(self):
-        """ Source recarray the injector was fitted to """
-        return self._srcs
 
 
 class BaseMultiSignalInjector(BaseSignalInjector):
@@ -118,6 +118,11 @@ class BaseBGDataInjector(object):
     @abc.abstractproperty
     def provided_data(self):
         """ Data attributes this injector provides. """
+        pass
+
+    @abc.abstractproperty
+    def srcs(self):
+        """ Source recarray the injector was fitted to """
         pass
 
     @abc.abstractmethod
