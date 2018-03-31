@@ -1204,6 +1204,10 @@ class MultiBGDataInjector(BaseMultiBGDataInjector):
     def provided_data(self):
         return {key: inji.provided_data for key, inji in self._injs.items()}
 
+    @property
+    def srcs(self):
+        return {key: inji.srcs for key, inji in self._injs.items()}
+
     def fit(self, injs):
         """
         Takes multiple single injectors in a dict and manages them.
