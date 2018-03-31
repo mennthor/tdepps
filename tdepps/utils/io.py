@@ -55,6 +55,26 @@ def arr2str(arr, sep=", ", fmt="{}"):
     return sep.join([fmt.format(v) for v in arr])
 
 
+def dict_map(func, d):
+    """
+    Applies func to each dict value, returns results in a dict with the same
+    keys as the original d.
+
+    Parameters
+    ----------
+    func : callable
+        Function applied to all values in ``d``.
+    d : dict
+        Dictionary which values are to be mapped.
+
+    Returns
+    -------
+    out : dict
+        New dict with same key as ``d`` and ``func`` applied to its values.
+    """
+    return {key: func(val) for key, val in d.items()}
+
+
 def fill_dict_defaults(d, required_keys=None, opt_keys=None, noleft=True):
     """
     Populate dictionary with data from a given dict ``d``, and check if ``d``
