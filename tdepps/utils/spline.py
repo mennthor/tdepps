@@ -147,7 +147,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         Collection of various intermediate results and fit information.
     """
     # http://stackabuse.com/python-circular-imports
-    from ..toolkit import SinusFixedConstRateFunction
+    from ..grb import SinusFixedConstRateFunction
 
     ev_t = np.atleast_1d(ev_t)
     ev_sin_dec = np.atleast_1d(ev_sin_dec)
