@@ -15,3 +15,9 @@ from .injector import TimeDecDependentBGDataInjector, MultiBGDataInjector
 
 from .injector import (SinusRateFunction, SinusFixedRateFunction,
                        SinusFixedConstRateFunction, ConstantRateFunction)
+
+from .llh import GRBLLH, MultiGRBLLH
+
+from .llh_model import GRBModel
+
+from .analysis import GRBLLHAnalysis
