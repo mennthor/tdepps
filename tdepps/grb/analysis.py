@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.utils import check_random_state
 from itertools import repeat
 
-from .utils import fit_chi2_cdf, logger, arr2str, all_equal
+from ..utils import fit_chi2_cdf, logger, arr2str, all_equal
 
 
 class GRBLLHAnalysis(object):
