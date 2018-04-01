@@ -17,7 +17,7 @@ from ..base import BaseBGDataInjector, BaseMultiBGDataInjector
 from ..base import BaseTimeSampler, BaseRateFunction
 from ..utils import random_choice
 from ..utils import fit_spl_to_hist, make_time_dep_dec_splines
-from ..utils import arr2str, fill_dict_defaults, logger
+from ..utils import arr2str, fill_dict_defaults, logger, dict_map
 from ..utils import rotator, thetaphi2decra
 
 
@@ -96,7 +96,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         self._inj_opts = inj_opts
         self._provided_data = np.array(
             ["timeMJD", "dec", "ra", "sigma", "logE"])
-        self._mc_names = ["trueRa", "trueDec", "trueE", "ow"]
+        self._mc_names = np.array(["trueRa", "trueDec", "trueE", "ow"])
         self._srcs = None
         self.rndgen = random_state
 
@@ -196,7 +196,7 @@ class SignalFluenceInjector(BaseSignalInjector):
             mu = flux * self._raw_flux
         return mu
 
-    def fit(self, srcs, MC, exp_names):
+    def fit(self, srcs, MC):
         """
         Fill injector with Monte Carlo events, preselecting events around the
         source positions.
@@ -261,8 +261,8 @@ class SignalFluenceInjector(BaseSignalInjector):
         # Select unqique MC in all injection regions (include overlap)
         total_mask = np.any(inj_mask, axis=0)
         N_unique = np.count_nonzero(total_mask)
-        # Only keep needed MC names (MC truth and those specified by exp_names)
-        keep_names = self._mc_names + self._provided_data
+        # Only keep MC names (MC truth and those specified by provided_names)
+        keep_names = np.concatenate((self._mc_names, self._provided_data))
         drop_names = [n for n in MC.dtype.names if n not in keep_names]
         self._MC = drop_fields(MC[total_mask], drop_names)
         assert len(self._MC) == N_unique
@@ -295,13 +295,13 @@ class SignalFluenceInjector(BaseSignalInjector):
             self._MC, self._mc_idx, srcs, omega)
 
         self._srcs = srcs
-        self._src_dt = np.vstack((srcs["dt0"], srcs["dt1"])).Ts
+        self._src_dt = np.vstack((srcs["dt0"], srcs["dt1"])).T
 
         return
 
     def sample(self, n_samples=1):
         """
-        Get sampled events from stored MC for each  stored source position.
+        Get sampled events from stored MC for each stored source position.
 
         Parameters
         -----------
@@ -482,7 +482,7 @@ class SignalFluenceInjector(BaseSignalInjector):
 
     def _check_fit_input(self, srcs, MC):
         """ Check fit input, setup self._provided_data, self._mc_names """
-        MC_names = self._provided_data + self._mc_names
+        MC_names = np.concatenate((self._provided_data, self._mc_names))
         for n in MC_names:
             if n not in MC.dtype.names:
                 raise ValueError("`MC` array is missing name '{}'.".format(n))
@@ -587,7 +587,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
             probability region of the true source position per source.
         MC : recarray
             Structured array describing Monte Carlo events, must contain the
-            same names as given in ``exp_names`` and additonally MC truths:
+            same names as given in ``provided_names`` and additonally MC truths:
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
@@ -755,11 +755,12 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
     sampling, flux2mu and mu2flux methods.
     """
     def __init__(self, random_state=None):
+        self._names = None
         self.rndgen = random_state
 
     @property
     def names(self):
-        return list(self._injs.keys())
+        return self._names
 
     @property
     def injs(self):
@@ -795,11 +796,10 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
             Source flux in total, or split for each source, in unit(s)
             ``[GeV^-1 cm^-2]``.
         """
-        raw_fluxes, _, w_theos = self._combine_raw_fluxes(self._injs.values())
-        raw_fluxes_sum = np.sum(raw_fluxes)
+        raw_fluxes, _, w_theos = self._combine_raw_fluxes(self._injs)
+        raw_fluxes_sum = np.sum(list(raw_fluxes.values()))
         if per_source:
-            return {key: mu * wts / raw_fluxes_sum for key, wts
-                    in zip(self.names, w_theos)}
+            return dict_map(lambda key, wts: mu * wts / raw_fluxes_sum, w_theos)
         return mu / raw_fluxes_sum
 
     def flux2mu(self, flux, per_source=False):
@@ -829,12 +829,10 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
             Expected number of event in total or per source and sample at the
             detector.
         """
-        raw_fluxes, raw_fluxes_per_src, _ = self._combine_raw_fluxes(
-            self._injs.values())
+        raw_fluxes, raw_fluxes_per_src, _ = self._combine_raw_fluxes(self._injs)
         if per_source:
-            return {key: flux * rfs for key, rfs
-                    in zip(self.names, raw_fluxes_per_src)}
-        return flux * np.sum(raw_fluxes)
+            return dict_map(lambda key, rfs: flux * rfs, raw_fluxes_per_src)
+        return flux * np.sum(list(raw_fluxes.values()))
 
     def fit(self, injectors):
         """
@@ -852,11 +850,15 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
                                  " is not of type `BaseSignalInjector`.")
 
         # Cache sampling weights
-        raw_fluxes, _, _ = self._combine_raw_fluxes(injectors.values())
-        self._distribute_weights = raw_fluxes / np.sum(raw_fluxes)
-        assert np.isclose(np.sum(self._distribute_weights), 1.)
+        raw_fluxes, _, _ = self._combine_raw_fluxes(injectors)
+        raw_fluxes_sum = sum([rf for rf in raw_fluxes.values()])
+        self._distribute_weights = {key: rf / raw_fluxes_sum for key, rf in
+                                    raw_fluxes.items()}
+        assert np.isclose(
+            sum([w for w in self._distribute_weights.values()]), 1.)
 
         self._injs = injectors
+        self._names = list(self._injs.keys())
 
         return
 
@@ -881,14 +883,20 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
         if n_samples < 1:
             return {}
 
-        # Distribute sample size to individual injectors
-        n_per_sam = self._rndgen.multinomial(
-            n_samples, self._distribute_weights, size=None)
-
-        # Sample per injector
+        # Sample per injector by distributing the total samples to each sampler
+        # See also: Bohm, Zech: Statistics of weighted poisson, arXiv:1309.1287
         sam_ev = {}
-        for i, (key, inj) in enumerate(self._injs.items()):
-            sam_ev[key] = inj.sample(n_samples=n_per_sam[i])
+        nsam = 0
+        for key in self._names[:-1]:
+            # Fake mutlinomial by sampling cascaded binomials to make sure
+            # each sampler receives the correct amount of signal to sample
+            nsami = self._rndgen.binomial(
+                n_samples, self._distribute_weights[key], size=None)
+            sam_ev[key] = self._injs[key].sample(n_samples=nsami)
+            nsam += nsami
+    # The last number of events is determined by sum(nsami) = n_samples
+        key = self._names[-1]
+        sam_ev[key] = self._injs[key].sample(n_samples=n_samples - nsam)
 
         return sam_ev
 
@@ -904,35 +912,33 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
 
         Returns
         -------
-        raw_fluxes_per_sam : array-like
+        raw_fluxes_per_sam : dict
             Summed raw flux per injector after renormalizing the theo weights.
-        raw_fluxes_per_src : list of arrays
+        raw_fluxes_per_src : dict of arrays
             Raw fluxes per injector and per source after renormalizing the theo
             weights.
-        w_renorm : list of arrays
+        w_renorm : dict of arrays
             Renormalized theo weights per sample per source.
         """
         # Normalize theo weights for each sample first
-        weights = [inj.srcs["w_theo"] for inj in injectors]
-        w_sum_per_sam = map(np.sum, weights)
-        w_renorm = [wts / norm for wts, norm in zip(weights, w_sum_per_sam)]
-
-        # Remove normalized theo weights from raw fluxes
-        raw_fluxes_per_src = [inj.flux2mu(1., per_source=True) / wts
-                              for inj, wts in zip(injectors, w_renorm)]
-        assert np.all([len(wts) == len(rfs)
-                       for wts, rfs in zip(w_renorm, raw_fluxes_per_src)])
-
+        weights = dict_map(lambda key, inj: inj.srcs["w_theo"], injectors)
+        w_sum_per_sam = dict_map(lambda key, val: np.sum(val), weights)
+        w_norm = dict_map(lambda key, wts: wts / w_sum_per_sam[key], weights)
+        # Remove normalized theo weights from raw fluxes per sample
+        raw_fluxes_per_src = dict_map(
+            lambda key, inj: inj.flux2mu(1., per_source=True) / w_norm[key],
+            injectors)
+        assert np.all([len(w_norm[key]) == len(rf) for key, rf in
+                       raw_fluxes_per_src.items()])
         # Globally renormalize theo weights over all samples
-        w_sum = np.sum(w_sum_per_sam)
-        w_renorm = [wts / w_sum for wts in weights]
-
+        w_sum = np.sum(list(w_sum_per_sam.values()))
+        w_renorm = dict_map(lambda key, wts: wts / w_sum, weights)
         # Renormalize fluxes per sample per source with renormalized weights
-        raw_fluxes_per_src = [raw_f * wts for raw_f, wts
-                              in zip(raw_fluxes_per_src, w_renorm)]
-
+        raw_fluxes_per_src = dict_map(lambda key, rf: rf * w_renorm[key],
+                                      raw_fluxes_per_src)
         # Combined fluxes per sample are used for sampling weights
-        raw_fluxes_per_sam = np.array(map(np.sum, raw_fluxes_per_src))
+        raw_fluxes_per_sam = dict_map(lambda key, rf: np.sum(rf),
+                                      raw_fluxes_per_src)
         return raw_fluxes_per_sam, raw_fluxes_per_src, w_renorm
 
 
