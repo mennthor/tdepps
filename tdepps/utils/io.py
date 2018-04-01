@@ -63,16 +63,16 @@ def dict_map(func, d):
     Parameters
     ----------
     func : callable
-        Function applied to all values in ``d``.
+        Function ``func(key, val)`` applied to all ke, value pairs in ``d``.
     d : dict
         Dictionary which values are to be mapped.
 
     Returns
     -------
     out : dict
-        New dict with same key as ``d`` and ``func`` applied to its values.
+        New dict with same key as ``d`` and ``func`` applied to ``d.items()``.
     """
-    return {key: func(val) for key, val in d.items()}
+    return {key: func(key, val) for key, val in d.items()}
 
 
 def fill_dict_defaults(d, required_keys=None, opt_keys=None, noleft=True):
