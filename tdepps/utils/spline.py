@@ -21,7 +21,7 @@ log = logger(name="utils.spline", level="ALL")
 
 def make_spl_edges(vals, bins, w=None):
     """
-    Make nicely behaved edge conditions for a spline fit.
+    Make well behaved edge conditions for a spline fit by linear extrapolation.
 
     Parameters
     ----------
@@ -413,6 +413,172 @@ def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
     vertices = paths[0]
     stds = np.array(_get_stds_from_path(vertices))
     return stds, llh, grid
+
+
+def make_grid_interp_from_hist_ratio(h_bg, h_sig, bins, edge_fillval,
+                                     interp_col_log, force_y_asc):
+    """
+    Create a 2D regular grind interpolator to describe the ratio
+    ``h_sig / h_bg`` of two 2D histograms. The interpolation is done in the
+    natural logarithm of the histogram ratio
+
+    When the original histograms have empty entries a 2 step method of filling
+    them is used: First all edge values in each x colum are filled. Then missing
+    entries within each coumn are interpolated using existing and the new edge
+    entries. Because this is only done in ``y`` direction, each histogram column
+    (x bin) needs at least one entry.
+
+    Parameters
+    ----------
+    h_bg : array-like, shape (len(x_bins), len(y_bins))
+        Histogram for variables ``x, y`` for the background distribution.
+    h_sig : array-like, shape (len(x_bins), len(y_bins))
+        Histogram for variables ``x, y`` for the signal distribution.
+    bins : list of array-like
+        Explicit x and y bin edges used to make the histogram.
+    edge_fillval : string, optional
+        Fill values to use when the background histogram has no entries at
+        the higest and lowest bins per column:
+        - 'minmax': Use the low/high global ratio vals at the bottom/top edges.
+        - 'col': Next valid value in each colum from the top/bottom is used.
+        - 'minmax_col': Like 'minmax' but use min/max value per bin.
+        - 'min': Only the lowest global ratio value is used at all edges.
+        Filling is always done in y direction only. Listed in order from
+        optimistic to conservative. (default: 'minmax_col')
+    interp_col_log : bool, optional
+        If ``True``, remaining gaps after filling the edge values in the signal
+        over background ratio histogram are interpolated linearly in
+        ``log(ratio)`` per column. Otherwise the interpolation is in linear
+        space per column. (default: ``False``)
+    force_y_asc : bool, optional
+        If ``True``, assume that in each column the distribution ``y`` must be
+        monotonically increasing. If it is not, a conservative approach is used
+        and going from the top to the bottom edge per column, each value higher
+        than its predecessor is shifted to its predecessor's value until we
+        arrive at the bottom edge.
+        Note: If ``True``, using 'min' in ``edge_fillval`` makes no sense, so a
+        ``ValueError`` is thrown. (default: ``False``)
+
+    Returns
+    -------
+    interp : scipy.interpolate.RegularGridInterpolator
+        2D interpolator for the logarithm of the histogram ratio:
+        ``interp(x, y) = log(h_sig / h_bg)(x, y)``. Exponentiate to obtain the
+        original ratios. Interpolator returns 0, if points outside given
+        ``bins`` domain are requested.
+    """
+    if edge_fillval not in ["minmax", "col", "minmax_col", "min"]:
+        raise ValueError("`edge_fillval` must be one of " +
+                         "['minmax'|'col'|'minmax_col'|'min'].")
+    if edge_fillval == "min" and force_y_asc:
+        raise ValueError("`edge_fillval` is 'min' and 'force_y_asc' is " +
+                         "`True`, which doesn't make sense together.")
+
+    # Create binmids to fit spline to bin centers
+    x_bins, y_bins = map(np.atleast_1d, bins)
+    x_mids, y_mids = map(lambda b: 0.5 * (b[:-1] + b[1:]), [x_bins, y_bins])
+    nbins_x, nbins_y = len(x_mids), len(y_mids)
+
+    # Check if hist shape fits to given binning
+    if h_bg.shape != h_sig.shape:
+        raise ValueError("Histograms don't have the same shape.")
+    if h_bg.shape != (nbins_x, nbins_y):
+        raise ValueError("Hist shapes don't match with number of bins.")
+
+    # Check if hists are normed and do so if they are not
+    dA = np.diff(x_bins)[:, None] * np.diff(y_bins)[None, :]
+    if not np.isclose(np.sum(h_bg * dA), 1.):
+        h_bg = h_bg / (np.sum(h_bg) * dA)
+    if not np.isclose(np.sum(h_sig * dA), 1.):
+        h_sig = h_sig / (np.sum(h_sig) * dA)
+    assert np.isclose(np.sum(h_bg * dA), 1.)
+    assert np.isclose(np.sum(h_sig * dA), 1.)
+
+    # Check that all x bins in the bg hist have at least one entry
+    mask = (np.sum(h_bg, axis=1) <= 0.)
+    if np.any(mask):
+        raise ValueError("Got empty x bins, this must not happen. Empty " +
+                         "bins idx:\n{}".format(np.arange(nbins_x)[mask]))
+
+    # Step 1: Construct simple ratio where we have valid entries
+    sob = np.ones_like(h_bg) - 1.  # Use invalid value for init
+    mask = (h_bg > 0) & (h_sig > 0)
+    sob[mask] = h_sig[mask] / h_bg[mask]
+    # Step 2: First fill all y edge values per column where no valid values
+    # are, then interpolate missing inner ratios per column.
+    if edge_fillval in ["minmax", "min"]:
+        sob_min, sob_max = np.amin(sob[mask]), np.amax(sob[mask])
+    for i in np.arange(nbins_x):
+        if force_y_asc:
+            # Rescale valid bins from top to bottom, so that b_i >= b_(i+1)
+            mask = (sob[i] > 0)
+            masked_sob = sob[i][mask]
+            for j in range(len(masked_sob) - 1, 0, -1):
+                if masked_sob[j] < masked_sob[j - 1]:
+                    masked_sob[j - 1] = masked_sob[j]
+            sob[i][mask] = masked_sob
+
+        # Get invalid points in current column
+        m = (sob[i] <= 0)
+
+        if edge_fillval == "minmax_col":
+            # Use min/max per slice instead of global min/max
+            sob_min, sob_max = np.amin(sob[i][~m]), np.amax(sob[i][~m])
+
+        # Fill missing top/bottom edge values, rest is interpolated later
+        # Lower edge: argmax stops at first True, argmin at first False
+        low_first_invalid_id = np.argmax(m)
+        if low_first_invalid_id == 0:
+            # Set lower edge with valid point, depending on 'edge_fillval'
+            if edge_fillval == "col":
+                # Fill with first valid ratio from bottom for this column
+                low_first_valid_id = np.argmin(m)
+                sob[i, 0] = sob[i, low_first_valid_id]
+            elif edge_fillval in ["minmax", "minmax_col", "min"]:
+                # Fill with global min or with min for this col
+                sob[i, 0] = sob_min
+
+        # Repeat with turned around array for upper edge
+        hig_first_invalid_id = np.argmax(m[::-1])
+        if hig_first_invalid_id == 0:
+            if edge_fillval == "col":
+                # Fill with first valid ratio from top for this column
+                hig_first_valid_id = len(m) - 1 - np.argmin(m[::-1])
+                sob[i, -1] = sob[i, hig_first_valid_id]
+            elif edge_fillval == "min":
+                # Fill also with global min
+                sob[i, -1] = sob_min
+            elif edge_fillval in ["minmax", "minmax_col"]:
+                # Fill with global max or with max for this col
+                sob[i, -1] = sob_max
+
+        # Interpolate missing entries in the current column
+        mask = (sob[i] > 0)
+        _x = y_mids[mask]
+        _y = sob[i, mask]
+        if interp_col_log:
+            col_interp = sci.interp1d(_x, np.log(_y), kind="linear")
+            sob[i] = np.exp(col_interp(y_mids))
+        else:
+            col_interp = sci.interp1d(_x, _y, kind="linear")
+            sob[i] = col_interp(y_mids)
+
+    # Step 3: Construct a 2D interpolator for the log(ratio).
+    # Repeat values at the edges (y then x) to cover full bin domain, so the
+    # interpolator can throw an error outside the domain
+    sob_full = np.zeros((nbins_x + 1, nbins_y + 1), dtype=sob.dtype) - 1.
+    for j, col in enumerate(sob):
+        sob_full[j + 1] = np.concatenate([col[[0]], col, col[[-1]]])
+    sob_full[0] = sob_full[1]
+    sob_full[-1] = sob_full[-2]
+    # Build full support points
+    pts_x = np.concatenate((x_bins[[0]], x_mids, x_bins[[-1]]))
+    pts_y = np.concatenate((y_bins[[0]], y_mids, y_bins[[-1]]))
+
+    interp = sci.RegularGridInterpolator([pts_x, pts_y], np.log(sob_full),
+                                         method="linear", bounds_error=False,
+                                         fill_value=0.)
+    return interp
 
 
 class spl_normed(object):

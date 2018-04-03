@@ -12,5 +12,6 @@ from .io import (arr2str, fill_dict_defaults, logger, create_run_dict,
                  all_equal, dict_map)
 from .phys import power_law_flux, make_rate_records, rebin_rate_rec
 from .spline import (make_spl_edges, fit_spl_to_hist, get_stddev_from_scan,
-                     spl_normed, make_time_dep_dec_splines)
+                     spl_normed, make_time_dep_dec_splines,
+                     make_grid_interp_from_hist_ratio)
 from .stats import random_choice, weighted_cdf, delta_chi2, fit_chi2_cdf
