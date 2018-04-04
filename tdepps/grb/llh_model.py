@@ -7,27 +7,23 @@ import numpy as np
 from ..backend import soverb_time_box, pdf_spatial_signal
 from ..base import BaseModel
 from ..utils import (fill_dict_defaults, make_time_dep_dec_splines, logger,
-                     make_grid_interp_from_hist_ratio, power_law_flux)
+                     make_grid_interp_from_hist_ratio, spl_normed)
 
 
 class GRBModel(BaseModel):
     """
     Models the PDF part for the GRB LLH function.
     """
-    def __init__(self, X, MC, srcs, run_dict, flux_model, spatial_opts=None,
+    def __init__(self, X, MC, srcs, run_dict, spatial_opts=None,
                  energy_opts=None):
         """
         Build PDFs that decsribe BG and/or signal-like events in the LLH.
         The LLH PDFs must not necessarily match the injected data model.
         """
-        try:
-            flux_model(1.)  # Standard units are E = 1GeV
-        except Exception:
-            raise TypeError("`model` must be a function `f(trueE)`.")
-
         # Check and setup spatial PDF options
         req_keys = ["sindec_bins", "rate_rebins"]
-        opt_keys = {"select_ev_sigma": 5., "spl_s": None, "n_scan_bins": 50}
+        opt_keys = {"select_ev_sigma": 5., "spl_s": None, "n_scan_bins": 50,
+                    "kent": True}
         spatial_opts = fill_dict_defaults(spatial_opts, req_keys, opt_keys)
 
         spatial_opts["sindec_bins"] = np.atleast_1d(spatial_opts["sindec_bins"])
@@ -43,13 +39,18 @@ class GRBModel(BaseModel):
             raise ValueError("'n_scan_bins' should be > 20 for proper scans.")
 
         # Check and setup energy PDF options
-        req_keys = ["bins"]
-        opt_keys = {"mc_bg_weights": None, "force_logE_asc": True,
+        req_keys = ["bins", "flux_model"]
+        opt_keys = {"mc_bg_w": None, "force_logE_asc": True,
                     "edge_fillval": "minmax_col", "interp_col_log": False}
         energy_opts = fill_dict_defaults(energy_opts, req_keys, opt_keys)
 
         sin_dec_bins, logE_bins = map(np.atleast_1d, energy_opts["bins"])
         energy_opts["bins"] = [sin_dec_bins, logE_bins]
+
+        try:
+            energy_opts["flux_model"](1.)  # Standard units are E = 1GeV
+        except Exception:
+            raise TypeError("'flux_model' must be a function `f(trueE)`.")
 
         if (energy_opts["edge_fillval"] not in
                 ["minmax", "col", "minmax_col", "min"]):
@@ -68,38 +69,14 @@ class GRBModel(BaseModel):
             raise ValueError("sinDec declination bins for energy hist not " +
                              "in valid range `[-1, 1]`.")
 
-        if energy_opts["mc_bg_w"] is None:
-            # Energy interpolator is build on data and MC for signal only
-            for sd, name in zip([np.sin(X["dec"]), np.sin(MC["dec"])],
-                                ["data", "MC"]):
-                if np.any((sd < sin_dec_bins[0]) | (sd > sin_dec_bins[-1])):
-                    raise ValueError("dec " + name + " events outside " +
-                                     "given bins for energy hist. If this is " +
-                                     "intended, please remove them beforehand.")
-            for logE, name in zip([X["logE"], MC["logE"]], ["data", "MC"]):
-                if np.any((logE < logE_bins[0]) | (logE > logE_bins[-1])):
-                    raise ValueError("logE " + name + " events outside " +
-                                     "given bins for energy hist. If this is " +
-                                     "intended, please remove them beforehand.")
-            sin_dec_bg, logE_bg, w_bg = X["dec"], X["logE"], np.ones(len(X))
-        else:
-            # Energy interpolator is build on MC for both bg and signal
+        if energy_opts["mc_bg_w"] is not None:
+            energy_opts["mc_bg_w"] = np.atleast_1d(energy_opts["mc_bg_w"])
             if len(energy_opts["mc_bg_w"]) != len(MC):
                 raise ValueError("Length of MC BG weights and MC must match.")
-            if np.any((MC["dec"] < sin_dec_bins[0]) |
-                      (MC["dec"] > sin_dec_bins[-1])):
-                raise ValueError("dec MC events outside given bins for " +
-                                 "energy hist. If this is intended, please " +
-                                 "remove them beforehand.")
-            if np.any((MC["logE"] < logE_bins[0]) |
-                      (MC["logE"] > logE_bins[-1])):
-                raise ValueError("logE MC events outside given bins for " +
-                                 "energy hist. If this is intended, please " +
-                                 "remove them beforehand.")
 
-        self._flux_model = flux_model
         self._spatial_opts = spatial_opts
         self._energy_opts = energy_opts
+        self._srcs = srcs
 
         self._needed_data = np.array(
             ["timeMJD", "dec", "ra", "sigma", "logE"])
@@ -108,12 +85,14 @@ class GRBModel(BaseModel):
         # Setup internals for model evaluation
         self._log = logger(name=self.__class__.__name__, level="ALL")
         _out = self._setup_model(X, MC, srcs, run_dict)
-        self._nb, self._sin_dec_splines, _, self._energy_interpol = _out
+        self._llh_args, self._spatial_bg_spls, self._energy_interpol, _ = _out
 
         # Cache repeatedly used values
         self._src_dt = np.vstack((srcs["dt0"], srcs["dt1"])).T
         self._src_dec_col_vec = self._srcs["dec"][:, None]
-        self._srcs = srcs
+
+        # Debug
+        self._spl_info = _out[-1]
 
     @property
     def needed_data(self):
@@ -129,18 +108,22 @@ class GRBModel(BaseModel):
         return self._srcs
 
     @property
-    def model_opts(self):
-        return self._model_opts
+    def spatial_opts(self):
+        return self._spatial_opts
+
+    @property
+    def energy_opts(self):
+        return self._energy_opts
 
     def get_args(self):
-        pass
+        return self._llh_args
 
     def get_soverb(self, X):
         """
         Calculate sob values per source per event for given data X
         """
         # Preselect data to save computation time
-        X = self._select_X(X)
+        X = X[np.any(self._select_X(X), axis=0)]
 
         # Make combined PDF term
         sob = (self._soverb_time(X["timeMJD"]) *
@@ -159,7 +142,7 @@ class GRBModel(BaseModel):
                      self._spatial_opts["select_ev_sigma"]) &
                     (X["dec"] < self._src_dec_col_vec + X["sigma"] *
                      self._spatial_opts["select_ev_sigma"]))
-        return X[dec_mask]
+        return dec_mask
 
     def _soverb_time(self, t):
         """
@@ -206,12 +189,11 @@ class GRBModel(BaseModel):
             and for each source position.
         """
         sob = pdf_spatial_signal(
-            self._srcs["ra"], self._src["dec"], ev_ra, ev_sin_dec, ev_sig,
-            self._spatial_args["kent"])
+            self._srcs["ra"], self._srcs["dec"], ev_ra, ev_sin_dec, ev_sig,
+            self._spatial_opts["kent"])
         # Divide by background PDF per source
         for j, sobi in enumerate(sob):
-            Bi = np.exp(self._spatial_bg_spls[j](ev_sin_dec)) / (2. * np.pi)
-            sob[j] = sobi / Bi
+            sob[j] = sobi / self._spatial_bg_spls[j](ev_sin_dec)
 
         return sob
 
@@ -231,9 +213,9 @@ class GRBModel(BaseModel):
         Parameters
         ----------
         ev_sin_dec
-            See :py:meth:`GRBLLH._soverb_spatial`, Parameters
+            Event positions in equatorial sinus declination, [-1, 1].
         ev_logE
-            See :py:meth:`lnllh_ratio`, Parameters: `X`
+            Event log10 energy estimator ``log10(energy proxy)``.
 
         Returns
         -------
@@ -253,13 +235,12 @@ class GRBModel(BaseModel):
 
         Returns
         -------
-        nb : array-like
-            Expected background events per source.
-        sin_dec_splines : list of splines
-            Splines per source describing the spatial background PDF in  in
-            ``sin(dec)``.
-        spl_info : dict
-            Collection of spline and rate fit information.
+        llh_args : dict
+            Fixed LLH args this model provides via ``get_args()``.
+        spatial_bg_spls : list of splines
+            Splines per source describing the spatial background PDF in
+            ``sin(dec)``, normalized over the full sphere
+            ``int_(-1,1)_(0, 2pi) spl dra dsindec = 1``.
         energy_interpol : scipy.interpolate.RegularGridInterpolator
             Interpolator returning the energy signal over background ratio for
             ``sin(dec), logE`` pairs.
@@ -280,30 +261,68 @@ class GRBModel(BaseModel):
             spl_s=self._spatial_opts["spl_s"],
             n_scan_bins=self._spatial_opts["n_scan_bins"])
 
+        # Step 2: Cache fixed LLH args
         # Cache expected nb for each source from allsky rate func integral
         nb = spl_info["allsky_rate_func"].integral(
             src_t, src_trange, spl_info["allsky_best_params"])
         assert len(nb) == len(src_t)
 
-        # Step 2: Build energy PDF interpolator
-        # Make histograms, signal weighted to flux model
-        sin_dec_bg = np.sin(X["dec"])
-        logE_bg = np.sin(X["logE"])
+        # Renormalize sindec splines to include the 2pi from RA normalization
+        def spl_normed_factory(spl, lo, hi, norm):
+            """ Renormalize spline, so ``int_lo^hi renorm_spl dx = norm`` """
+            return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
+
+        spatial_bg_spls = []
+        lo, hi, norm = sin_dec_bins[0], sin_dec_bins[-1], 1. / 2. / np.pi
+        for spl in sin_dec_splines:
+            spatial_bg_spls.append(spl_normed_factory(spl, lo, hi, norm=norm))
+
+        # Get source weights from their BG PDF splines
+        src_w_dec = [spl(sd) for sd, spl in zip(np.sin(srcs["dec"]),
+                                                spatial_bg_spls)]
+
+        llh_args = {"src_w_dec": src_w_dec,
+                    "src_w_theo": srcs["w_theo"], "nb": nb}
+
+        # Step 3: Build energy PDF interpolator
+        # Make histograms, signal weighted to flux model. BG is either data
+        # or MC weighted by external energy_opts["mc_bg_w"] (eg. atmo flux)
         w_bg = self._energy_opts["mc_bg_w"]
+        if w_bg is None:
+            sin_dec_bg = np.sin(X["dec"])
+            logE_bg = X["logE"]
+        else:
+            sin_dec_bg = np.sin(MC["dec"])
+            logE_bg = MC["logE"]
         sin_dec_sig = np.sin(MC["dec"])
-        logE_sig = np.sin(MC["logE"])
-        w_sig = MC["ow"] * self._flux_model(MC["trueE"])
+        logE_sig = MC["logE"]
+        w_sig = MC["ow"] * self._energy_opts["flux_model"](MC["trueE"])
 
+        _bx, _by = self._energy_opts["bins"]
         h_bg, _, _ = np.histogram2d(sin_dec_bg, logE_bg, weights=w_bg,
-                                    bins=self._energy_opts["bins"], normed=True)
+                                    bins=[_bx, _by], normed=True)
         h_sig, _, _ = np.histogram2d(sin_dec_sig, logE_sig, weights=w_sig,
-                                     bins=self._energy_opts["bins"],
-                                     normed=True)
+                                     bins=[_bx, _by], normed=True)
 
+        # Check if events are inside bin ranges
+        err = ""
+        if np.any((sin_dec_bg < _bx[0]) | (sin_dec_bg > _bx[-1])):
+            err += "declinations outside sindec bins for BG energy PDF.\n"
+        if np.any((sin_dec_sig < _bx[0]) | (sin_dec_sig > _bx[-1])):
+            err += "declinations outside sindec bins for signal energy PDF.\n"
+        if np.any((logE_bg < _by[0]) | (logE_bg > _by[-1])):
+            err += "logEs outside logE bins for BG energy PDF.\n"
+        if np.any((logE_sig < _by[0]) | (logE_sig > _by[-1])):
+            err += "logEs outside logE bins for signal energy PDF.\n"
+        if err != "":
+            err += "If this is intended, please remove them beforehand."
+            raise ValueError(err)
+
+        # Create interpolator
         energy_interpol = make_grid_interp_from_hist_ratio(
-            h_bg, h_sig, bins=self._energy_opts["bins"],
+            h_bg=h_bg, h_sig=h_sig, bins=[_bx, _by],
             edge_fillval=self._energy_opts["edge_fillval"],
             interp_col_log=self._energy_opts["interp_col_log"],
-            force_y_asc=self._energy_opts["force_y_asc"])
+            force_y_asc=self._energy_opts["force_logE_asc"])
 
-        return nb, sin_dec_splines, spl_info, energy_interpol
+        return llh_args, spatial_bg_spls, energy_interpol, spl_info
