@@ -38,9 +38,6 @@ class GRBLLH(BaseLLH):
         self.model = llh_model
         self.llh_opts = llh_opts
 
-        # Internal default
-        self._src_w_over_nb = None
-
     @property
     def needed_args(self):
         return self._needed_args
@@ -142,6 +139,9 @@ class GRBLLH(BaseLLH):
 
         # Stacking case: Weighted signal sum per source
         sob = self._model.get_soverb(X)
+
+        # TODO: Shape of src_w_over_nb is wrong. Check LLH model get_args.
+
         sob = np.sum(sob * self._src_w_over_nb, axis=0)
 
         # Apply a SoB ratio cut, to save computation time on events that don't
