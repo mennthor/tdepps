@@ -65,7 +65,7 @@ class GRBLLHAnalysis(object):
         """
         def _all_match(llh, inj):
             """ Check if provided and needed names match for inj, llh pairs """
-            if llh.hasattr("llhs"):
+            if hasattr(llh, "llhs"):
                 for key in llh.llhs.keys():
                     model = inj.injs[key].model
                     inj = inj.injs[key]
