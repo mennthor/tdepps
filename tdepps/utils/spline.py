@@ -277,9 +277,8 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         vals = rate_func.integral(t=ti, trange=tri, pars=(amp, base))
         spl = sci.InterpolatedUnivariateSpline(
             sin_dec_pts, vals, k=1, ext="raise")
-        # Normalize spline so `int_lo_hi spl dsindec = 1`
-        norm = spl.integral(lo, hi)
-        sin_dec_splines.append(spl_factory(sin_dec_pts, vals / norm))
+        # Leave splines unnormalized, unit is then events / dec
+        sin_dec_splines.append(spl_factory(sin_dec_pts, vals))
 
     info = {"allsky_rate_func": rate_func_allsky,
             "allsky_best_params": fitres_allsky.x,
@@ -568,7 +567,7 @@ def make_grid_interp_from_hist_ratio(h_bg, h_sig, bins, edge_fillval,
     # Step 3: Construct a 2D interpolator for the log(ratio).
     # Repeat values at the edges (y then x) to cover full bin domain, so the
     # interpolator can throw an error outside the domain
-    sob_full = np.zeros((nbins_x + 1, nbins_y + 1), dtype=sob.dtype) - 1.
+    sob_full = np.zeros((nbins_x + 2, nbins_y + 2), dtype=sob.dtype) - 1.
     for j, col in enumerate(sob):
         sob_full[j + 1] = np.concatenate([col[[0]], col, col[[-1]]])
     sob_full[0] = sob_full[1]
