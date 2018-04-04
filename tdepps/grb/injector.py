@@ -1162,6 +1162,14 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins, rate_rebins,
             spl_s=self._inj_opts["spl_s"],
             n_scan_bins=self._inj_opts["n_scan_bins"])
+        # Normalize sindec splines to be a PDF in sindec
+        def spl_normed_factory(spl, lo, hi, norm):
+            """ Renormalize spline, so ``int_lo^hi renorm_spl dx = norm`` """
+            return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
+
+        lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
+        # TODO: Renormalize splines, use spl_normed or renorm poits?
+        sin_dec_splines = [spl_normed_factory()]
 
         # Cache expected nb for each source from allsky rate func integral
         nb = spl_info["allsky_rate_func"].integral(
