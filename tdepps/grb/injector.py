@@ -69,7 +69,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         try:
             flux_model(1.)  # Standard units are E = 1GeV
         except Exception:
-            raise TypeError("`model` must be a function `f(trueE)`.")
+            raise TypeError("`flux_model` must be a function `f(trueE)`.")
 
         if not isinstance(time_sampler, BaseTimeSampler):
             raise ValueError("`time_sampler` must have type `BaseTimeSampler`.")
