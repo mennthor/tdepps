@@ -273,9 +273,11 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
     base = param_splines["base"](sin_dec_pts)
     sin_dec_splines = []
     for ti, tri in zip(src_t, src_trange):
+        # Average over source time window
         vals = rate_func.integral(t=ti, trange=tri, pars=(amp, base))
         spl = sci.InterpolatedUnivariateSpline(
             sin_dec_pts, vals, k=1, ext="raise")
+        # Normalize spline so `int_lo_hi spl dsindec = 1`
         norm = spl.integral(lo, hi)
         sin_dec_splines.append(spl_factory(sin_dec_pts, vals / norm))
 
