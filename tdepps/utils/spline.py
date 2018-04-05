@@ -591,7 +591,10 @@ class spl_normed(object):
     ``UnivariateSpline``, but this class is OK, if we don't need the full spline
     feature set.
 
-    Note: Not all spline methods are available.
+    Note: Not all spline methods are available. See
+    https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.BSpline.html
+    for more information on how scipy splines work. Not sure if that is also
+    valid for the UnivariateSpline class though.
 
     Parameters
     ----------
@@ -635,7 +638,7 @@ class spl_normed(object):
     def integral(self, a, b):
         return self._scale * self._spl.integral(a, b)
 
-    def roots(self, ):
+    def roots(self):
         return self._spl.roots()
 
     def set_smoothing_factor(self, s):
