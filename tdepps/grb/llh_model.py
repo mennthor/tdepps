@@ -6,8 +6,9 @@ import numpy as np
 
 from ..backend import soverb_time_box, pdf_spatial_signal
 from ..base import BaseModel
-from ..utils import (fill_dict_defaults, make_time_dep_dec_splines, logger,
-                     make_grid_interp_from_hist_ratio, spl_normed)
+from ..utils import fill_dict_defaults, logger
+from ..utils import spl_normed, fit_spl_to_hist
+from ..utils import make_time_dep_dec_splines, make_grid_interp_from_hist_ratio
 
 
 class GRBModel(BaseModel):
@@ -245,7 +246,6 @@ class GRBModel(BaseModel):
             Interpolator returning the energy signal over background ratio for
             ``sin(dec), logE`` pairs.
         """
-        # Step 1: Build per source spatial BG estimation and sindec PDFs
         ev_t = X["timeMJD"]
         ev_sin_dec = np.sin(X["dec"])
         src_t = np.atleast_1d(srcs["t"])
@@ -254,7 +254,7 @@ class GRBModel(BaseModel):
         sin_dec_bins = self._spatial_opts["sindec_bins"]
         rate_rebins = self._spatial_opts["rate_rebins"]
 
-        # Get sindec PDF spline for each source, averaged over its time window
+        # Step 1: Build per source spatial BG estimation and sindec PDFs
         print(self._log.INFO("Create time dep sindec splines."))
         sin_dec_splines, spl_info = make_time_dep_dec_splines(
             ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins, rate_rebins,
@@ -267,22 +267,32 @@ class GRBModel(BaseModel):
             src_t, src_trange, spl_info["allsky_best_params"])
         assert len(nb) == len(src_t)
 
+        # Get source weights from the signal weighted MC sindec spline fitted
+        # to a histogram. True dec, to match selection in signal injector
+        w_sig = MC["ow"] * self._energy_opts["flux_model"](MC["trueE"])
+        hist = np.histogram(np.sin(MC["trueDec"]), bins=sin_dec_bins,
+                            weights=w_sig, density=False)[0]
+        variance = np.histogram(np.sin(MC["dec"]), bins=sin_dec_bins,
+                                weights=w_sig**2, density=False)[0]
+        dA = np.diff(sin_dec_bins)
+        hist = hist / dA
+        stddev = np.sqrt(variance) / dA
+        weight = 1. / stddev
+        mc_spline = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight,
+                                    s=self._spatial_opts["spl_s"])[0]
+        src_w_dec = mc_spline(np.sin(srcs["dec"]))
+
         # Renormalize sindec splines to include the 2pi from RA normalization
+        # These are used as the per source BG PDFs each normed on its own
         def spl_normed_factory(spl, lo, hi, norm):
             """ Renormalize spline, so ``int_lo^hi renorm_spl dx = norm`` """
             return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
 
+        lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
+        norm = 1. / 2. / np.pi
         spatial_bg_spls = []
-        lo, hi, norm = sin_dec_bins[0], sin_dec_bins[-1], 1. / 2. / np.pi
         for spl in sin_dec_splines:
             spatial_bg_spls.append(spl_normed_factory(spl, lo, hi, norm=norm))
-
-        # Get source weights from their BG PDF splines
-        src_w_dec = [spl(sd) for sd, spl in zip(np.sin(srcs["dec"]),
-                                                spatial_bg_spls)]
-
-        llh_args = {"src_w_dec": src_w_dec,
-                    "src_w_theo": srcs["w_theo"], "nb": nb}
 
         # Step 3: Build energy PDF interpolator
         # Make histograms, signal weighted to flux model. BG is either data
@@ -324,5 +334,11 @@ class GRBModel(BaseModel):
             edge_fillval=self._energy_opts["edge_fillval"],
             interp_col_log=self._energy_opts["interp_col_log"],
             force_y_asc=self._energy_opts["force_logE_asc"])
+
+        llh_args = {"src_w_dec": src_w_dec,
+                    "src_w_theo": srcs["w_theo"], "nb": nb}
+
+        spl_info["sin_dec_splines"] = sin_dec_splines
+        spl_info["mc_sin_dec_pdf_spline"] = mc_spline
 
         return llh_args, spatial_bg_spls, energy_interpol, spl_info
