@@ -110,11 +110,11 @@ class GRBModel(BaseModel):
 
     @property
     def spatial_opts(self):
-        return self._spatial_opts
+        return self._spatial_opts.copy()
 
     @property
     def energy_opts(self):
-        return self._energy_opts
+        return self._energy_opts.copy()
 
     def get_args(self):
         return self._llh_args

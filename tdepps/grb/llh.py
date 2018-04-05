@@ -58,7 +58,7 @@ class GRBLLH(BaseLLH):
 
     @property
     def llh_opts(self):
-        return self._llh_opts
+        return self._llh_opts.copy()
 
     @llh_opts.setter
     def llh_opts(self, llh_opts):

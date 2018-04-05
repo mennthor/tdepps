@@ -131,7 +131,7 @@ class SignalFluenceInjector(BaseSignalInjector):
 
     @property
     def inj_opts(self):
-        return self._inj_opts
+        return self._inj_opts.copy()
 
     def mu2flux(self, mu, per_source=False):
         """
@@ -1051,7 +1051,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
 
     @property
     def inj_opts(self):
-        return self._inj_opts
+        return self._inj_opts.copy()
 
     def fit(self, X, srcs, run_dict):
         """
