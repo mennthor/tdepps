@@ -145,10 +145,9 @@ class GRBLLH(BaseLLH):
 
         # Stacking case: Weighted signal sum per source
         sob = self._model.get_soverb(X, band_select=band_select)
-
-        # TODO: Shape of src_w_over_nb is wrong. Check LLH model get_args.
-
         sob = np.sum(sob * self._src_w_over_nb, axis=0)
+        if len(sob) < 1:
+            return np.empty(0)
 
         # Apply a SoB ratio cut, to save computation time on events that don't
         # contribute anyway. We have a relative and an absolute threshold
@@ -197,7 +196,7 @@ class MultiGRBLLH(BaseMultiLLH):
 
     @property
     def llh_opts(self):
-        return self._llh_opts
+        return self._llh_opts.copy()
 
     @llh_opts.setter
     def llh_opts(self, llh_opts):
