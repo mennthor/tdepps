@@ -4,7 +4,6 @@ from __future__ import print_function, division, absolute_import
 
 import numpy as np
 from sklearn.utils import check_random_state
-from itertools import repeat
 
 from ..utils import fit_chi2_cdf, logger, arr2str, all_equal
 
@@ -142,82 +141,59 @@ class GRBLLHAnalysis(object):
         Returns
         -------
         res : record-array
-            Has names ``'TS', 'ns'`` and holds the fit results of each trial.
+            Has names ``'ts', 'ns'`` and holds the fit results of each trial.
         nzeros : int
             How many zero trials occured.
-        nsig : array-like, optional
-            Only if ``full_out`` is ``True``. Then contains the number of
-            sampled signal events per trial.
+        nsig : array-like or None
+            Contains the number of sampled signal events per trial, only if
+            ``full_out`` is ``True``, else ``None`` is returned.
         """
         if n_signal is None:
-            n_signal = 0
+            nsig_i = 0
+        elif not poisson:
+            nsig_i = int(n_signal)
+        if n_signal == 0:  # Set to None if we don't sample signal anyway
+            n_signal = None
+            nsig_i = 0
 
-        if poisson:
-            nsig = self._rndgen.poisson(n_signal, size=n_trials)
-        else:
-            nsig = repeat(0., n_trials)
-
-        ns, TS = [], []
+        ns, ts, nsig = [], [], []
         nzeros = 0
-        for i, nsig_i in enumerate(nsig):
+        for i in range(n_trials):
             X = self._bg_inj.sample()
-            if nsig_i > 0:
-                Xsig = self._sig_inj.sample(nsig_i)
-                X = np.concatenate((X, Xsig))
+            if n_signal is not None:
+                if poisson:
+                    nsig_i = self._rndgen.poisson(n_signal, size=None)
+                if nsig_i > 0:
+                    Xsig = self._sig_inj.sample(nsig_i)
+                    X = np.concatenate((X, Xsig))
 
-            ns_i, TS_i = self.llh.fit_lnllh_ratio(ns0, X)
+            ns_i, TS_i = self.llh.fit_lnllh_ratio(ns0=ns0, X=X)
 
-            if (ns_i == 0) and (TS_i == 0):
-                nzeros += 1
-                if full_out:
-                    ns.append(0.)
-                    TS.append(0.)
-            else:
+            if full_out:
                 ns.append(ns_i)
-                TS.append(TS_i)
+                ts.append(TS_i)
+                nsig.append(nsig_i)
+            elif (ns_i > 0) and (TS_i > 0):
+                ns.append(ns_i)
+                ts.append(TS_i)
+            else:
+                nzeros += 1
 
         # Make output record array for non zero trials
         if full_out:
             size = n_trials
+            nsig = np.array(nsig, dtype=int)
         else:
             size = n_trials - nzeros
-        res = np.empty((size,), dtype=[("ns", np.float), ("TS", np.float)])
+            nsig = None
+        res = np.empty((size,), dtype=[("ns", np.float), ("ts", np.float)])
         res["ns"] = np.array(ns)
-        res["TS"] = np.array(TS)
-
+        res["ts"] = np.array(ts)
         if full_out:
-            return res, nzeros, np.array(nsig, dtype=int)
-        else:
-            return res, nzeros
+            # Didn't get saved if full_out, but we have the info to recompute
+            nzeros = np.sum(~((ts > 0) & (ns > 0)))
 
-    def make_trial_gen(self, n_signal=0, ns0=1., poisson=True):
-        """
-        Creates a generator which yields one full dataset per trial.
-
-        Parameters
-        ----------
-        n_signal : float
-            Mean number of signal events to sample each trial.
-        ns0 : float
-            Seed for the LLh fit for each trial.
-        poisson : bool, optional
-            If ``True`` sample a new number of signal events to inject for each
-            trial from a poisson distribution with mean ``n_signal``. If
-            ``False``, ``n_signal`` is ceiled to the next integer.
-        """
-        raise DeprecationWarning("Just call do_trials.")
-        if poisson:
-            while True:
-                nsig = self._rndgen.poisson(n_signal, size=1)
-                X = self._model_injector.get_sample(nsig)
-                ns, TS = self.llh.fit_lnllh_ratio(ns0, X)
-                yield ns, TS, X
-        else:
-            nsig = int(np.ceil(nsig))
-            while True:
-                X = self._model_injector.get_sample(nsig)
-                ns, TS = self.llh.fit_lnllh_ratio(ns0, X)
-                yield ns, TS, X
+        return res, nzeros, nsig
 
     def performance(self, ts_val, beta, mus, par0=[1., 1., 1.], n_trials=1000):
         """
@@ -272,20 +248,20 @@ class GRBLLHAnalysis(object):
             raise ValueError("`mus` must not have an entry < 0.")
 
         # Do the trials
-        TS = []
+        ts = []
         ns = []
         nsig = []
         for mui in mus:
             res, nzeros, nsig_i = self.do_trials(n_trials=n_trials, ns0=mui,
                                                  full_out=True)
-            TS.append(res["TS"])
+            ts.append(res["ts"])
             ns.append(res["ns"])
             nsig.append(nsig_i)
 
         # Create the requested CDF values and fit the chi2
-        mu_bf, cdfs, pars = fit_chi2_cdf(ts_val, beta, TS, mus)
+        mu_bf, cdfs, pars = fit_chi2_cdf(ts_val, beta, ts, mus)
 
-        return {"mu_bf": mu_bf, "ts": TS, "ns": ns, "mus": mus, "ninj": nsig,
+        return {"mu_bf": mu_bf, "ts": ts, "ns": ns, "mus": mus, "ninj": nsig,
                 "beta": beta, "tsval": ts_val, "cdfs": cdfs, "pars": pars}
 
     def post_trials(self, n_trials, time_windows, ns0):
