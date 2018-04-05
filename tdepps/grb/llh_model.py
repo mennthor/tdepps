@@ -119,12 +119,13 @@ class GRBModel(BaseModel):
     def get_args(self):
         return self._llh_args
 
-    def get_soverb(self, X):
+    def get_soverb(self, X, band_select=True):
         """
         Calculate sob values per source per event for given data X
         """
         # Preselect data to save computation time
-        X = X[np.any(self._select_X(X), axis=0)]
+        if band_select:
+            X = X[np.any(self._select_X(X), axis=0)]
 
         # Make combined PDF term
         sob = (self._soverb_time(X["timeMJD"]) *
