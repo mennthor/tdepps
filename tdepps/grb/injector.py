@@ -16,7 +16,7 @@ from ..base import BaseSignalInjector, BaseMultiSignalInjector
 from ..base import BaseBGDataInjector, BaseMultiBGDataInjector
 from ..base import BaseTimeSampler, BaseRateFunction
 from ..utils import random_choice
-from ..utils import fit_spl_to_hist, make_time_dep_dec_splines
+from ..utils import fit_spl_to_hist, make_time_dep_dec_splines, spl_normed
 from ..utils import arr2str, fill_dict_defaults, logger, dict_map
 from ..utils import rotator, thetaphi2decra
 
@@ -1156,27 +1156,30 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         sin_dec_bins = self._inj_opts["sindec_bins"]
         rate_rebins = self._inj_opts["rate_rebins"]
 
-        # Get sindec PDF spline for each source, averaged over its time window
+        # Get sindec rate spline for each source, averaged over its time window
         print(self._log.INFO("Create time dep sindec splines."))
         sin_dec_splines, spl_info = make_time_dep_dec_splines(
             ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins, rate_rebins,
             spl_s=self._inj_opts["spl_s"],
             n_scan_bins=self._inj_opts["n_scan_bins"])
-        # Normalize sindec splines to be a PDF in sindec
-        def spl_normed_factory(spl, lo, hi, norm):
-            """ Renormalize spline, so ``int_lo^hi renorm_spl dx = norm`` """
-            return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
-
-        lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
-        # TODO: Renormalize splines, use spl_normed or renorm poits?
-        sin_dec_splines = [spl_normed_factory()]
 
         # Cache expected nb for each source from allsky rate func integral
         nb = spl_info["allsky_rate_func"].integral(
             src_t, src_trange, spl_info["allsky_best_params"])
         assert len(nb) == len(src_t)
 
+        # Normalize sindec splines to be a PDF in sindec for sampling weights
+        def spl_normed_factory(spl, lo, hi, norm):
+            """ Renormalize spline, so ``int_lo^hi renorm_spl dx = norm`` """
+            return spl_normed(spl=spl, norm=norm, lo=lo, hi=hi)
+
+        lo, hi = sin_dec_bins[0], sin_dec_bins[-1]
+        sin_dec_pdf_splines = []
+        for spl in sin_dec_splines:
+            sin_dec_pdf_splines.append(spl_normed_factory(spl, lo, hi, norm=1.))
+
         # Make sampling CDFs to sample sindecs per source per trial
+        # First a PDF spline to estimate intrinsic data sindec distribution
         hist = np.histogram(ev_sin_dec, bins=sin_dec_bins,
                             density=False)[0]
         stddev = np.sqrt(hist)
@@ -1184,10 +1187,9 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         hist = hist / norm
         stddev = stddev / norm
         weight = 1. / stddev
-        # Spline to estimate intrinsic data sindec distribution
-        data_spl = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight)[0]
-        spl_info["sin_dec_splines"] = sin_dec_splines
-        spl_info["data_spl"] = data_spl
+        data_spl = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight,
+                                   s=self._inj_opts["spl_s"])[0]
+        data_spl = spl_normed_factory(data_spl, lo, hi, norm=1.)
 
         # Build sampling weights from PDF ratios
         sample_w = np.empty((len(sin_dec_splines), len(ev_sin_dec)),
@@ -1198,6 +1200,10 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         # Cache fixed sampling CDFs for fast random choice
         CDFs = np.cumsum(sample_w, axis=1)
         sample_CDFs = CDFs / CDFs[:, [-1]]
+
+        spl_info["sin_dec_splines"] = sin_dec_splines
+        spl_info["sin_dec_pdf_splines"] = sin_dec_pdf_splines
+        spl_info["data_sin_dec_pdf_spline"] = data_spl
 
         return nb, sample_CDFs, spl_info
 
