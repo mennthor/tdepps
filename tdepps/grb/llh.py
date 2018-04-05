@@ -53,7 +53,8 @@ class GRBLLH(BaseLLH):
         # Cache fixed src weights over background estimation, shape (nsrcs, 1)
         args = model.get_args()
         src_w = args["src_w_dec"] * args["src_w_theo"]
-        self._src_w_over_nb = (src_w[:, None] / np.sum(src_w)) / args["nb"]
+        # Shape is (1, nsrcs) for stacking GRB LLH
+        self._src_w_over_nb = ((src_w / np.sum(src_w)) / args["nb"])[:, None]
         self._model = model
 
     @property
@@ -83,19 +84,24 @@ class GRBLLH(BaseLLH):
             raise ValueError("'minimizer_opts' must be a dictionary.")
         self._llh_opts = llh_opts
 
-    def lnllh_ratio(self, ns, X):
+    def lnllh_ratio(self, ns, X, band_select=True):
         """ Public method wrapper """
-        sob = self._soverb(X)
+        sob = self._soverb(X, band_select=band_select)
         return self._lnllh_ratio(ns, sob)
 
-    def fit_lnllh_ratio(self, ns0, X):
+    def fit_lnllh_ratio(self, ns0, X, band_select=True):
         """ Fit TS with optimized analytic cases """
+        def _neglnllh(ns, sob):
+            """ Wrapper for minimizing the negative lnLLH ratio """
+            lnllh, lnllh_grad = self._lnllh_ratio(ns, sob)
+            return -lnllh, -lnllh_grad
+
         if len(X) == 0:  # Fit is always 0 if no events are given
             return 0., 0.
 
         # Get the best fit parameter and TS. Analytic cases are handled:
         # For nevts = [1 | 2] we get a [linear | quadratic] equation to solve.
-        sob = self._soverb(X)
+        sob = self._soverb(X, band_select=band_select)
         nevts = len(sob)
 
         # Test again, because we applied some threshold cuts
@@ -120,25 +126,25 @@ class GRBLLH(BaseLLH):
                 TS = 2. * (-ns + np.sum(np.log1p(ns * sob)))
                 return ns, TS
         else:  # Fit other cases
-            res = sco.minimize(fun=self._neglnllh, x0=[ns0],
+            res = sco.minimize(fun=_neglnllh, x0=[ns0],
                                jac=True, args=(sob,),
-                               bounds=self._llh_opts["ns_bounds"],
+                               bounds=[self._llh_opts["ns_bounds"]],
                                method=self._llh_opts["minimizer"],
                                options=self._llh_opts["minimizer_opts"])
-            # Use `abs`: Very rarely, the minimizer doesn't go the boundary
-            # when the fit should be zero. Then simply negating the function
-            # value would yield a small but negative TS value. `abs` avoids
-            # that accepting the "error" on having a very small positive TS
-            # val instead of a true zero one. "return res.x[0], -res.fun[0]"
-            return res.x[0], abs(res.fun[0])
+            ns, TS = res.x[0], -res.fun[0]
+            if TS < 0.:
+                # Some times the minimizer doesn't go all the way to 0., so
+                # TS vals might end up negative for a truly zero fit result
+                TS = 0.
+            return ns, TS
 
-    def _soverb(self, X):
+    def _soverb(self, X, band_select=True):
         """ Make an additional cut on small sob values to save time """
         if len(X) == 0:  # With no events given, we can skip this step
             return np.empty(0, dtype=np.float)
 
         # Stacking case: Weighted signal sum per source
-        sob = self._model.get_soverb(X)
+        sob = self._model.get_soverb(X, band_select=band_select)
 
         # TODO: Shape of src_w_over_nb is wrong. Check LLH model get_args.
 
@@ -162,11 +168,6 @@ class GRBLLH(BaseLLH):
         # Gradient in ns (chain rule: ln(ns * a + 1)' = 1 / (ns * a + 1) * a)
         ns_grad = 2. * (-1. + np.sum(sob / (x + 1.)))
         return TS, np.array([ns_grad])
-
-    def _neglnllh(self, ns, sob):
-        """ Wrapper for minimizing the negative lnLLH ratio """
-        lnllh, lnllh_grad = self._lnllh_ratio(ns, sob)
-        return -lnllh, -lnllh_grad
 
 
 class MultiGRBLLH(BaseMultiLLH):
@@ -322,7 +323,7 @@ class MultiGRBLLH(BaseMultiLLH):
         else:  # Fit other cases
             res = sco.minimize(fun=_neglnllh, x0=[ns0],
                                jac=True, args=(sob_dict,),
-                               bounds=self._llh_opts["ns_bounds"],
+                               bounds=[self._llh_opts["ns_bounds"]],
                                method=self._llh_opts["minimizer"],
                                options=self._llh_opts["minimizer_opts"])
             if not res.success:
@@ -331,16 +332,15 @@ class MultiGRBLLH(BaseMultiLLH):
                     return _neglnllh(ns, sob_dict)[0]
                 res = sco.minimize(fun=_neglnllh_numgrad, x0=[ns0],
                                    jac=True, args=(sob_dict,),
-                                   bounds=self._llh_opts["ns_bounds"],
+                                   bounds=[self._llh_opts["ns_bounds"]],
                                    method=self._llh_opts["minimizer"],
                                    options=self._llh_opts["minimizer_opts"])
-
-            # Use `abs`: Very rarely, the minimizer doesn't go the boundary
-            # when the fit should be zero. Then simply negating the function
-            # value would yield a small but negative TS value. `abs` avoids
-            # that accepting the "error" on having a very small positive TS
-            # val instead of a true zero one.
-            return res.x[0], abs(res.fun[0])
+            ns, TS = res.x[0], -res.fun[0]
+            if TS < 0.:
+                # Some times the minimizer doesn't go all the way to 0., so
+                # TS vals might end up negative for a truly zero fit result
+                TS = 0.
+            return ns, TS
 
     def _ns_split_weights(self, llhs):
         """
