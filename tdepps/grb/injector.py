@@ -768,11 +768,11 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
 
     @property
     def provided_data(self):
-        return {key: inji.provided_data for key, inji in self._injs.items()}
+        return dict_map(lambda key, inj: inj.provided_data, self._injs)
 
     @property
     def srcs(self):
-        return {key: inji.srcs for key, inji in self._injs.items()}
+        return dict_map(lambda key, inj: inj.srcs, self._injs)
 
     def mu2flux(self, mu, per_source=False):
         """
@@ -852,8 +852,8 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
         # Cache sampling weights
         raw_fluxes, _, _ = self._combine_raw_fluxes(injectors)
         raw_fluxes_sum = sum([rf for rf in raw_fluxes.values()])
-        self._distribute_weights = {key: rf / raw_fluxes_sum for key, rf in
-                                    raw_fluxes.items()}
+        self._distribute_weights = dict_map(lambda key, rf: rf / raw_fluxes_sum,
+                                            raw_fluxes)
         assert np.isclose(
             sum([w for w in self._distribute_weights.values()]), 1.)
 
@@ -894,7 +894,7 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
                 n_samples, self._distribute_weights[key], size=None)
             sam_ev[key] = self._injs[key].sample(n_samples=nsami)
             nsam += nsami
-    # The last number of events is determined by sum(nsami) = n_samples
+        # The last number of events is determined by sum(nsami) = n_samples
         key = self._names[-1]
         sam_ev[key] = self._injs[key].sample(n_samples=n_samples - nsam)
 
@@ -990,7 +990,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
       4. RA is sampled uniformly in ``[0, 2pi]`` and times are sampled from the
          rate function (uniform for small time windows.)
     """
-    def __init__(self, inj_opts, rndgen=None):
+    def __init__(self, inj_opts, random_state=None):
         """
         Parameters
         ----------
@@ -1026,7 +1026,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             ["timeMJD", "dec", "ra", "sigma", "logE"])
         self._sample_dtype = [(n, float) for n in self._provided_data]
         self._inj_opts = inj_opts
-        self.rndgen = rndgen
+        self.rndgen = random_state
 
         # Defaults for private class variables
         self._X = None
@@ -1226,11 +1226,11 @@ class MultiBGDataInjector(BaseMultiBGDataInjector):
 
     @property
     def provided_data(self):
-        return {key: inji.provided_data for key, inji in self._injs.items()}
+        return dict_map(lambda key, inj: inj.provided_data, self._injs)
 
     @property
     def srcs(self):
-        return {key: inji.srcs for key, inji in self._injs.items()}
+        return dict_map(lambda key, inj: inj.srcs, self._injs)
 
     def fit(self, injs):
         """
@@ -1253,7 +1253,7 @@ class MultiBGDataInjector(BaseMultiBGDataInjector):
         """
         Sample each injector and combine to a dict of recarrays.
         """
-        return {key: inj.sample() for key, inj in self._injs.items()}
+        return dict_map(lambda key, inj: inj.sample(), self._injs)
 
 
 ##############################################################################

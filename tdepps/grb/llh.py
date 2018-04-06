@@ -7,7 +7,7 @@ import numpy as np
 import scipy.optimize as sco
 
 from ..base import BaseLLH, BaseMultiLLH
-from ..utils import fill_dict_defaults, all_equal
+from ..utils import fill_dict_defaults, all_equal, dict_map
 
 
 class GRBLLH(BaseLLH):
@@ -188,11 +188,11 @@ class MultiGRBLLH(BaseMultiLLH):
 
     @property
     def model(self):
-        return {key: llhi.model for key, llhi in self._llhs.items()}
+        return dict_map(lambda key, llh: llh.model, self._llhs)
 
     @property
     def needed_args(self):
-        return {key: llhi.needed_args for key, llhi in self._llhs.items()}
+        return dict_map(lambda key, llh: llh.needed_args, self._llhs)
 
     @property
     def llh_opts(self):
@@ -330,7 +330,7 @@ class MultiGRBLLH(BaseMultiLLH):
                     """ Use numerical gradient if LINESRCH problem arises. """
                     return _neglnllh(ns, sob_dict)[0]
                 res = sco.minimize(fun=_neglnllh_numgrad, x0=[ns0],
-                                   jac=True, args=(sob_dict,),
+                                   jac=False, args=(sob_dict,),
                                    bounds=[self._llh_opts["ns_bounds"]],
                                    method=self._llh_opts["minimizer"],
                                    options=self._llh_opts["minimizer_opts"])
@@ -358,10 +358,10 @@ class MultiGRBLLH(BaseMultiLLH):
         """
         ns_weights = {}
         ns_w_sum = 0
-        for key, llh in llhs:
+        for key, llh in llhs.items():
             args = llh.model.get_args()
             ns_weights[key] = np.sum(args["src_w_dec"] * args["src_w_theo"])
             ns_w_sum += ns_weights[key]
 
         # Normalize weights over all sample source weights
-        return {key: nsw / ns_w_sum for key, nsw in ns_weights.items()}
+        return dict_map(lambda key, nsw: nsw / ns_w_sum, ns_weights)
