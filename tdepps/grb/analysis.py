@@ -66,14 +66,14 @@ class GRBLLHAnalysis(object):
             """ Check if provided and needed names match for inj, llh pairs """
             if hasattr(llh, "llhs"):
                 for key in llh.llhs.keys():
-                    model = inj.injs[key].model
-                    inj = inj.injs[key]
-                    if not all_equal(model.needed_data, inj.provided_data):
+                    model = llh.llhs[key].model
+                    inj_i = inj.injs[key]
+                    if not all_equal(model.needed_data, inj_i.provided_data):
                         e = "Provided and needed names don't match"
                         e += " for sample '{}'".format(key)
                         e += ": ['{}'] != ['{}'].".format(
                             arr2str(model.needed_data, sep="', '"),
-                            arr2str(inj.provided_data, sep="', '"))
+                            arr2str(inj_i.provided_data, sep="', '"))
                         raise KeyError(e)
             else:
                 if not all_equal(llh.model.needed_data, inj.provided_data):
