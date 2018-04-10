@@ -80,7 +80,7 @@ class GRBModel(BaseModel):
         self._srcs = srcs
 
         self._needed_data = np.array(
-            ["timeMJD", "dec", "ra", "sigma", "logE"])
+            ["time", "dec", "ra", "sigma", "logE"])
         self._provided_args = ["src_w_dec", "src_w_theo" "nb"]
 
         # Setup internals for model evaluation
@@ -128,7 +128,7 @@ class GRBModel(BaseModel):
             X = X[np.any(self._select_X(X), axis=0)]
 
         # Make combined PDF term
-        sob = (self._soverb_time(X["timeMJD"]) *
+        sob = (self._soverb_time(X["time"]) *
                self._soverb_spatial(X["ra"], np.sin(X["dec"]), X["sigma"]) *
                self._soverb_energy(np.sin(X["dec"]), X["logE"]))
         return sob
@@ -247,7 +247,7 @@ class GRBModel(BaseModel):
             Interpolator returning the energy signal over background ratio for
             ``sin(dec), logE`` pairs.
         """
-        ev_t = X["timeMJD"]
+        ev_t = X["time"]
         ev_sin_dec = np.sin(X["dec"])
         src_t = np.atleast_1d(srcs["t"])
         src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T

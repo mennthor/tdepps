@@ -95,7 +95,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         self._time_sampler = time_sampler
         self._inj_opts = inj_opts
         self._provided_data = np.array(
-            ["timeMJD", "dec", "ra", "sigma", "logE"])
+            ["time", "dec", "ra", "sigma", "logE"])
         self._mc_names = np.array(["trueRa", "trueDec", "trueE", "ow"])
         self._srcs = None
         self.rndgen = random_state
@@ -331,7 +331,7 @@ class SignalFluenceInjector(BaseSignalInjector):
                                      sam_ev)
 
         # Sample times from time model
-        sam_ev["timeMJD"] = self._time_sampler.sample(
+        sam_ev["time"] = self._time_sampler.sample(
             src_t=self._srcs["t"][src_idx], src_dt=self._src_dt[src_idx])
 
         # Debug purpose
@@ -727,7 +727,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
                                      sam_ev)
 
         # Sample times from time model
-        sam_ev["timeMJD"] = self._time_sampler.sample(
+        sam_ev["time"] = self._time_sampler.sample(
             src_t=self._srcs["t"][src_idx], src_dt=self._src_dt[src_idx])
 
         # Debug purpose
@@ -1023,7 +1023,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             raise ValueError("'n_scan_bins' should be > 20 for proper scans.")
 
         self._provided_data = np.array(
-            ["timeMJD", "dec", "ra", "sigma", "logE"])
+            ["time", "dec", "ra", "sigma", "logE"])
         self._sample_dtype = [(n, float) for n in self._provided_data]
         self._inj_opts = inj_opts
         self.rndgen = random_state
@@ -1114,7 +1114,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
                 # Sample missing ra uniformly
                 sam_i["ra"] = self._rndgen.uniform(0., 2. * np.pi, size=nevts)
                 # Append times
-                sam_i["timeMJD"] = times[j]
+                sam_i["time"] = times[j]
                 # Debug purpose
                 ev_idx.append(idx)
                 src_idx.append(nevts * [j])
@@ -1152,7 +1152,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             Collection of spline and rate fit information, also contains the
             allsky rate function used to sample times from.
         """
-        ev_t = X["timeMJD"]
+        ev_t = X["time"]
         ev_sin_dec = np.sin(X["dec"])
         src_t = np.atleast_1d(srcs["t"])
         src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
