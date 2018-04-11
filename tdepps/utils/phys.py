@@ -39,6 +39,73 @@ def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
     return phi0 * (trueE / E0)**(-gamma)
 
 
+def create_run_dict(run_list, filter_runs=None):
+    """
+    Create a dict of lists from a run list in JSON format (list of dicts).
+
+    Parameters
+    ----------
+    run_list : list of dicts
+            Dict made from a good run runlist snapshot from [1]_ in JSON format.
+            Must be a list of single runs of the following structure
+
+                [{
+                  "good_tstart": "YYYY-MM-DD HH:MM:SS",
+                  "good_tstop": "YYYY-MM-DD HH:MM:SS",
+                  "run": 123456, ...,
+                  },
+                 {...}, ..., {...}]
+
+            Each run dict must at least have keys ``'good_tstart'``,
+            ``'good_tstop'`` and ``'run'``. Times are given in iso formatted
+            strings and run numbers as integers as shown above.
+    filter_runs : function, optional
+        Filter function to remove unwanted runs from the goodrun list.
+        Called as ``filter_runs(dict)``. Function must operate on a single
+        run dictionary element strucutred as shown above. If ``None``, every run
+        is used. (default: ``None``)
+
+    Returns
+    -------
+    run_dict : dict
+        Dictionary with run attributes as keys. The values are stored in arrays
+        for each key.
+    """
+    # run_list must be a list of dicts (one dict to describe one run)
+    if not np.all(map(lambda item: isinstance(item, dict), run_list)):
+        raise TypeError("Not all entries in 'run_list' are dicts.")
+
+    required_names = ["good_tstart", "good_tstop", "run"]
+    for i, item in enumerate(run_list):
+        for key in required_names:
+            if key not in item.keys():
+                raise KeyError("Runlist item '{}' ".format(i) +
+                               "is missing required key '{}'.".format(key))
+
+    # Filter to remove unwanted runs
+    run_list = list(filter(filter_runs, run_list))
+
+    # Convert the run list of dicts to a dict of arrays for easier handling
+    run_dict = dict(zip(run_list[0].keys(),
+                        zip(*[r.values() for r in run_list])))
+
+    # Dict keys were not necessarly sorted, so sort the new lists after run id
+    srt_idx = np.argsort(run_dict["run"])
+    for k in run_dict.keys():
+        run_dict[k] = np.atleast_1d(run_dict[k])[srt_idx]
+
+    # Convert and add times in MJD float format
+    run_dict["good_start_mjd"] = astrotime(run_dict["good_tstart"],
+                                           format="iso").mjd
+    run_dict["good_stop_mjd"] = astrotime(run_dict["good_tstop"],
+                                          format="iso").mjd
+    # Add runtimes in MJD days
+    run_dict["runtime_days"] = (run_dict["good_stop_mjd"] -
+                                run_dict["good_start_mjd"])
+
+    return run_dict
+
+
 def make_rate_records(T, run_dict, eps=0., all_in_err=False):
     """
     Creates time bins ``[start_MJD_i, stop_MJD_i]`` for each run in ``run_dict``
