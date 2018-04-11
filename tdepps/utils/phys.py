@@ -9,6 +9,9 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
+from astropy.time import Time as astrotime
+
+from .io import fill_dict_defaults
 
 
 def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
@@ -210,3 +213,40 @@ def rebin_rate_rec(rate_rec, bins, ignore_zero_runs=True):
 
     deadtime = np.diff(new_bins) - livetime_per_bin
     return rate, new_bins, rate_std, deadtime
+
+
+def make_src_records(dict_list, dt0, dt1):
+    """
+    Make a source record array from a list of source dict entries.
+
+    Parameters
+    ----------
+    dict_list : list of dict
+        One dict per source, must have keys ``'ra', 'dec', 'mjd'`` and
+        optionally ``'w_theo'``.
+    dt0 : float
+
+    dt1 : float
+
+    Parameters
+    ----------
+    src_recs : record_array
+        Record array with source information, has names
+        ``'ra', 'dec', 'mjd', 'dt0', 'dt1' 'w_theo'``.
+    """
+    nsrcs = len(dict_list)
+    dtype = [("ra", float), ("dec", float), ("time", float),
+             ("dt0", float), ("dt1", float), ("w_theo", float)]
+    src_recs = np.empty((nsrcs,), dtype=dtype)
+    for i, src in enumerate(dict_list):
+        src = fill_dict_defaults(src, required_keys=["ra", "dec", "mjd"],
+                                 opt_keys={"w_theo": 1.}, noleft=False)
+        src_recs["ra"][i] = src["ra"]
+        src_recs["dec"][i] = src["dec"]
+        src_recs["time"][i] = src["mjd"]
+        src_recs["w_theo"][i] = src["w_theo"]
+        # Fill current time window
+        src_recs["dt0"][i] = dt0
+        src_recs["dt1"][i] = dt1
+
+    return src_recs
