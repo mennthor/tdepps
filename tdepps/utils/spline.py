@@ -151,7 +151,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
 
     ev_t = np.atleast_1d(ev_t)
     ev_sin_dec = np.atleast_1d(ev_sin_dec)
-    src_t = np.atleast_1d(srcs["t"])
+    src_t = np.atleast_1d(srcs["time"])
     src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
     sin_dec_bins = np.atleast_1d(sin_dec_bins)
     rate_rebins = np.atleast_1d(rate_rebins)
