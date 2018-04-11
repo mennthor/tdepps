@@ -162,7 +162,7 @@ class GRBModel(BaseModel):
             and per source time `src_t`.
         """
         return soverb_time_box(
-            t, self._srcs["t"], self._srcs["dt0"], self._srcs["dt1"])
+            t, self._srcs["time"], self._srcs["dt0"], self._srcs["dt1"])
 
     def _soverb_spatial(self, ev_ra, ev_sin_dec, ev_sig):
         """
@@ -249,7 +249,7 @@ class GRBModel(BaseModel):
         """
         ev_t = X["time"]
         ev_sin_dec = np.sin(X["dec"])
-        src_t = np.atleast_1d(srcs["t"])
+        src_t = np.atleast_1d(srcs["time"])
         src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
 
         sin_dec_bins = self._spatial_opts["sindec_bins"]

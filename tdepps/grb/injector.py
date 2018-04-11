@@ -332,7 +332,7 @@ class SignalFluenceInjector(BaseSignalInjector):
 
         # Sample times from time model
         sam_ev["time"] = self._time_sampler.sample(
-            src_t=self._srcs["t"][src_idx], src_dt=self._src_dt[src_idx])
+            src_t=self._srcs["time"][src_idx], src_dt=self._src_dt[src_idx])
 
         # Debug purpose
         self._sample_idx = sam_idx
@@ -728,7 +728,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
 
         # Sample times from time model
         sam_ev["time"] = self._time_sampler.sample(
-            src_t=self._srcs["t"][src_idx], src_dt=self._src_dt[src_idx])
+            src_t=self._srcs["time"][src_idx], src_dt=self._src_dt[src_idx])
 
         # Debug purpose
         self._sample_idx = sam_idx
@@ -1154,7 +1154,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         """
         ev_t = X["time"]
         ev_sin_dec = np.sin(X["dec"])
-        src_t = np.atleast_1d(srcs["t"])
+        src_t = np.atleast_1d(srcs["time"])
         src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
 
         sin_dec_bins = self._inj_opts["sindec_bins"]
@@ -1297,13 +1297,13 @@ class SinusRateFunction(BaseRateFunction):
         fitres = super(SinusRateFunction, self).fit(t, rate, p0, w, **minopts)
 
         # Cache max function values in the fixed source intervals for sampling
-        required_names = ["t", "dt0", "dt1"]
+        required_names = ["time", "dt0", "dt1"]
         for n in required_names:
             if n not in srcs.dtype.names:
                 raise ValueError("`srcs` recarray is missing name " +
                                  "'{}'.".format(n))
         _dts = np.vstack((srcs["dt0"], srcs["dt1"])).T
-        _, _trange = self._transform_trange_mjd(srcs["t"], _dts)
+        _, _trange = self._transform_trange_mjd(srcs["time"], _dts)
         self._fmax = self._calc_fmax(
             _trange[:, 0], _trange[:, 1], pars=fitres.x)
         self._trange = _trange
@@ -1703,13 +1703,13 @@ class ConstantRateFunction(BaseRateFunction):
         if w is None:
             w = np.ones_like(rate)
 
-        required_names = ["t", "dt0", "dt1"]
+        required_names = ["time", "dt0", "dt1"]
         for n in required_names:
             if n not in srcs.dtype.names:
                 raise ValueError("`srcs` recarray is missing name " +
                                  "'{}'.".format(n))
         _dts = np.vstack((srcs["dt0"], srcs["dt1"])).T
-        _, self._trange = self._transform_trange_mjd(srcs["t"], _dts)
+        _, self._trange = self._transform_trange_mjd(srcs["time"], _dts)
 
         # Analytic solution to fit
         bf_pars = self._get_default_seed(rate, w)
