@@ -236,20 +236,52 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         # Use normalized amplitude and baseline in units HZ/dec
         weights = 1. / std_devs_norm[n]
         # Small feedback loop to catch large 2nd derivates, meaning extremely
-        # large fluctuations between the points. Empirical correction values...
-        OK = False
+        # large fluctuations between the points. Empirical correction values,
+        # might break in various scenarios. Switch to interpol splines then...
+        i = 0
+        is_ok = False
         spl_s_ = spl_s
-        while not OK:
+        spl = spl = fit_spl_to_hist(
+            best_pars_norm[n], sin_dec_bins, weights, s=spl_s_)[0]
+        _last_max_der2 = np.amax(np.abs(spl.derivative(n=2)(sin_dec_pts)))
+        _last_down = False
+        _max_tries = 20
+        while (not is_ok) and (i < _max_tries):
             spl = fit_spl_to_hist(
                 best_pars_norm[n], sin_dec_bins, weights, s=spl_s_)[0]
             spl2 = spl.derivative(n=2)
             derivative2 = np.abs(spl2(sin_dec_pts))
-            # Empirically found value that is working OK
-            OK = np.all(derivative2 < 1.)
-            if not OK:
-                spl_s_ *= 0.9
-                print(log.INFO("Degraded smoothing factor, 2nd derivative " +
-                               " was {:.2f}".format(np.amax(derivative2))))
+            # Empirically found value that is working is_ok
+            is_ok = np.all(derivative2 < 1.)
+            if not is_ok:
+                _max_der2_cur = np.amax(derivative2)
+                if (_last_max_der2 <= _max_der2_cur) and not _last_down:
+                    spl_s_ *= 0.8
+                    _last_down = True
+                    print(log.DEBUG("  Goin down. 2nd der.: " +
+                                    "{:.1f}, new s: {:.2f}, stat: {}".format(
+                                        _max_der2_cur, spl_s_, _last_down)))
+                elif (_last_max_der2 <= _max_der2_cur) and _last_down:
+                    spl_s_ *= 1.2
+                    _last_down = False
+                    print(log.DEBUG("  Going up. 2nd der.: " +
+                                    "{:.1f}, new s: {:.2f}, stat: {}".format(
+                                        _max_der2_cur, spl_s_, _last_down)))
+                elif _last_down:
+                    spl_s_ *= 0.8
+                    print(log.DEBUG("  Going down. 2nd der.: " +
+                                    "{:.1f}".format(_max_der2_cur)))
+                else:
+                    spl_s_ *= 1.2
+                    print(log.DEBUG("  Going up. 2nd der.: " +
+                                    "{:.1f}".format(_max_der2_cur)))
+                _last_max_der2 = _max_der2_cur
+            i += 1
+            if i == _max_tries:
+                print(log.WARN("Max tries reached, using interpol. spline."))
+                spl = fit_spl_to_hist(
+                    best_pars_norm[n], sin_dec_bins, weights, s=0)[0]
+
         # Renormalize to match the allsky params, because the model is additive
         scale = norm_allsky[n] / spl.integral(lo, hi)
         best_pars_norm[n] = best_pars_norm[n] * scale
@@ -386,7 +418,7 @@ def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
             scaley = diffy / rng_y
             # Contour can be closed, but extremely zoomed out in only one param
             if not np.allclose([scalex, scaley], 1., atol=0.5, rtol=0.):
-                print(log.INFO(
+                print(log.DEBUG(
                     "LLH contour is very distorted in one direction"))
                 closed = False
             else:
@@ -401,13 +433,13 @@ def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
                     closed = _is_path_closed(paths, rng_x, rng_y)
         # Must always be checked because path can get invalid in rescaling step
         if not closed:
-            print(log.INFO("Open or no LLH contour, rescale scan ranges."))
+            print(log.DEBUG("Open or no LLH contour, rescale scan ranges."))
             rng_x *= scalex
             rng_y *= scaley
 
         n_rescans += 1
         if n_rescans > RAISE_N_RESCANS:
-            raise RuntimeError(log.INFO(
+            raise RuntimeError(log.WARN(
                 "LLH scan not converging. Check seeds!"))
 
     vertices = paths[0]
