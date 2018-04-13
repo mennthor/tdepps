@@ -11,7 +11,8 @@ standard_library.install_aliases()
 import numpy as np
 from astropy.time import Time as astrotime
 
-from .io import fill_dict_defaults
+from .io import fill_dict_defaults, logger
+log = logger(name="utils.phys", level="ALL")
 
 
 def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
@@ -69,7 +70,8 @@ def create_run_dict(run_list, filter_runs=None):
     -------
     run_dict : dict
         Dictionary with run attributes as keys. The values are stored in arrays
-        for each key.
+        for each key. Creates additional keys:
+        ``'good_start_mjd', 'good_stop_mjd', 'runtime_days'``.
     """
     # run_list must be a list of dicts (one dict to describe one run)
     if not np.all(map(lambda item: isinstance(item, dict), run_list)):
@@ -106,26 +108,22 @@ def create_run_dict(run_list, filter_runs=None):
     return run_dict
 
 
-def make_rate_records(T, run_dict, eps=0., all_in_err=False):
+def make_rate_records(ev_t, run_dict):
     """
     Creates time bins ``[start_MJD_i, stop_MJD_i]`` for each run in ``run_dict``
-    and bins the experimental data to calculate the rate for each run. Data
-    selection should match the used run list to give reasonable results.
+    and bins the experimental data to calculate the rate for each run.
+
+    Data selection should match the used run list to give reasonable results.
+    Runs wih livetime 0 or no events get zero rate.
 
     Parameters
     ----------
-    T : array_like, shape (n_samples)
+    ev_t : array_like, shape (n_samples)
         Per event times in MJD days of experimental data.
     run_dict
         Dictionary with run attributes as keys and values stored in arrays for
         each key. Must at least have keys ``'good_tstart'``, ``'good_tstop'``
         and ``'run'``. Can be created by method ``create_run_dict``.
-    eps : float, optional
-        Extra margin in mirco seconds added to run bins to account for possible
-        floating point errors during binning. (default: 0.)
-    all_in_err : bool, optional
-        If ``True`` raises an error if not all times ``T`` have been sorted in
-        the run bins defined in ``rund_dict``. (default: False)
 
     Returns
     -------
@@ -142,9 +140,7 @@ def make_rate_records(T, run_dict, eps=0., all_in_err=False):
           deviation of the rate in Hz in this run.
     """
     _SECINDAY = 24. * 60. * 60.
-    T = np.atleast_1d(T)
-    if eps < 0.:
-        raise ValueError("`eps` must be >0.")
+    ev_t = np.atleast_1d(ev_t)
 
     # Store events in bins with run borders, broadcast for fast masking
     start_mjd = run_dict["good_start_mjd"]
@@ -152,48 +148,34 @@ def make_rate_records(T, run_dict, eps=0., all_in_err=False):
     run = run_dict["run"]
 
     # Histogram time values in each run manually, eps = micro sec extra margin
-    eps *= 1.e-3 / _SECINDAY
-    mask = ((T[:, None] >= start_mjd[None, :] - eps) &
-            (T[:, None] <= stop_mjd[None, :] + eps))
+    mask = ((ev_t[:, None] >= start_mjd[None, :]) &
+            (ev_t[:, None] <= stop_mjd[None, :]))
 
-    evts = np.sum(mask, axis=0)  # Events per run. mask: (dim(T), dim(runs))
+    evts = np.sum(mask, axis=0)  # Events per run. mask: (dim(ev_t), dim(runs))
     tot_evts = np.sum(evts)      # All selected
     assert tot_evts == np.sum(mask)
 
     # Sometimes runlists given for the used samples don't seem to include all
     # events correctly contradicting to what is claimed on wiki pages
-    if all_in_err and tot_evts > len(T):
-        # We seem to have double counted times, try again with eps = 0
-        dble_m = (np.sum(mask, axis=0) > 1.)  # Each time in more than 1 run
-        dble_t = T[dble_m]
-        idx_dble = np.where(np.isin(T, dble_t))[0]
+    if tot_evts > len(ev_t):
         err = ("Double counted times. Try a smaller `eps` or check " +
                "if there are overlapping runs in `run_dict`.\n")
         err += "  Events selected : {}\n".format(tot_evts)
-        err += "  Events in T     : {}\n".format(len(T))
-        err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
-            ["{}".format(ti) for ti in dble_t]))
-        err += "  Indices:\n    {}".format(", ".join(
-            ["{}".format(i) for i in idx_dble]))
-        raise ValueError()
-    elif all_in_err and tot_evts < len(T):
-        # We didn't get all events into our bins
-        not_cntd_m = (~np.any(mask, axis=0))  # All times not in any run
-        left_t = T[not_cntd_m]
-        idx_left = np.where(np.isin(T, left_t))[0]
-        err = ("Not all events in `T` were sorted in runs. If this is " +
+        err += "  Events in ev_t  : {}\n".format(len(ev_t))
+        print(log.INFO(err))
+    elif tot_evts < len(ev_t):
+        err = ("Not all events in `ev_t` were sorted in runs. If this is " +
                "intended, please remove them beforehand.\n")
         err += "  Events selected : {}\n".format(tot_evts)
-        err += "  Events in T     : {}\n".format(len(T))
-        err += "  Leftover times in MJD:\n    {}\n".format(", ".join(
-            ["{}".format(ti) for ti in left_t]))
-        err += "  Indices:\n    {}".format(", ".join(
-            ["{}".format(i) for i in idx_left]))
-        raise ValueError(err)
+        err += "  Events in ev_t  : {}\n".format(len(ev_t))
 
-    # Normalize to rate in Hz
+        print(log.INFO(err))
+
+    # Normalize to rate in Hz, zero livetime runs get zero rate
     runtime = stop_mjd - start_mjd
-    rate = evts / (runtime * _SECINDAY)
+    rate = np.zeros_like(runtime, dtype=float)
+    mask = (runtime > 0.)
+    rate[mask] = evts / (runtime[mask] * _SECINDAY)
 
     # Calculate poisson sqrt(N) stddev for scaled rates
     rate_std = np.sqrt(evts) / (runtime * _SECINDAY)
