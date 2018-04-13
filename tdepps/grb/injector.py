@@ -1196,9 +1196,9 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         data_spl = spl_normed_factory(data_spl, lo, hi, norm=1.)
 
         # Build sampling weights from PDF ratios
-        sample_w = np.empty((len(sin_dec_splines), len(ev_sin_dec)),
+        sample_w = np.empty((len(sin_dec_pdf_splines), len(ev_sin_dec)),
                             dtype=float)
-        for i, spl in enumerate(sin_dec_splines):
+        for i, spl in enumerate(sin_dec_pdf_splines):
             sample_w[i] = spl(ev_sin_dec) / data_spl(ev_sin_dec)
 
         # Cache fixed sampling CDFs for fast random choice
@@ -1208,6 +1208,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         spl_info["sin_dec_splines"] = sin_dec_splines
         spl_info["sin_dec_pdf_splines"] = sin_dec_pdf_splines
         spl_info["data_sin_dec_pdf_spline"] = data_spl
+        spl_info["sample_weights"] = sample_w
 
         return nb, sample_CDFs, spl_info
 
