@@ -124,17 +124,18 @@ def make_rate_records(ev_runids, run_list):
         _info += "  Nr. of given events   : {}".format(_nevts)
         print(log.INFO(_info))
 
-    # Normalize to rate in Hz, zero livetime runs get zero rate
+    # Normalize to rate in Hz, zero livetime runs (1 evt only) get zero rate
     runtime = stop_mjds - start_mjds
     rate = np.zeros_like(runtime, dtype=float)
     mask = (runtime > 0.)
-    rate[mask] = evts / (runtime[mask] * _SECINDAY)
+    runtime_mjd = runtime[mask] * _SECINDAY
+    rate[mask] = evts[mask] / runtime_mjd
     print(log.INFO("{} / {} runs with zero livetime.".format(np.sum(mask),
                                                              _nevts)))
 
     # Calculate poisson sqrt(N) stddev for scaled rates
     rate_std = np.zeros_like(runtime, dtype=float)
-    rate_std = np.sqrt(evts[mask]) / (runtime[mask] * _SECINDAY)
+    rate_std = np.sqrt(evts[mask]) / runtime_mjd
 
     # Create record-array
     names = ["run", "nevts", "rate", "rate_std",
