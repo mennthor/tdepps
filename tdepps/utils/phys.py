@@ -110,7 +110,8 @@ def make_rate_records(ev_runids, run_list):
 
     # Get number of events per run
     ev_runids = np.atleast_1d(ev_runids)
-    evts = np.empty(len(runs), dtype=np.int)
+    _nruns = len(runs)
+    evts = np.empty(_nruns, dtype=np.int)
     for i, runid in enumerate(runs):
         evts[i] = np.sum(ev_runids == runid)
     tot_evts = np.sum(evts)
@@ -130,8 +131,8 @@ def make_rate_records(ev_runids, run_list):
     mask = (runtime > 0.)
     runtime_mjd = runtime[mask] * _SECINDAY
     rate[mask] = evts[mask] / runtime_mjd
-    print(log.INFO("{} / {} runs with zero livetime.".format(np.sum(mask),
-                                                             _nevts)))
+    print(log.INFO("{} / {} runs with zero livetime.".format(np.sum(~mask),
+                                                             _nruns)))
 
     # Calculate poisson sqrt(N) stddev for scaled rates
     rate_std = np.zeros_like(runtime, dtype=float)
