@@ -135,7 +135,7 @@ def make_rate_records(ev_runids, run_list):
 
     # Calculate poisson sqrt(N) stddev for scaled rates
     rate_std = np.zeros_like(runtime, dtype=float)
-    rate_std = np.sqrt(evts[mask]) / runtime_mjd
+    rate_std[mask] = np.sqrt(evts[mask]) / runtime_mjd
 
     # Create record-array
     names = ["run", "nevts", "rate", "rate_std",
