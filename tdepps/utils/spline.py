@@ -168,7 +168,7 @@ def make_time_dep_dec_splines(X, srcs, run_list, sin_dec_bins, rate_rebins,
     rate_rebins = np.atleast_1d(rate_rebins)
 
     norm = np.diff(sin_dec_bins)
-    rate_rec = make_rate_records(run_list=run_list, ev_runids=X["run"])
+    rate_rec = make_rate_records(run_list=run_list, ev_runids=X["Run"])
 
     # 1) Get phase offset from allsky fit for good amp and baseline fits.
     #    Only fix the period to 1 year, as expected from seasons.
@@ -210,7 +210,7 @@ def make_time_dep_dec_splines(X, srcs, run_list, sin_dec_bins, rate_rebins,
         # Only make rates for the current bin and fit rate func in amp and base
         mask = (ev_sin_dec >= lo) & (ev_sin_dec < hi)
         rate_rec = make_rate_records(run_list=run_list,
-                                     ev_runids=X["run"][mask])
+                                     ev_runids=X["Run"][mask])
         rates, _, rates_std, _ = rebin_rate_rec(
             rate_rec, bins=rate_rebins, ignore_zero_runs=True)
         weights = 1. / rates_std
