@@ -152,6 +152,7 @@ def make_time_dep_dec_splines(X, srcs, run_list, sin_dec_bins, rate_rebins,
         - 'allsky_best_params': Best fit params for 'allsky_rate_func'.
         - 'param_splines': Splines describing the declination dependency of the
           fitted per bin rate parameters.
+        - 'rate_func': Rate model in which 'best_pars' can be inserted.
         - 'best_pars': Best fit parameters per sinus declination bin.
         - 'best_stddevs': Standard deviations of the parameters above.
         - 'best_pars_norm': Normalized 'best_pars', so integral is 1.
@@ -307,10 +308,6 @@ def make_time_dep_dec_splines(X, srcs, run_list, sin_dec_bins, rate_rebins,
     #    Get all rate model params from splines at sin_dec support points. Nr of
     #    is arbitrary and chosen to have enough resolution in sin_dec, using
     #    linear splines as they are fastest and good enough with many pts.
-    def spl_factory(x, y, k=1, ext="raise"):
-        """ Factory returning a new UnivariateSpline object """
-        return sci.InterpolatedUnivariateSpline(x, y, k=k, ext=ext)
-
     # Broadcast params to get the rate func vals for each sindec
     amp = param_splines["amp"](sin_dec_pts)
     base = param_splines["base"](sin_dec_pts)
@@ -318,14 +315,14 @@ def make_time_dep_dec_splines(X, srcs, run_list, sin_dec_bins, rate_rebins,
     for ti, tri in zip(src_t, src_trange):
         # Average over source time window
         vals = rate_func.integral(t=ti, trange=tri, pars=(amp, base))
-        spl = sci.InterpolatedUnivariateSpline(
-            sin_dec_pts, vals, k=1, ext="raise")
         # Leave splines unnormalized, unit is then events / dec
-        sin_dec_splines.append(spl_factory(sin_dec_pts, vals))
+        sin_dec_splines.append(sci.InterpolatedUnivariateSpline(
+            sin_dec_pts, vals, k=1, ext="raise"))
 
     info = {"allsky_rate_func": rate_func_allsky,
             "allsky_best_params": fitres_allsky.x,
             "param_splines": param_splines,
+            "rate_func": rate_func,
             "best_pars": best_pars,
             "best_stddevs": std_devs,
             "best_pars_norm": best_pars_norm,
