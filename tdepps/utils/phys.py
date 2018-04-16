@@ -200,8 +200,9 @@ def rebin_rate_rec(rate_rec, bins, ignore_zero_runs=True):
     rate_std = np.empty(len(bins) - 1, dtype=float)
     livetime_per_bin = np.empty_like(rate)
 
-    assert np.allclose(rate_rec["nevts"],
-                       rate_rec["rate"] * (stop - start) * _SECINDAY)
+    _m = (stop - start > 0)
+    assert np.allclose(rate_rec["nevts"][_m],
+                       rate_rec["rate"][_m] * (stop - start)[_m] * _SECINDAY)
 
     for i, (lo, hi) in enumerate(zip(bins[:-1], bins[1:])):
         mask = (lo <= start) & (start < hi)
