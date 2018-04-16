@@ -53,8 +53,8 @@ def make_rate_records(ev_runids, run_list):
     ev_runids : array_like, shape (n_samples)
         Per event run IDs to macth events and runs in ``run_list``.
     run_list : list of dicts
-            Dict made from a good run runlist snapshot from [1]_ in JSON format.
-            Must be a list of single runs of the following structure
+            List of dicts made from a good run runlist snapshot from [1]_. Must
+            be a list of single runs of the following structure
 
                 [{
                   "good_tstart": "YYYY-MM-DD HH:MM:SS",
@@ -160,8 +160,8 @@ def rebin_rate_rec(rate_rec, bins, ignore_zero_runs=True):
     Parameters
     ----------
     rate_rec : record-array
-        Rate information as coming out of RunlistBGRateInjector._rate_rec.
-        Needs names ``'start_mjd', 'stop_mjd', 'rate'``.
+        Rate information as build with ``utils.phys.make_rate_records``. Needs
+        names ``'start_mjd', 'stop_mjd', 'rate'``.
     bins : array-like or int
         New time binning used to rebin the rates.
     ignore_zero_runs : bool, optional
