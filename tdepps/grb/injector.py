@@ -1053,7 +1053,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
     def inj_opts(self):
         return self._inj_opts.copy()
 
-    def fit(self, X, srcs, run_dict):
+    def fit(self, X, srcs, run_list):
         """
         Take data, MC and sources and build injection models. This is the place
         to actually stitch together a custom injector from the toolkit modules.
@@ -1064,8 +1064,20 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             Experimental data for BG injection.
         srcs : recarray
             Source information.
-        run_dict : dict
-            Run information used in combination with data.
+        run_list : list of dicts
+            List of dicts made from a good run runlist snapshot from [1]_. Must
+            be a list of single runs of the following structure
+
+                [{
+                  "good_tstart": "YYYY-MM-DD HH:MM:SS",
+                  "good_tstop": "YYYY-MM-DD HH:MM:SS",
+                  "run": 123456, ...,
+                  },
+                 {...}, ..., {...}]
+
+            Each run dict must at least have keys ``'good_tstart'``,
+            ``'good_tstop'`` and ``'run'``. Times are given in iso formatted
+            strings and run numbers as integers as shown above.
         """
         X_names = np.array(X.dtype.names)
         for name in self._provided_data:
@@ -1077,7 +1089,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         print(self._log.INFO("Dropping names '{}'".format(arr2str(drop_names)) +
                              " from data recarray."))
 
-        _out = self._setup_data_injector(X, srcs, run_dict)
+        _out = self._setup_data_injector(X, srcs, run_list)
         self._nb, self._sample_CDFs, self._spl_info = _out
 
         self._X = drop_fields(X, drop_names, usemask=False)
@@ -1132,7 +1144,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
                                         ("src_idx", float)])
         return np.concatenate(sam)
 
-    def _setup_data_injector(self, X, srcs, run_dict):
+    def _setup_data_injector(self, X, srcs, run_list):
         """
         Create a time and declination dependent background model.
 
@@ -1149,25 +1161,21 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         sampling_CDF : array-like, shape (nsrcs, nevts)
             Sampling weight CDF per source for fast random choice sampling.
         spl_info : dict
-            Collection of spline and rate fit information, also contains the
-            allsky rate function used to sample times from.
+            Collection of spline and rate fit information. See
+            ``util.spline.make_time_dep_dec_splines`` for detailed info.
         """
-        ev_t = X["time"]
-        ev_sin_dec = np.sin(X["dec"])
-        src_t = np.atleast_1d(srcs["time"])
-        src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
-
-        sin_dec_bins = self._inj_opts["sindec_bins"]
-        rate_rebins = self._inj_opts["rate_rebins"]
-
         # Get sindec rate spline for each source, averaged over its time window
         print(self._log.INFO("Create time dep sindec splines."))
+        sin_dec_bins = self._inj_opts["sindec_bins"]
         sin_dec_splines, spl_info = make_time_dep_dec_splines(
-            ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins, rate_rebins,
+            X=X, srcs=srcs, run_list=run_list, sin_dec_bins=sin_dec_bins,
+            rate_rebins=self._inj_opts["rate_rebins"],
             spl_s=self._inj_opts["spl_s"],
             n_scan_bins=self._inj_opts["n_scan_bins"])
 
         # Cache expected nb for each source from allsky rate func integral
+        src_t = np.atleast_1d(srcs["time"])
+        src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
         nb = spl_info["allsky_rate_func"].integral(
             src_t, src_trange, spl_info["allsky_best_params"])
         assert len(nb) == len(src_t)
@@ -1184,6 +1192,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
 
         # Make sampling CDFs to sample sindecs per source per trial
         # First a PDF spline to estimate intrinsic data sindec distribution
+        ev_sin_dec = np.sin(X["dec"])
         hist = np.histogram(ev_sin_dec, bins=sin_dec_bins,
                             density=False)[0]
         stddev = np.sqrt(hist)

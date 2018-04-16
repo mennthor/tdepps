@@ -15,7 +15,7 @@ class GRBModel(BaseModel):
     """
     Models the PDF part for the GRB LLH function.
     """
-    def __init__(self, X, MC, srcs, run_dict, spatial_opts=None,
+    def __init__(self, X, MC, srcs, run_list, spatial_opts=None,
                  energy_opts=None):
         """
         Build PDFs that decsribe BG and/or signal-like events in the LLH.
@@ -85,7 +85,7 @@ class GRBModel(BaseModel):
 
         # Setup internals for model evaluation
         self._log = logger(name=self.__class__.__name__, level="ALL")
-        _out = self._setup_model(X, MC, srcs, run_dict)
+        _out = self._setup_model(X, MC, srcs, run_list)
         self._llh_args, self._spatial_bg_spls, self._energy_interpol, _ = _out
 
         # Cache repeatedly used values
@@ -226,7 +226,7 @@ class GRBModel(BaseModel):
         """
         return np.exp(self._energy_interpol(np.vstack((ev_sin_dec, ev_logE)).T))
 
-    def _setup_model(self, X, MC, srcs, run_dict):
+    def _setup_model(self, X, MC, srcs, run_list):
         """
         Create the splines and interpolators used to evaluate the LLH model.
 
@@ -246,24 +246,23 @@ class GRBModel(BaseModel):
         energy_interpol : scipy.interpolate.RegularGridInterpolator
             Interpolator returning the energy signal over background ratio for
             ``sin(dec), logE`` pairs.
+        spl_info : dict
+            Collection of spline and rate fit information. See
+            ``util.spline.make_time_dep_dec_splines`` for detailed info.
         """
-        ev_t = X["time"]
-        ev_sin_dec = np.sin(X["dec"])
-        src_t = np.atleast_1d(srcs["time"])
-        src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
-
-        sin_dec_bins = self._spatial_opts["sindec_bins"]
-        rate_rebins = self._spatial_opts["rate_rebins"]
-
-        # Step 1: Build per source spatial BG estimation and sindec PDFs
+        # Get sindec rate spline for each source, averaged over its time window
         print(self._log.INFO("Create time dep sindec splines."))
+        sin_dec_bins = self._spatial_opts["sindec_bins"]
         sin_dec_splines, spl_info = make_time_dep_dec_splines(
-            ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins, rate_rebins,
+            X=X, srcs=srcs, run_list=run_list, sin_dec_bins=sin_dec_bins,
+            rate_rebins=self._spatial_opts["rate_rebins"],
             spl_s=self._spatial_opts["spl_s"],
             n_scan_bins=self._spatial_opts["n_scan_bins"])
 
         # Step 2: Cache fixed LLH args
         # Cache expected nb for each source from allsky rate func integral
+        src_t = np.atleast_1d(srcs["time"])
+        src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
         nb = spl_info["allsky_rate_func"].integral(
             src_t, src_trange, spl_info["allsky_best_params"])
         assert len(nb) == len(src_t)
