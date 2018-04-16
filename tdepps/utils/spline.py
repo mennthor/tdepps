@@ -81,7 +81,7 @@ def fit_spl_to_hist(h, bins, w=None, s=None, k=3, ext="raise"):
     w : array-like or None
         Weights to use for the smoothing condition, eg. standard deviation of
         histogram entries. If ``None`` the spline is interpolating (``s=0``).
-        (Default: ``None``)
+        (default: ``None``)
     s, k, ext
         Arguments passed to ``scipy.interpolate.UnivariateSpline``.
 
@@ -110,23 +110,22 @@ def fit_spl_to_hist(h, bins, w=None, s=None, k=3, ext="raise"):
     return sci.UnivariateSpline(pts, vals, s=s, w=w, k=k, ext=ext), vals, pts, w
 
 
-def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
-                              rate_rebins, spl_s=None, n_scan_bins=50):
+def make_time_dep_dec_splines(X, srcs, run_list, sin_dec_bins, rate_rebins,
+                              spl_s=None, n_scan_bins=50):
     """
     Make a declination PDF spline averaged over each sources time window.
 
     Parameters
     ----------
-    ev_t : array-like, shape (nevts)
-        Experimental per event event times in MJD days.
-    ev_sin_dec : array-like, shape (nevts)
-        Experimental per event ``sin(declination)`` values.
+    X : recarray
+        Experimental data for BG injection, needs names ``'dec', 'time', 'Run``,
+        for per event declination in radian, time in MJD days and run ID.
     srcs : record-array
-        Must have names ``'t', 'dt0', 'dt1'`` describing the time intervals
-        around the source times to sample from.
-    run_dict : dictionary
-        Dictionary with run information, matching the experimental data. Can be
-        obtained from ``create_run_dict``.
+        Source information, needs names ``'time', 'dt0', 'dt1'``, for time in
+        MJD and lower, upper time window bound in seconds relativ to ``'time'``.
+    run_list : list of dicts
+        List of dicts made from a good run runlist snapshot. Passed to
+        ``utils.phys.make_rate_records``.
     sin_dec_bins : array-like
         Explicit bin edges in ``sin(dec)`` used to bin ``sin_decs``.
     rate_rebins : array-like
@@ -136,7 +135,10 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         Smoothing condition for the parameter spline fits, controlling how much
         the spline is allowed to deviate from the data points, where ``spl_s=0``
         means interpolation. If ``None`` the default for
-        ``scipy.interpolate.UnivariateSpline`` is used. (Default: ``None``)
+        ``scipy.interpolate.UnivariateSpline`` is used. (default: ``None``)
+    n_scan_bins : int, optional
+        How many bins to use for the LLH scan of the rate function to estimate
+        the standard deviation of the best fit parameters. (default: 50)
 
     Returns
     -------
@@ -145,19 +147,28 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         the integral over the spline over the given sin dec range is 1.
     info : dict
         Collection of various intermediate results and fit information.
+        Has keys:
+        - 'allsky_rate_func': Rate func used to model the allsky rate.
+        - 'allsky_best_params': Best fit params for 'allsky_rate_func'.
+        - 'param_splines': Splines describing the declination dependency of the
+          fitted per bin rate parameters.
+        - 'best_pars': Best fit parameters per sinus declination bin.
+        - 'best_stddevs': Standard deviations of the parameters above.
+        - 'best_pars_norm': Normalized 'best_pars', so integral is 1.
+        - 'best_stddevs_norm': Normalized with same norm as in 'best_pars_norm'.
     """
-    # http://stackabuse.com/python-circular-imports
+    # Avoid circular imports: http://stackabuse.com/python-circular-imports
     from ..grb import SinusFixedConstRateFunction
 
-    ev_t = np.atleast_1d(ev_t)
-    ev_sin_dec = np.atleast_1d(ev_sin_dec)
-    src_t = np.atleast_1d(srcs["time"])
+    ev_t = X["time"]
+    ev_sin_dec = np.sin(X["dec"])
+    src_t = srcs["time"]
     src_trange = np.vstack((srcs["dt0"], srcs["dt1"])).T
     sin_dec_bins = np.atleast_1d(sin_dec_bins)
     rate_rebins = np.atleast_1d(rate_rebins)
 
-    rate_rec = make_rate_records(run_dict=run_dict, ev_t=ev_t)
     norm = np.diff(sin_dec_bins)
+    rate_rec = make_rate_records(run_list=run_list, ev_runids=X["run"])
 
     # 1) Get phase offset from allsky fit for good amp and baseline fits.
     #    Only fix the period to 1 year, as expected from seasons.
@@ -174,9 +185,9 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
     seed_reb = (-0.5 * (max_rate - min_rate),  # Optimized for southern hemisp.
                 min_ev_t,
                 np.average(rates, weights=weights))
-    bounds = [[-2. * max_rate, 2. * max_rate],
-              [seed_reb[1] - 180., seed_reb[1] + 180.],
-              [0., None]]
+    bounds = [[-2. * max_rate, 2. * max_rate],           # amplitude
+              [seed_reb[1] - 180., seed_reb[1] + 180.],  # phase
+              [0., None]]                                # baseline
     fitres_allsky = rate_func_allsky.fit(t=rate_bin_mids, rate=rates,
                                          srcs=srcs, p0=seed_reb, w=weights,
                                          bounds=bounds)
@@ -198,7 +209,8 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         print(log.INFO("sindec bin {} / {}".format(i + 1, nbins)))
         # Only make rates for the current bin and fit rate func in amp and base
         mask = (ev_sin_dec >= lo) & (ev_sin_dec < hi)
-        rate_rec = make_rate_records(run_dict=run_dict, ev_t=ev_t[mask])
+        rate_rec = make_rate_records(run_list=run_list,
+                                     ev_runids=X["run"][mask])
         rates, _, rates_std, _ = rebin_rate_rec(
             rate_rec, bins=rate_rebins, ignore_zero_runs=True)
         weights = 1. / rates_std
@@ -237,7 +249,7 @@ def make_time_dep_dec_splines(ev_t, ev_sin_dec, srcs, run_dict, sin_dec_bins,
         weights = 1. / std_devs_norm[n]
         # Small feedback loop to catch large 2nd derivates, meaning extremely
         # large fluctuations between the points. Empirical correction values,
-        # might break in various scenarios. Switch to interpol splines then...
+        # might break in various scenarios. Switch to interpol. splines then...
         i = 0
         is_ok = False
         spl_s_ = spl_s
@@ -342,7 +354,7 @@ def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
     rngs : list
         Parameter ranges to scan: ``[bf[i] - rng[i], bf[i] + rng[i]]``.
     nbins : int, optional
-        Number of bins in each dimension to scan. (Default: 100)
+        Number of bins in each dimension to scan. (default: 100)
 
     Returns
     -------
