@@ -8,7 +8,6 @@ from __future__ import print_function, division, absolute_import
 
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
-from numpy.core.records import fromarrays
 import scipy.stats as scs
 import healpy as hp
 
@@ -1134,15 +1133,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
                 sam_i = np.empty(0, dtype=self._sample_dtype)
             sam.append(sam_i)
 
-        # Debug purpose
-        # try:
-        #     self._sample_idx = fromarrays(
-        #         [np.concatenate(ev_idx), np.concatenate(src_idx)],
-        #         dtype=[("ev_idx", float), ("src_idx", float)])
-        # except ValueError:
-        #     self._sample_idx = np.empty(0, dtype=[("ev_idx", float),
-        #                                 ("src_idx", float)])
-        # return np.concatenate(sam)
+        return np.concatenate(sam)
 
     def _setup_data_injector(self, X, srcs, run_list):
         """
