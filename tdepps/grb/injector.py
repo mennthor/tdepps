@@ -1109,15 +1109,15 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         4. Combine to a single recarray X
         """
         # Get number of BG events to sample per source in this trial
-        expected_evts = self._rndgen.poisson(self._nb)
+        evts_per_src = self._rndgen.poisson(self._nb)
         # Sample times from rate function for all sources
-        times = self._spl_info["allsky_rate_func"].sample(expected_evts)
+        times = self._spl_info["allsky_rate_func"].sample(evts_per_src)
 
         sam = []
         ev_idx = []
         src_idx = []
         for j in range(self._nsrcs):
-            nevts = expected_evts[j]
+            nevts = evts_per_src[j]
             if nevts > 0:
                 # Resample dec, logE, sigma from exp data with each source CDF
                 idx = random_choice(self._rndgen, CDF=self._sample_CDFs[j],
