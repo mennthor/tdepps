@@ -16,14 +16,15 @@ class GRBLLHAnalysis(object):
     ----------
     llh : BaseLLH or BaseMultiLLH instance
         LLH model used for testing hypothesis.
-    bg_inj : BaseBGDataInjector
+    bg_inj : BaseBGDataInjector or BaseMultiBGDataInjector
         Background injector model injecting background-like events in trials.
-    bg_inj : BaseSignalInjector
+    sig_inj : BaseSignalInjector or BaseMultiSignalInjector
         Signal injector model injecting signal-like events in trials.
     random_state : None, int or np.random.RandomState, optional
-        Used as PRNG, see ``sklearn.utils.check_random_state``. (default: None)
+        Used as PRNG, see ``sklearn.utils.check_random_state``.
+        (default: ``None``)
     """
-    def __init__(self, llh, bg_inj, sig_inj, random_state=None):
+    def __init__(self, llh, bg_inj, sig_inj=None, random_state=None):
         self._log = logger(name=self.__class__.__name__, level="ALL")
 
         self._check_llh_inj_harmony(llh, bg_inj, sig_inj)
@@ -85,34 +86,38 @@ class GRBLLHAnalysis(object):
 
             return True
 
-        # First check if all are single or multi types
-        has_names = [hasattr(llh, "llhs"), hasattr(bg_inj, "injs"),
-                     hasattr(sig_inj, "injs")]
+        # First check if all are single or multi types and if we have a sig inj.
+        if sig_inj is None:
+            injs = [bg_inj]
+            print(self._log.INFO("No signal injector, can only do BG trials."))
+        else:
+            injs = [bg_inj, sig_inj]
+
+        has_names = ([hasattr(llh, "llhs")] +
+                     [hasattr(_inj, "injs") for _inj in injs])
+
         if all(has_names):
-            print(self._log.INFO("Dealing with multi types."))
+            print(self._log.INFO("Dealing with multi sample modules."))
             # All names must match in the multi case
-            if not (all_equal(llh.llhs.keys(), bg_inj.injs.keys()) and
-                    all_equal(llh.llhs.keys(), sig_inj.injs.keys())):
+            all_equ = [all_equal(llh.llhs.keys(), _inj.injs.keys())
+                       for _inj in injs]
+            if not all(all_equ):
                 raise AttributeError("LLH and / or injector names don't match.")
         elif not all(has_names):
-            print(self._log.INFO("Dealing with single types."))
+            print(self._log.INFO("Dealing with single sample modules."))
         else:
             raise TypeError(
-                "LLH and injectors are not all single or multi types.")
+                "Likelihoods and injectors are not all single or multi types.")
 
         # Now check if exchanged data recarrays are matching
-        try:
-            _all_match(llh, bg_inj)
-        except KeyError as e:
-            print(self._log.ERROR(e))
-            raise KeyError("Provided and needed names " +
-                           "don't match for `llh` and `bg_inj`.")
-        try:
-            _all_match(llh, sig_inj)
-        except KeyError as e:
-            print(self._log.ERROR(e))
-            raise KeyError("Provided and needed names " +
-                           "don't match for `llh` and `sig_inj`.")
+        for _inj in injs:
+            try:
+                _all_match(llh, bg_inj)
+            except KeyError as e:
+                print(self._log.ERROR(e))
+                raise KeyError("Provided and needed names don't match for " +
+                               "likelihoods and injectors.")
+
         return
 
     def do_trials(self, n_trials, n_signal=None, ns0=1., poisson=True,
@@ -155,6 +160,10 @@ class GRBLLHAnalysis(object):
         if n_signal == 0:  # Set to None if we don't sample signal anyway
             n_signal = None
             nsig_i = 0
+
+        if self._sig_inj is None and n_signal is not None:
+            raise ValueError("This module was not given a signal injector, " +
+                             "'n_signal' can only be `None` here.")
 
         ns, ts, nsig = [], [], []
         nzeros = 0
