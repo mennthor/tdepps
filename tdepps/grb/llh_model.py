@@ -356,7 +356,7 @@ class GRBModel(BaseModel):
             times. Is applied to all sources stored in the class instance.
         """
         if dt0 >= dt1:
-            raise ValueError("`dt0 >= dt1`. This mean we test for no sources.")
+            raise ValueError("`dt0 >= dt1`. This means we test for no sources.")
 
         # Setup and store new BG splines (repeats some code from utils.spline)
         # Broadcast params to get the rate func vals for each sindec
