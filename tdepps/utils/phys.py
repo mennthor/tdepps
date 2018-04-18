@@ -114,16 +114,6 @@ def make_rate_records(ev_runids, run_list):
     evts = np.empty(_nruns, dtype=np.int)
     for i, runid in enumerate(runs):
         evts[i] = np.sum(ev_runids == runid)
-    tot_evts = np.sum(evts)
-
-    # Inform, when not all event run IDs matched the runlist run IDs
-    _nevts = len(ev_runids)
-    if tot_evts != _nevts:
-        _info = "Events run IDs and run_list run IDs are not all the same.\n"
-        _info += "Maybe you want to check the events or the run list\n"
-        _info += "  Nr. of events in runs : {}\n".format(tot_evts)
-        _info += "  Nr. of given events   : {}".format(_nevts)
-        print(log.INFO(_info))
 
     # Normalize to rate in Hz, zero livetime runs (1 evt only) get zero rate
     runtime = stop_mjds - start_mjds
