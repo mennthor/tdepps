@@ -70,7 +70,7 @@ def weighted_cdf(x, val, weights=None):
     err : float
         Estimated uncertainty on the CDF value.
     """
-    x = np.asarray(x)
+    x = np.atleast_1d(x)
 
     if weights is None:
         weights = np.ones_like(x)
@@ -85,6 +85,83 @@ def weighted_cdf(x, val, weights=None):
     err = np.sqrt(cdf * (1. - cdf) * np.sum(weights**2))
 
     return cdf, err
+
+
+def cdf_nzeros(x, nzeros, vals, sorted=False):
+    """
+    Returns the CDF value at value ``vals`` for a dataset with ``x > 0`` and
+    ``nzeros`` entries that are zero.
+
+    Parameters
+    ----------
+    x : array-like
+        Data values on which the percentile is calculated.
+    nzeros : int
+        Number of zero trials.
+    vals : float or array-like
+        Threshold(s) in x-space to calculate the percentile against.
+    sorted : bool, optional
+        If ``True`` assume ``x`` is sorted ``x[0] <= ... <= x[-1]``.
+        Can save time on large arrays but produces wrong results, if array is
+        not really sorted.
+
+    Returns
+    -------
+    cdf : float
+        CDF in ``[0, 1]``, fraction of ``x <= vals``.
+    """
+    x = np.atleast_1d(x)
+    vals = np.atleast_1d(vals)
+    if not sorted:
+        x = np.sort(x)
+
+    ntot = float(len(x) + nzeros)
+
+    # CDF(x<=val) =  Total fraction of values x <= val + given zero fraction
+    frac_zeros = nzeros / ntot
+    cdf = np.searchsorted(x, vals, side="right") / ntot + frac_zeros
+    return cdf
+
+
+def percentile_nzeros(x, nzeros, q, sorted=False):
+    """
+    Returns the percentile ``q`` for a dataset with ``x > 0`` and ``nzeros``
+    entries that are zero.
+
+    Alternatively do ``np.percentile(np.r_[np.zeros(nzeros), x], q)``, which
+    gives the same result when choosing ``interpolation='lower'``.
+
+    Parameters
+    ----------
+    x : array-like
+        Non-zero values.
+    nzeros : int
+        Number of zero trials.
+    q : float
+        Percentile in ``[0, 100]``.
+    sorted : bool, optional
+        If ``True`` assume ``x`` is sorted ``x[0] <= ... <= x[-1]``.
+        Can save time on large arrays but produces wrong results, if array is
+        not really sorted.
+
+    Returns
+    -------
+    percentile : float
+        The percentile at level ``q``.
+    """
+    x = np.atleast_1d(x)
+    q = np.atleast_1d(q) / 100.
+    if not sorted:
+        x = np.sort(x)
+
+    ntot = len(x) + nzeros
+    idx = (q * ntot).astype(int) - nzeros - 1
+
+    percentile = np.zeros_like(q, dtype=np.float)
+    m = (idx >= 0)
+    percentile[m] = x[idx[m]]
+
+    return percentile
 
 
 def fit_chi2_cdf(ts_val, beta, TS, mus):
