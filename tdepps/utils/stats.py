@@ -9,7 +9,7 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
-from scipy.stats import rv_continuous, chi2
+from scipy.stats import rv_continuous, chi2, expon
 import scipy.optimize as sco
 from .io import logger
 log = logger(name="utils.stats", level="ALL")
@@ -222,13 +222,13 @@ def fit_chi2_cdf(ts_val, beta, TS, mus):
 
 class delta_chi2_gen(rv_continuous):
     """
-    Class for a probability denstiy function modelled by using a:math`\chi^2`
-    distribution for :math:`x > 0` and a constant fraction :math:`1 - \eta`
-    of zero trials for :math`x = 0` (like a delta peak at 0).
+    Class for a probability denstiy distribution modelled by using a ``chi2``
+    distribution for ``x > 0`` and a constant fraction ``1 - \eta`` of zero
+    trials for ``x = 0`` - like a delta peak at 0.
 
     Notes
     -----
-    The probability density function for `delta_chi2` is:
+    The probability density distribution for ``delta_chi2`` is:
 
     .. math::
 
@@ -238,9 +238,9 @@ class delta_chi2_gen(rv_continuous):
               \eta\chi^2_\text{df}(x) &\text{for } x>0 \\
           \end{cases}
 
-    `delta_chi2` takes ``df`` and ``eta``as a shape parameter, where ``df`` is
-    the standard :math:`\chi^2_\text{df}` degrees of freedom parameter and
-    ``1-eta`` is the fraction of the contribution of the delta function at zero.
+    ``delta_chi2`` takes ``df`` and ``eta``as a shape parameter, where ``df``
+    is the standard ``chi2_df`` degrees of freedom parameter and ``1-eta`` is
+    the fraction of the contribution of the delta distribution at zero.
     """
     def _rvs(self, df, eta):
         # Determine fraction of zeros by drawing from binomial with p=eta
@@ -266,37 +266,37 @@ class delta_chi2_gen(rv_continuous):
         return out
 
     def _pdf(self, x, df, eta):
-        x = np.asarray(x)
+        x = np.atleast_1d(x)
         return np.where(x > 0., eta * chi2.pdf(x, df=df), 1. - eta)
 
     def _logpdf(self, x, df, eta):
-        x = np.asarray(x)
+        x = np.atleast_1d(x)
         return np.where(x > 0., np.log(eta) + chi2.logpdf(x, df=df),
                         np.log(1. - eta))
 
     def _cdf(self, x, df, eta):
-        x = np.asarray(x)
+        x = np.atleast_1d(x)
         return np.where(x > 0., (1. - eta) + eta * chi2.cdf(x, df=df),
                         (1. - eta))
 
     def _logcdf(self, x, df, eta):
-        x = np.asarray(x)
+        x = np.atleast_1d(x)
         return np.where(x > 0., np.log(1 - eta + eta * chi2.cdf(x, df)),
                         np.log(1. - eta))
 
     def _sf(self, x, df, eta):
         # Note: Define sf(0)=0 and not sf(0)=(1-eta) because 0 is inclusive
-        x = np.asarray(x)
+        x = np.atleast_1d(x)
         return np.where(x > 0., eta * chi2.sf(x, df), 1.)
 
     def _logsf(self, x, df, eta):
         # Note: Define sf(0)=0 and not sf(0)=(1-eta) because 0 is inclusive
-        x = np.asarray(x)
+        x = np.atleast_1d(x)
         return np.where(x > 0., np.log(eta) + chi2.logsf(x, df), 0.)
 
     def _ppf(self, p, df, eta):
         # Derive this from inverting p = delta_chi2.cdf as defined above
-        p = np.asarray(p)
+        p = np.atleast_1d(p)
         return np.where(p > (1. - eta), chi2.ppf(1 + (p - 1) / eta, df), 0.)
 
     def _isf(self, p, df, eta):
@@ -305,14 +305,14 @@ class delta_chi2_gen(rv_continuous):
 
     def fit(self, data, *args, **kwds):
         # Wrapper for chi2 fit, estimating eta and fitting chi2 on data > 0
-        data = np.asarray(data)
+        data = np.atleast_1d(data)
         eta = float(np.count_nonzero(data)) / len(data)
         df, loc, scale = chi2.fit(data[data > 0.], *args, **kwds)
         return df, eta, loc, scale
 
     def fit_nzeros(self, data, nzeros, *args, **kwds):
         # Same as `fit` but data has only non-zero trials
-        data = np.asarray(data)
+        data = np.atleast_1d(data)
         ndata = len(data)
         eta = float(ndata) / (nzeros + ndata)
         df, loc, scale = chi2.fit(data, *args, **kwds)
@@ -320,3 +320,103 @@ class delta_chi2_gen(rv_continuous):
 
 
 delta_chi2 = delta_chi2_gen(name="delta_chi2")
+
+
+class emp_with_exp_tail_gen(rv_continuous):
+    """
+    Class for a probability denstiy distribution modelled by using the empirical
+    PDF defined by trial data and a fitted exponetial tail, replacing the
+    empirical PDF in a low statistics region.
+
+    Notes
+    -----
+    The probability density distribution for `delta_chi2` is:
+
+    .. math::
+
+      \text{PDF}(x, t, \lambda) =
+          \begin{cases}
+              \text{PDF}_\text{emp}(x)    &\text{for } x<=t \\
+              \text{CDF}_\text{emp}(t) \cdot
+                \lambda e^{-\lambda (x-t)}  &\text{for } x>t \\
+          \end{cases}
+
+    Here ``t`` is the threshold after which we switch from th empirical PDF to
+    the exponential tail, ``lambda`` is the exponential decay parameter. The
+    normalization of the exponential term is adapted to match the total
+    normaliazation together with the empirical part.
+    """
+    def _rvs(self, df, eta):
+        # Determine fraction of zeros by drawing from binomial with p=eta
+        s = self._size if not len(self._size) == 0 else 1
+        nzeros = self._random_state.binomial(n=s, p=(1. - eta), size=None)
+        # If None, len of size is 0 and single scalar rvs requested
+        if len(self._size) == 0:
+            if nzeros == 1:
+                return 0.
+            else:
+                return self._random_state.chisquare(df, size=None)
+        # If no zeros or no chi2 is drawn for this trial, only draw one type
+        if nzeros == self._size:
+            return np.zeros(nzeros, dtype=np.float)
+        if nzeros == 0:
+            return self._random_state.chisquare(df, size=self._size)
+        # All other cases: Draw, concatenate and shuffle to simulate a per
+        # random number Bernoulli process with p=eta
+        out = np.r_[np.zeros(nzeros, dtype=np.float),
+                    self._random_state.chisquare(df,
+                                                 size=(self._size - nzeros))]
+        self._random_state.shuffle(out)
+        return out
+
+    def _pdf(self, x, df, eta):
+        x = np.atleast_1d(x)
+        return np.where(x > 0., eta * chi2.pdf(x, df=df), 1. - eta)
+
+    def _logpdf(self, x, df, eta):
+        x = np.atleast_1d(x)
+        return np.where(x > 0., np.log(eta) + chi2.logpdf(x, df=df),
+                        np.log(1. - eta))
+
+    def _cdf(self, x, df, eta):
+        x = np.atleast_1d(x)
+        return np.where(x > 0., (1. - eta) + eta * chi2.cdf(x, df=df),
+                        (1. - eta))
+
+    def _logcdf(self, x, df, eta):
+        x = np.atleast_1d(x)
+        return np.where(x > 0., np.log(1 - eta + eta * chi2.cdf(x, df)),
+                        np.log(1. - eta))
+
+    def _sf(self, x, df, eta):
+        # Note: Define sf(0)=0 and not sf(0)=(1-eta) because 0 is inclusive
+        x = np.atleast_1d(x)
+        return np.where(x > 0., eta * chi2.sf(x, df), 1.)
+
+    def _logsf(self, x, df, eta):
+        # Note: Define sf(0)=0 and not sf(0)=(1-eta) because 0 is inclusive
+        x = np.atleast_1d(x)
+        return np.where(x > 0., np.log(eta) + chi2.logsf(x, df), 0.)
+
+    def _ppf(self, p, df, eta):
+        # Derive this from inverting p = delta_chi2.cdf as defined above
+        p = np.atleast_1d(p)
+        return np.where(p > (1. - eta), chi2.ppf(1 + (p - 1) / eta, df), 0.)
+
+    def _isf(self, p, df, eta):
+        # Derive this from inverting p = delta_chi2.sf as defined above
+        return np.where(p < eta, chi2.isf(p / eta, df), 0.)
+
+    def fit(self, data, t, *args, **kwds):
+        # Fits the exponential tail after the threshold
+        data = np.atleast_1d(data)
+        loc, scale = chi2.fit(data[data > 0.], *args, **kwds)
+        return df, eta, loc, scale
+
+    def fit_nzeros(self, data, nzeros, t, *args, **kwds):
+        # Same as `fit` but given data has only non-zero trials
+        data = np.atleast_1d(data)
+        ndata = len(data)
+        self._nzeros = nzeros
+        df, loc, scale = chi2.fit(data, *args, **kwds)
+        return df, eta, loc, scale
