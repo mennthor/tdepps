@@ -10,6 +10,8 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
+import matplotlib
+matplotlib.use("template")  # Non-output backend, only need the contours...
 import matplotlib.pyplot as plt
 import scipy.interpolate as sci
 from scipy.stats import chi2
