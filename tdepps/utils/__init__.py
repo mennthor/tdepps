@@ -19,4 +19,5 @@ from .spline import spl_normed, make_spl_edges, fit_spl_to_hist
 from .spline import make_time_dep_dec_splines, make_grid_interp_from_hist_ratio
 from .spline import get_stddev_from_scan
 
-from .stats import random_choice, weighted_cdf, delta_chi2, fit_chi2_cdf
+from .stats import random_choice, delta_chi2, fit_chi2_cdf
+from .stats import weighted_cdf, cdf_nzeros, percentile_nzeros
