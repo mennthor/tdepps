@@ -11,7 +11,14 @@ standard_library.install_aliases()
 
 import numpy as np
 import matplotlib
-matplotlib.use("template")  # Non-output backend, only need the contours...
+import warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings("error")
+    try:
+        # Non-output backend, only need the contours. Only if no backend was set
+        matplotlib.use("template")
+    except UserWarning:
+        pass
 import matplotlib.pyplot as plt
 import scipy.interpolate as sci
 from scipy.stats import chi2
