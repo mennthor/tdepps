@@ -5,7 +5,7 @@ from __future__ import print_function, division, absolute_import
 import numpy as np
 from sklearn.utils import check_random_state
 
-from ..utils import fit_chi2_cdf, logger, arr2str, all_equal
+from ..utils import fit_chi2_cdf, logger, arr2str, all_equal, dict_map
 
 
 class GRBLLHAnalysis(object):
@@ -165,6 +165,14 @@ class GRBLLHAnalysis(object):
             raise ValueError("This module was not given a signal injector, " +
                              "'n_signal' can only be `None` here.")
 
+        # Define the concatenation dependending on single or multi samples
+        if hasattr(self._llh, "llhs"):
+            def _concat(X, Xsig):
+                return dict_map(lambda k, Xi: np.concatenate((Xi, Xsig[k])), X)
+        else:
+            def _concat(X, Xsig):
+                return np.concatenate((X, Xsig))
+
         ns, ts, nsig = [], [], []
         nzeros = 0
         for i in range(n_trials):
@@ -174,7 +182,7 @@ class GRBLLHAnalysis(object):
                     nsig_i = self._rndgen.poisson(n_signal, size=None)
                 if nsig_i > 0:
                     Xsig = self._sig_inj.sample(nsig_i)
-                    X = np.concatenate((X, Xsig))
+                    X = _concat(X, Xsig)
 
             ns_i, TS_i = self.llh.fit_lnllh_ratio(ns0=ns0, X=X)
 
