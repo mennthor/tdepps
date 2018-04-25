@@ -22,3 +22,4 @@ from .spline import get_stddev_from_scan
 from .stats import random_choice, delta_chi2, fit_chi2_cdf
 from .stats import weighted_cdf, cdf_nzeros, percentile_nzeros
 from .stats import emp_with_exp_tail_dist, scan_best_thresh
+from .stats import sigma2prob, prob2sigma
