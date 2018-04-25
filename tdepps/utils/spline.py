@@ -10,16 +10,6 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
-import matplotlib
-import warnings
-with warnings.catch_warnings():
-    warnings.filterwarnings("error")
-    try:
-        # Non-output backend, only need the contours. Only if no backend was set
-        matplotlib.use("template")
-    except UserWarning:
-        pass
-import matplotlib.pyplot as plt
 import scipy.interpolate as sci
 from scipy.stats import chi2
 
@@ -413,6 +403,17 @@ def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
         x_min, x_max = np.amin(x), np.amax(x)
         y_min, y_max = np.amin(y), np.amax(y)
         return 0.5 * (x_max - x_min), 0.5 * (y_max - y_min)
+
+    import warnings
+    import matplotlib
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error")
+        try:
+            # Only if no backend was set. Try 'template' if 'agg' is not working
+            matplotlib.use("agg")
+        except UserWarning:
+            pass
+    import matplotlib.pyplot as plt
 
     # Scan the LLH, adapt scan range if contour is not closed
     bf_x, bf_y = bfs
