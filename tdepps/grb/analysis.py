@@ -212,7 +212,8 @@ class GRBLLHAnalysis(object):
 
         return res, nzeros, nsig
 
-    def performance(self, ts_val, beta, mus, par0=[1., 1., 1.], n_trials=1000):
+    def performance(self, ts_val, beta, mus, ns0=1., par0=[1., 1., 1.],
+                    n_trials=1000):
         """
         Make independent trials within given range and fit a ``chi2`` CDF to the
         resulting percentiles, becasue they are surprisingly well described by
@@ -234,6 +235,8 @@ class GRBLLHAnalysis(object):
             ``ts_val``.
         mus : array-like
             How much mean poisson signal shall be injected.
+        ns0 : float, optional
+            Seed value for the ns fit parameter. (Default: 1.)
         par0 : list, optional
             Seed values ``[df, loc, scale]`` for the ``chi2`` CDF fit.
             (default: ``[1., 1., 1.]``)
@@ -269,13 +272,19 @@ class GRBLLHAnalysis(object):
         ns = []
         nsig = []
         for mui in mus:
-            res, nzeros, nsig_i = self.do_trials(n_trials=n_trials, ns0=mui,
+            print("Starting {} signal trials with mu={:.3f}".format(n_trials,
+                                                                    mui))
+            res, nzeros, nsig_i = self.do_trials(n_trials=n_trials,
+                                                 n_signal=mui,
+                                                 ns0=ns0,
+                                                 poisson=True,
                                                  full_out=True)
             ts.append(res["ts"])
             ns.append(res["ns"])
             nsig.append(nsig_i)
 
         # Create the requested CDF values and fit the chi2
+        print("Fitting a chi2 CDF to the trial stats.")
         mu_bf, cdfs, pars = fit_chi2_cdf(ts_val, beta, ts, mus)
 
         return {"mu_bf": mu_bf, "ts": ts, "ns": ns, "mus": mus, "ninj": nsig,
