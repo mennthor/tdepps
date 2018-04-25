@@ -10,7 +10,7 @@ standard_library.install_aliases()
 
 import json
 import numpy as np
-from scipy.stats import rv_continuous, chi2, expon, kstest
+from scipy.stats import rv_continuous, norm, chi2, expon, kstest
 import scipy.optimize as sco
 from .io import logger
 log = logger(name="utils.stats", level="ALL")
@@ -41,6 +41,45 @@ def random_choice(rndgen, CDF, n=None):
     """
     u = rndgen.uniform(size=n)
     return np.searchsorted(CDF, u, side="right")
+
+
+def sigma2prob(sig):
+    """
+    Return the probability for a given gaussian sigma central interval.
+    Reverse operation of ``prob2sigma``.
+
+    Parameters
+    ----------
+    sig : array-like
+        Sigma values to convert to central probabities.
+
+    Returns
+    -------
+    p : array-like
+        Central interval probabilities.
+    """
+    sig = np.atleast_1d(sig)
+    return norm.cdf(sig) - norm.cdf(-sig)  # Central interval
+
+
+def prob2sigma(p):
+    """
+    Return the corresponding sigma for an assumed total probability of
+    ``1-p`` in both tails of a gaussian PDF - so ``p/2`` in each of the tails.
+    Reverse operation of ``sigma2prob``
+
+    Parameters
+    ----------
+    p : array-like
+        Probabilities to convert to sigmas.
+
+    Returns
+    -------
+    sig : array-like
+        Sigma values corresponding to ``p``.
+    """
+    p = np.atleast_1d(p)
+    return norm.ppf(p + (1. - p) / 2.)  # (1-p) / 2 in the right tail
 
 
 def weighted_cdf(x, val, weights=None):
