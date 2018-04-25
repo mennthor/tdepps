@@ -213,7 +213,7 @@ class GRBLLHAnalysis(object):
         return res, nzeros, nsig
 
     def performance(self, ts_val, beta, mus, ns0=1., par0=[1., 1., 1.],
-                    n_trials=1000):
+                    n_batch_trials=1000):
         """
         Make independent trials within given range and fit a ``chi2`` CDF to the
         resulting percentiles, becasue they are surprisingly well described by
@@ -240,10 +240,8 @@ class GRBLLHAnalysis(object):
         par0 : list, optional
             Seed values ``[df, loc, scale]`` for the ``chi2`` CDF fit.
             (default: ``[1., 1., 1.]``)
-        n_trials : int, optional
-            How many new trials to make per independent trial. (default: 1000)
-        verb : bool, optional
-            If ``True`` print progress message during fit. (default: False)
+        n_batch_trials : int, optional
+            How many trials to make per independent trial batch. (default: 1000)
 
         Returns
         -------
@@ -272,9 +270,9 @@ class GRBLLHAnalysis(object):
         ns = []
         nsig = []
         for mui in mus:
-            print("Starting {} signal trials with mu={:.3f}".format(n_trials,
-                                                                    mui))
-            res, nzeros, nsig_i = self.do_trials(n_trials=n_trials,
+            print(self._log.INFO("Starting {} ".format(n_batch_trials) +
+                                 "signal trials with mu={:.3f}".format(mui)))
+            res, nzeros, nsig_i = self.do_trials(n_trials=n_batch_trials,
                                                  n_signal=mui,
                                                  ns0=ns0,
                                                  poisson=True,
@@ -284,7 +282,7 @@ class GRBLLHAnalysis(object):
             nsig.append(nsig_i)
 
         # Create the requested CDF values and fit the chi2
-        print("Fitting a chi2 CDF to the trial stats.")
+        print(self._log.INFO("Fitting a chi2 CDF to the trial stats."))
         mu_bf, cdfs, pars = fit_chi2_cdf(ts_val, beta, ts, mus)
 
         return {"mu_bf": mu_bf, "ts": ts, "ns": ns, "mus": mus, "ninj": nsig,
