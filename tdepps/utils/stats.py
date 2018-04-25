@@ -8,8 +8,9 @@ from __future__ import division, absolute_import
 from future import standard_library
 standard_library.install_aliases()
 
+import json
 import numpy as np
-from scipy.stats import rv_continuous, chi2, expon
+from scipy.stats import rv_continuous, chi2, expon, kstest
 import scipy.optimize as sco
 from .io import logger
 log = logger(name="utils.stats", level="ALL")
@@ -164,7 +165,7 @@ def percentile_nzeros(x, nzeros, q, sorted=False):
     return percentile
 
 
-def fit_chi2_cdf(ts_val, beta, TS, mus):
+def fit_chi2_cdf(ts_val, beta, ts, mus, p0=[1., 1., 1.]):
     """
     Use collection of trials with different injected mean signal events to
     calculate the CDF values above a certain test statistic value ``ts_val``
@@ -181,9 +182,12 @@ def fit_chi2_cdf(ts_val, beta, TS, mus):
         Fraction of signal injected PDF that should lie right of the ``ts_val``.
     mus : array-like
         Mean injected signal events per bunch of trials.
-    TS : array-like, shape (len(mus), ntrials_per_mu)
+    ts : array-like, shape (len(mus), ntrials_per_mu)
         Test statistic values for each ``mu`` in ``mus``. These are used to
         calculate the CDF values used in the fit.
+    par0 : list, optional
+        Seed values ``[df, loc, scale]`` for the ``chi2`` CDF fit.
+        (default: ``[1., 1., 1.]``)
 
     Returns
     -------
@@ -195,22 +199,25 @@ def fit_chi2_cdf(ts_val, beta, TS, mus):
     pars : tuple
         Best fit parameters ``(df, loc, scale)`` for the ``chi2`` CDF.
     """
-    # Get location of beta percentile per bunch of trial TS values
+    # Get location of beta percentile per bunch of trial ts values
     cdfs = []
     errs = []
-    for TSi in TS:
-        cdf_i, err_i = weighted_cdf(TSi, val=ts_val, weights=None)
+    for tsi in ts:
+        cdf_i, err_i = weighted_cdf(tsi, val=ts_val, weights=None)
         cdfs.append(cdf_i)
         errs.append(err_i)
     cdfs, errs = np.array(cdfs), np.array(errs)
 
     def _cdf_func(x, df, loc, scale):
-        """ Somehow can't use scs.chi2.cdf directly for curve fit... """
+        """ Somehow we can't use scs.chi2.cdf directly for curve fit... """
         return chi2.cdf(x, df, loc, scale)
 
     try:
+        # Missing stats get the largest global error estimate for the fit
+        m = (errs == 0.)
+        errs[m] = np.amax(errs[~m])
         pars, _ = sco.curve_fit(
-            _cdf_func, xdata=mus, ydata=1. - cdfs, sigma=errs, p0=[1., 1., 1.])
+            _cdf_func, xdata=mus, ydata=1. - cdfs, sigma=errs, p0=p0)
         mu_bf = chi2.ppf(beta, *pars)
     except RuntimeError:
         print(log.WARN("Couldn't find best params, returning `None` instead."))
@@ -218,6 +225,53 @@ def fit_chi2_cdf(ts_val, beta, TS, mus):
         pars = None
 
     return mu_bf, cdfs, pars
+
+
+def scan_best_thresh(emp_dist, thresh_vals, pval_thresh=0.5):
+    """
+    Scans thresholds for the ``emp_with_exp_tail_dist`` distribution using a
+    KS-test to test how good the tails fits to the data.
+
+    Parameters
+    ----------
+    emp_dist : ``emp_with_exp_tail_dist`` instance
+        Distribution object used to fit the tails to the stored data. The
+        threshold is set to the best threshold found here after the scan.
+    thresh_vals : array-like
+        Threshold values to test.
+    pval_thresh : float, optional
+        The first threshold from the left, for which the scanned p-values are
+        larger than ``pval_thresh`` is returned as the best fit threshold.
+        (default: 0.5)
+
+    Returns
+    -------
+    best_thresh : float
+        First threshold for which the KS-test p-value was larger than
+        ``pval_thresh``.
+    best_idx ; int
+        Index of the best threshold, can be used to match p-values and scales.
+    pvals : array-like
+        KS-test p-values for each exponential tail.
+    scales : array-like
+        Fitted scales for each exponential tail.
+    """
+    thresh_vals = np.atleast_1d(thresh_vals)
+
+    pvals_ks = np.empty_like(thresh_vals)
+    scales = np.empty_like(thresh_vals)
+    for i, thresh in enumerate(thresh_vals):
+        scales[i] = emp_dist.fit_thresh(thresh)
+        pvals_ks[i] = kstest(emp_dist.get_split_data(emp=False)[0], "expon",
+                             args=(thresh, scales[i])).pvalue
+
+    # Choose first (=most stats) point where alpha error is above `pval_thresh`.
+    # We'd rather say something about beta error, but we don't know that
+    best_idx = np.where(pvals_ks > pval_thresh)[0][0]
+    best_thresh = thresh_vals[best_idx]
+    # Set best threshold to distribution instance
+    emp_dist.fit_thresh(best_thresh)
+    return best_thresh, best_idx, pvals_ks, scales
 
 
 class delta_chi2_gen(rv_continuous):
@@ -322,11 +376,12 @@ class delta_chi2_gen(rv_continuous):
 delta_chi2 = delta_chi2_gen(name="delta_chi2")
 
 
-class emp_with_exp_tail_gen(rv_continuous):
+class emp_with_exp_tail_dist(object):
     """
     Class for a probability denstiy distribution modelled by using the empirical
     PDF defined by trial data and a fitted exponetial tail, replacing the
-    empirical PDF in a low statistics region.
+    empirical PDF in a low statistics region. Only suitable for chi2 like test
+    statisitics with only positive and / or zero values.
 
     Notes
     -----
@@ -336,9 +391,9 @@ class emp_with_exp_tail_gen(rv_continuous):
 
       \text{PDF}(x, t, \lambda) =
           \begin{cases}
-              \text{PDF}_\text{emp}(x)    &\text{for } x<=t \\
+              \text{PDF}_\text{emp}(x)    &\text{for } 0<=x<t \\
               \text{CDF}_\text{emp}(t) \cdot
-                \lambda e^{-\lambda (x-t)}  &\text{for } x>t \\
+                \lambda e^{-\lambda (x-t)}  &\text{for } t<=x \\
           \end{cases}
 
     Here ``t`` is the threshold after which we switch from th empirical PDF to
@@ -346,77 +401,303 @@ class emp_with_exp_tail_gen(rv_continuous):
     normalization of the exponential term is adapted to match the total
     normaliazation together with the empirical part.
     """
-    def _rvs(self, df, eta):
-        # Determine fraction of zeros by drawing from binomial with p=eta
-        s = self._size if not len(self._size) == 0 else 1
-        nzeros = self._random_state.binomial(n=s, p=(1. - eta), size=None)
-        # If None, len of size is 0 and single scalar rvs requested
-        if len(self._size) == 0:
-            if nzeros == 1:
-                return 0.
-            else:
-                return self._random_state.chisquare(df, size=None)
-        # If no zeros or no chi2 is drawn for this trial, only draw one type
-        if nzeros == self._size:
-            return np.zeros(nzeros, dtype=np.float)
-        if nzeros == 0:
-            return self._random_state.chisquare(df, size=self._size)
-        # All other cases: Draw, concatenate and shuffle to simulate a per
-        # random number Bernoulli process with p=eta
-        out = np.r_[np.zeros(nzeros, dtype=np.float),
-                    self._random_state.chisquare(df,
-                                                 size=(self._size - nzeros))]
-        self._random_state.shuffle(out)
-        return out
-
-    def _pdf(self, x, df, eta):
-        x = np.atleast_1d(x)
-        return np.where(x > 0., eta * chi2.pdf(x, df=df), 1. - eta)
-
-    def _logpdf(self, x, df, eta):
-        x = np.atleast_1d(x)
-        return np.where(x > 0., np.log(eta) + chi2.logpdf(x, df=df),
-                        np.log(1. - eta))
-
-    def _cdf(self, x, df, eta):
-        x = np.atleast_1d(x)
-        return np.where(x > 0., (1. - eta) + eta * chi2.cdf(x, df=df),
-                        (1. - eta))
-
-    def _logcdf(self, x, df, eta):
-        x = np.atleast_1d(x)
-        return np.where(x > 0., np.log(1 - eta + eta * chi2.cdf(x, df)),
-                        np.log(1. - eta))
-
-    def _sf(self, x, df, eta):
-        # Note: Define sf(0)=0 and not sf(0)=(1-eta) because 0 is inclusive
-        x = np.atleast_1d(x)
-        return np.where(x > 0., eta * chi2.sf(x, df), 1.)
-
-    def _logsf(self, x, df, eta):
-        # Note: Define sf(0)=0 and not sf(0)=(1-eta) because 0 is inclusive
-        x = np.atleast_1d(x)
-        return np.where(x > 0., np.log(eta) + chi2.logsf(x, df), 0.)
-
-    def _ppf(self, p, df, eta):
-        # Derive this from inverting p = delta_chi2.cdf as defined above
-        p = np.atleast_1d(p)
-        return np.where(p > (1. - eta), chi2.ppf(1 + (p - 1) / eta, df), 0.)
-
-    def _isf(self, p, df, eta):
-        # Derive this from inverting p = delta_chi2.sf as defined above
-        return np.where(p < eta, chi2.isf(p / eta, df), 0.)
-
-    def fit(self, data, t, *args, **kwds):
-        # Fits the exponential tail after the threshold
+    def __init__(self, data, nzeros, thresh=0.):
+        """
+        Parameters
+        ----------
+        data : array-like
+            All data points > 0.
+        nzeros : int
+            Number of extra zero trials not in ``data``.
+        thresh : float, optional
+            Threshold after which the exponential tail is used over the
+            empirical statistic. (default: 0.)
+        """
         data = np.atleast_1d(data)
-        loc, scale = chi2.fit(data[data > 0.], *args, **kwds)
-        return df, eta, loc, scale
+        if np.any(data < 0):
+            raise ValueError("Test statistic `data` points must be >= 0.")
+        if nzeros < 0:
+            raise ValueError("`nzeros` must be >= 0.")
 
-    def fit_nzeros(self, data, nzeros, t, *args, **kwds):
-        # Same as `fit` but given data has only non-zero trials
-        data = np.atleast_1d(data)
-        ndata = len(data)
+        # Internal defaults
+        self._scale = None
+        self._emp_norm = None
+
+        self._data = np.sort(data)
         self._nzeros = nzeros
-        df, loc, scale = chi2.fit(data, *args, **kwds)
-        return df, eta, loc, scale
+        self.fit_thresh(thresh)
+
+    @property
+    def thresh(self):
+        return self._thresh
+
+    @property
+    def scale(self):
+        return self._scale
+
+    @property
+    def data(self):
+        return self._data
+
+    @property
+    def nzeros(self):
+        return self._nzeros
+
+    def fit_thresh(self, thresh):
+        """
+        Refit the exponential tail for the given threshold.
+
+        Parameters
+        ----------
+        thresh : float
+            Threshold after which the exponential tail is used over the
+            empirical statistic.
+        """
+        if thresh < 0.:
+            raise ValueError("`thresh` must be >= 0.")
+        is_exp = (self._data >= thresh)
+        _, self._scale = expon.fit(self._data[is_exp], floc=thresh)
+        # This is the part of the total normalization taken by the empirical PDF
+        self._emp_norm = cdf_nzeros(x=self._data, nzeros=self._nzeros,
+                                    vals=thresh, sorted=True)
+        self._thresh = thresh
+        return self._scale
+
+    def pdf(self, x, dx=1.):
+        """
+        PDF value(s) at point(s) x. The empirical part is evaluated using a
+        histogram.
+
+        Parameters
+        ----------
+        x : array-like
+            Points to evaluate the PDF at.
+        dx : float, optional
+            Bin steps. Bins for the empirical part are chosen to be
+            ``numpy.concatenate((numpy.arange(0, thresh, dx) + [thresh]``.
+            (default: 1.)
+
+        Returns
+        -------
+        pdf : array-like
+            PDF values.
+        """
+        x = np.atleast_1d(x)
+        pdf = np.empty_like(x, dtype=float)
+        is_exp = (x >= self._thresh)
+        if not np.all(is_exp):
+            bins = np.concatenate((np.arange(0., self._thresh, dx),
+                                   [self._thresh]))
+            # Create empirical PDF estimator from a histogram
+            h, _ = np.histogram(self._data, bins=bins, density=False)
+            h[0] += self._nzeros
+            norm = np.diff(bins) * np.sum(h)
+            h = h * self._emp_norm / norm
+            # Read hist values bin heights for each x, ignore over-/underflow
+            idx = np.digitize(x, bins) - 1
+            valid = np.where((idx > -1) & (idx < len(bins) - 1))[0]
+            pdf[~is_exp] = h[idx[valid]]
+        # Assign exponential PDF part
+        pdf[is_exp] = (1. - self._emp_norm) * expon.pdf(x[is_exp], self._thresh,
+                                                        self._scale)
+        return pdf
+
+    def cdf(self, x):
+        """
+        CDF value(s) at point(s) x. The empirical part is evaluated using
+        the empirical CDF.
+
+        Parameters
+        ----------
+        x : array-like
+            Points to evaluate the CDF at.
+
+        Returns
+        -------
+        cdf : array-like
+            CDF values.
+        """
+        x = np.atleast_1d(x)
+        cdf = np.empty_like(x, dtype=float)
+        is_exp = (x >= self._thresh)
+
+        # Up to threshold, values are from empirical CDF
+        cdf[~is_exp] = cdf_nzeros(self._data, self._nzeros, x[~is_exp],
+                                  sorted=True)
+        # Then use scaled exponential part
+        cdf[is_exp] = self._emp_norm + (1. - self._emp_norm) * expon.cdf(
+            x[is_exp], self._thresh, self._scale)
+        return cdf
+
+    def sf(self, x):
+        """
+        Survival function values, ``sf = 1 - cdf``.
+
+        Parameters
+        ----------
+        x : array-like
+            Points to evaluate the survival function at.
+
+        Returns
+        -------
+        sf : array-like
+            Survival function values.
+        """
+        return 1. - self.cdf(x)
+
+    def ppf(self, q):
+        """
+        Get distribution values for given percentiles ``q``. The empirical part
+        is evaluated using empirical percentiles.
+
+        Parameters
+        ----------
+        q : array-like
+            Percentile(s) in ``[0, 100]``.
+
+        Returns
+        -------
+        ppf: array-like, shape (len(q))
+            Percentile values.
+        """
+        q = np.atleast_1d(q).astype(np.float) / 100.
+        ppf = np.empty_like(q, dtype=np.float)
+        is_exp = (q >= self._emp_norm)
+        # Up to threshold, percentiles are from empirical percentiles
+        ppf[~is_exp] = percentile_nzeros(self._data, self._nzeros,
+                                         100. * q[~is_exp], sorted=True)
+        # Then use scaled exponential part
+        perc_thresh = percentile_nzeros(self._data, self._nzeros,
+                                        self._emp_norm, sorted=True)
+        q_scaled = (q[is_exp] - self._emp_norm) / (1. - self._emp_norm)
+        ppf[is_exp] = perc_thresh + expon.ppf(q_scaled, self._thresh,
+                                              self._scale)
+        return ppf
+
+    def get_split_data(self, emp=False):
+        """
+        Get fraction of internally stored data which is used for the empirical
+        or the exponential part.
+
+        Parameters
+        ----------
+        emp : bool, optional
+            If ``True`` returns the part of the data which is used for the
+            empirical part, else for the exponential part. (default: ``False``)
+
+        Returns
+        -------
+        data : array-like
+            Data array used for the empirical or the exponential part.
+        mask : array-like
+            Bool mask to mask the full data array
+            ``data = emp_with_exp_tail_dist.data[mask]``.
+        """
+        is_exp = (self._data >= self._thresh)
+        if emp:
+            return self._data[~is_exp], ~is_exp
+        else:
+            return self._data[is_exp], is_exp
+
+    def data_hist(self, dx=1., density=False, which="all"):
+        """
+        Return a histogram of the internally stored data considering the number
+        of zero trials.
+
+        Parameters
+        ----------
+        dx : float, optional
+            Bin steps. Bins for the empirical part are chosen to be
+            ``numpy.arange(0, thresh + dx, dx)`` so the might slightly overlap
+            in the exponential region (illustration purpose only). (default: 1.)
+        density : bool, optional
+            If ``True`` area under the histogram is 1 if ``which`` is ``'all'``.
+            If ``which`` is ``'emp', 'exp'``, then the histogram parts are
+            normalized with respect to the total data and not each on their own.
+            (default: False)
+        which : str
+            Can be ``'all', 'emp', 'exp'``. If ``'all'``, creates histogram of
+            all stored data, otherwise only the part used for the empirical or
+            the exponential part of the distribution.
+
+        Returns
+        -------
+        h : array-like
+            Histogram values.
+        bins : array-like, shape (len(h) + 1)
+            Bins edges.
+        err : array-like
+            Properly scaled ``sqrt(sum(h))`` error of the histogram entries.
+        norm : float
+            Area under the histogram, is 1, if ``which='all'``, otherwise the
+            fraction of the empirical or the exponetial CDF part.
+        """
+        if which == "all":
+            bins = np.arange(0., np.amax(self._data) + dx, dx)
+            _norm = 1.
+        elif which == "emp":
+            bins = np.arange(0., self._thresh + dx, dx)
+            _norm = self._emp_norm
+        elif which == "exp":
+            _start = np.arange(0., self._thresh + dx, dx)[-1]
+            bins = np.arange(_start, np.amax(self._data) + dx, dx)
+            _norm = 1. - self._emp_norm
+        else:
+            raise ValueError("`which` can be one of 'all', 'emp', 'exp'.")
+
+        h, bins = np.histogram(self._data, bins, density=False)
+        zero_idx = np.digitize(0., bins) - 1
+        if (zero_idx > -1) & (zero_idx < len(bins) - 1):
+            h[zero_idx] += self._nzeros
+        err = np.sqrt(h)
+        if density:
+            norm = np.diff(bins) * np.sum(h)
+            h = h / norm * _norm
+            err = err / norm * _norm
+        return h, bins, err, _norm
+
+    def to_json(self, fp, dtype=np.float, **json_args):
+        """
+        Save this class to disk in JSON format.
+
+        Parameters
+        ----------
+        fp : file object
+            File object given to   ``json.dump``.
+        dtype : numpy data type
+            Type to store the data array in. To save space, the test statisitc
+            can be saved in 16bit floats and still have more than sufficient
+            precision. (default: ``np.float``)
+        json_args : keyword arguments
+            Arguments given to ``json.dump``.
+
+        Note
+        ----
+        See 'https://docs.scipy.org/doc/numpy-1.13.0/user/basics.types.html' for
+        numpy data types.
+        """
+        out = {"data": self._data.astype(dtype).tolist(),
+               "nzeros": self._nzeros,
+               "thresh": self._thresh,
+               "dtype": "Data array was saved with {}".format(str(dtype))}
+        json.dump(out, fp=fp, **json_args)
+
+    @staticmethod
+    def from_json(fp):
+        """
+        Build a new class object from a saved JSN file.
+
+        Parameters
+        ----------
+        fp : file object
+            File object given to   ``json.dump``.
+
+        Returns
+        -------
+        self : `emp_with_exp_tail_dist` object
+            A new class instance made from the saved state.
+        """
+        sav = json.load(fp)
+        return emp_with_exp_tail_dist(data=sav["data"],
+                                      nzeros=sav["nzeros"],
+                                      thresh=sav["thresh"])
