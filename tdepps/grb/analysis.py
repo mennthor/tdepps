@@ -223,7 +223,8 @@ class GRBLLHAnalysis(object):
         combination of ``beta`` and ``ts_val``.
         But it is possible to use the same trial values to calculate performance
         at different values by recalculating the CDF values and refitting a
-        ``chi2`` function.
+        ``chi2`` function, as long as the generated test statisitic is large
+        enough for the desired percentiles.
 
         Parameters
         ----------
