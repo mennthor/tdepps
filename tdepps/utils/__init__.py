@@ -8,6 +8,7 @@ directly in the top level code.
 from __future__ import absolute_import
 
 from .coords import thetaphi2decra, cos_angdist, rotator
+from .coords import get_pixel_in_sigma_region
 
 from .io import dict_map, fill_dict_defaults
 from .io import arr2str, all_equal, logger
