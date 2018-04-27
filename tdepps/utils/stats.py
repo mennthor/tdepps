@@ -16,11 +16,15 @@ from .io import logger
 log = logger(name="utils.stats", level="ALL")
 
 
-def random_choice(rndgen, CDF, n=None):
+def random_choice(rndgen, CDF, size=None):
     """
-    Stripped implementation of ``np.ranom.choice`` without the checks for the
+    Stripped implementation of ``np.random.choice`` without the checks for the
     weights making it significantly faster. If ``CDF`` is not a real CDF this
     will produce non-sense.
+
+    Note: In general the CDF is built by cumulative summing up event weights.
+          For unweighted events, the weights are all equal.
+    Note: Only samples with replacement.
 
     Parameters
     ----------
@@ -29,7 +33,7 @@ def random_choice(rndgen, CDF, n=None):
     CDF : array-like
         Correctly normed CDF used to sample from. ``CDF[-1]=1`` and
         ``CDF[i-1]<=CDF[i]``.
-    n : int or None, optional
+    size : int or None, optional
         How many indices to sample. If ``None`` a single int is returned.
         (default: ``None``)
 
@@ -39,7 +43,7 @@ def random_choice(rndgen, CDF, n=None):
         The sampled indices of the chosen CDF values. Can be inserted in the
         original array to obtain the values.
     """
-    u = rndgen.uniform(size=n)
+    u = rndgen.uniform(size=size)
     return np.searchsorted(CDF, u, side="right")
 
 
@@ -84,12 +88,23 @@ def prob2sigma(p):
 
 def weighted_cdf(x, val, weights=None):
     """
-    Calculate the weighted CDF of data ``x`` with weights ``weights``.
+    Calculate the weighted CDF of data ``x`` with weights ``weights``, this
+    calculates the summed weights of all data points ``x <= val``.
 
-    This calculates the fraction  of data points ``x <= val``, so we get a CDF
-    curve when ``val`` is scanned for the same data points.
     The uncertainty is calculated from weighted binomial statistics using a
-    Wald approximation.
+    Wald approximation:
+
+        var = p * (1 - p) / n
+
+    or in the weighted case:
+
+        var = p * (1 - p) * sum w^22
+
+    which is with w = 1 / n
+
+        var = p * (1 - p) * sum (1 / n^2)
+            = p * (1 - p) * (n / n^2)
+            = p * (1 - p) / n
 
     Inverse function of ``weighted_percentile``.
 
@@ -101,7 +116,7 @@ def weighted_cdf(x, val, weights=None):
         Threshold in x-space to calculate the percentile against.
     weights : array-like
         Weight for each data point. If ``None``, all weights are assumed to be
-        1. (default: None)
+        equal. Weights are normalized to ``sum(weights) = 1``. (default: None)
 
     Returns
     -------
@@ -157,7 +172,7 @@ def cdf_nzeros(x, nzeros, vals, sorted=False):
 
     ntot = float(len(x) + nzeros)
 
-    # CDF(x<=val) =  Total fraction of values x <= val + given zero fraction
+    # CDF(x<=val) = Total fraction of values x <= val + given zero fraction
     frac_zeros = nzeros / ntot
     cdf = np.searchsorted(x, vals, side="right") / ntot + frac_zeros
     return cdf
