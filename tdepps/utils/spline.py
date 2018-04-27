@@ -270,23 +270,25 @@ def make_time_dep_dec_splines(X, srcs, run_list, sin_dec_bins, rate_rebins,
                 if (_last_max_der2 <= _max_der2_cur) and not _last_down:
                     spl_s_ *= 0.8
                     _last_down = True
-                    print(log.DEBUG("  Goin down. 2nd der.: " +
+                    print(log.DEBUG("Going down. 2nd der.: " +
                                     "{:.1f}, new s: {:.2f}, stat: {}".format(
                                         _max_der2_cur, spl_s_, _last_down)))
                 elif (_last_max_der2 <= _max_der2_cur) and _last_down:
                     spl_s_ *= 1.2
                     _last_down = False
-                    print(log.DEBUG("  Going up. 2nd der.: " +
+                    print(log.DEBUG("Going up. 2nd der.: " +
                                     "{:.1f}, new s: {:.2f}, stat: {}".format(
                                         _max_der2_cur, spl_s_, _last_down)))
                 elif _last_down:
                     spl_s_ *= 0.8
-                    print(log.DEBUG("  Going down. 2nd der.: " +
-                                    "{:.1f}".format(_max_der2_cur)))
+                    print(log.DEBUG("Going down. 2nd der.: " +
+                                    "{:.1f}, new s: {:.2f}".format(
+                                        _max_der2_cur, spl_s_)))
                 else:
                     spl_s_ *= 1.2
-                    print(log.DEBUG("  Going up. 2nd der.: " +
-                                    "{:.1f}".format(_max_der2_cur)))
+                    print(log.DEBUG("Going up. 2nd der.: " +
+                                    "{:.1f}, new s: {:.2f}".format(
+                                        _max_der2_cur, spl_s_)))
                 _last_max_der2 = _max_der2_cur
             i += 1
             if i == _max_tries:
