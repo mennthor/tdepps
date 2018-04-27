@@ -236,7 +236,7 @@ def make_src_records(dict_list, dt0, dt1):
     src_recs = np.empty((nsrcs,), dtype=dtype)
     for i, src in enumerate(dict_list):
         src = fill_dict_defaults(src, required_keys=["ra", "dec", "mjd"],
-                                 opt_keys={"w_theo": 1.}, noleft=False)
+                                 opt_keys={"w_theo": 1.}, noleft="drop")
         src_recs["ra"][i] = src["ra"]
         src_recs["dec"][i] = src["dec"]
         src_recs["time"][i] = src["mjd"]
