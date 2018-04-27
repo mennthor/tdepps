@@ -77,7 +77,7 @@ def dict_map(func, d):
 def fill_dict_defaults(d, required_keys=None, opt_keys=None, noleft=True):
     """
     Populate dictionary with data from a given dict ``d``, and check if ``d``
-    has required and optional keys. Set optionals with default if not present.
+    has required and optional keys. Sets optionals with defaults if not present.
 
     If input ``d`` is None and ``required_keys`` is empty, just return
     ``opt_keys``.
@@ -95,8 +95,10 @@ def fill_dict_defaults(d, required_keys=None, opt_keys=None, noleft=True):
         Keys that are optional. ``opt_keys`` provides optional keys and default
         values ``d`` is filled with if not present in ``d``. (default: None)
     noleft : bool, optional
-        If True, raises a ``KeyError``, when ``d`` contains etxra keys, other
-        than those given in ``required_keys`` and ``opt_keys``. (default: True)
+        If ``True``, raises a ``KeyError``, when ``d`` contains etxra keys,
+        other than those given in ``required_keys`` and ``opt_keys``. If
+        ``'drop'``, leftover keys are dropped. If ``'use'``, leftover keys are
+        taken over into the output dict. (default: True)
 
     Returns
     -------
@@ -112,7 +114,7 @@ def fill_dict_defaults(d, required_keys=None, opt_keys=None, noleft=True):
     if d is None:
         if not required_keys:
             if opt_keys is None:
-                raise TypeError("`d` and òpt_keys` are both None.")
+                raise TypeError("`d` and `opt_keys` are both None.")
             return opt_keys.copy()
         else:
             raise ValueError("`d` is None, but `required_keys` is not empty.")
@@ -128,8 +130,17 @@ def fill_dict_defaults(d, required_keys=None, opt_keys=None, noleft=True):
     # Set optional values, if key not given
     for key, val in opt_keys.items():
         out[key] = d.pop(key, val)
-    # Complain when extra keys are left and noleft is True
-    if d and noleft:
-        raise KeyError("Leftover keys ['{}'].".format(
-            "', '".join(list(d.keys()))))
+    # Extra keys are left in d: Complain, drop or use them
+    if d:
+        if noleft not in [True, "drop", "use"]:
+            raise ValueError("`noleft` can be one of `True`, 'drop', 'use'.")
+        if noleft is True:
+            raise KeyError("Leftover keys ['{}'].".format(
+                arr2str(list(d.keys()), sep="', '")))
+        elif noleft == "use":
+            for key, val in d.items():
+                out[key] = val
+        else:  # Drop
+            pass
+
     return out
