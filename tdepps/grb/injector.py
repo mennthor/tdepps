@@ -8,7 +8,6 @@ from __future__ import print_function, division, absolute_import
 
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
-import scipy.stats as scs
 import healpy as hp
 
 from ..base import BaseSignalInjector, BaseMultiSignalInjector
@@ -81,7 +80,8 @@ class SignalFluenceInjector(BaseSignalInjector):
         req_keys = None
         opt_keys = {"mode": "band", "sindec_inj_width": 0.035,
                     "dec_range": np.array([-np.pi / 2., np.pi / 2.])}
-        inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys)
+        inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys,
+                                      noleft="use")
         if inj_opts["mode"] not in ["band", "circle"]:
             raise ValueError("'mode' must be one of ['band', 'circle']")
         _sindw = inj_opts["sindec_inj_width"]
@@ -621,7 +621,8 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         CDFs = np.cumsum(src_maps, axis=1)
         self._src_map_CDFs = CDFs / CDFs[:, [-1]]
         assert np.allclose(self._src_map_CDFs[:, -1], 1.)
-        assert len(self._src_map_CDFs) == self._NPIX
+        assert len(self._src_map_CDFs) == nsrcs
+        assert self._src_map_CDFs.shape[1] == self._NPIX
 
         # Pre-compute pix2ang conversion, directly in ra, dec
         th, phi = hp.pix2ang(self._NSIDE, np.arange(self._NPIX))
@@ -699,9 +700,11 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
             decs, _, _ = get_pixel_in_sigma_region(
                 map_i, self._inj_opts["inj_sigma"])
             min_dec[i], max_dec[i] = np.amin(decs), np.amax(decs)
-            if (min_dec[i] <= srcs["dec"][i]) or (srcs["dec"][i] <= max_dec[i]):
-                raise ValueError("Source {} not within {} sigma band ".format(
-                    i, self._inj_sigma) + "of corresponding prior map.")
+            if (max_dec[i] < srcs["dec"][i]) or (srcs["dec"][i] < min_dec[i]):
+                raise ValueError(
+                    "Source {} not within {} sigma band ".format(
+                        i, self._inj_opts["inj_sigma"]) +
+                    "of corresponding prior map.")
 
         # Enlarge bands if they got too narrow
         sin_dec = np.sin(srcs["dec"])
