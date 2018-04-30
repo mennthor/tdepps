@@ -137,7 +137,7 @@ def weighted_cdf(x, val, weights=None):
     weights = weights / np.sum(weights)
     cdf = np.sum(weights[mask])
     # Binomial error on weighted cdf in Wald approximation
-    err = np.sqrt(cdf * (1. - cdf) * np.sum(weights**2))
+    err = np.sqrt(cdf * np.clip((1. - cdf), 0., 1.) * np.sum(weights**2))
 
     return cdf, err
 
