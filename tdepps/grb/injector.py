@@ -8,6 +8,7 @@ from __future__ import print_function, division, absolute_import
 
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
+from numpy.core.records import fromarrays
 import healpy as hp
 
 from ..base import BaseSignalInjector, BaseMultiSignalInjector
@@ -1074,7 +1075,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
 
         return
 
-    def sample(self):
+    def sample(self, debug=False):
         """
         Get a complete data sample for one trial.
 
@@ -1109,6 +1110,16 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             else:
                 sam_i = np.empty(0, dtype=self._sample_dtype)
             sam.append(sam_i)
+
+        # Debug purpose
+        if debug:
+            try:
+                self._sample_idx = fromarrays(
+                    [np.concatenate(ev_idx), np.concatenate(src_idx)],
+                    dtype=[("ev_idx", float), ("src_idx", float)])
+            except ValueError:
+                self._sample_idx = np.empty(0, dtype=[("ev_idx", float),
+                                            ("src_idx", float)])
 
         return np.concatenate(sam)
 
