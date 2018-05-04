@@ -328,6 +328,65 @@ def scan_best_thresh(emp_dist, thresh_vals, pval_thresh=0.5):
     return best_thresh, best_idx, pvals_ks, scales
 
 
+def make_equdist_bins(data, lo, hi, weights=None, upper_bound=None,
+                      min_evts_per_bin=100):
+    """
+    Makes as much equidistant bins as possible with the condition, that at least
+    ``min_evts_per_bin`` events are left in any bin.
+
+    Parameters
+    ----------
+    data : array-like
+        Data to be binned in a 1D histogram.
+    lo, hi : float
+        Left and right borders of the binning.
+    weights : array-like, shape(len(data),), optional
+        Data point weights, if ``None``all weiiiights are 1. If weights are
+        given, data is resampled with replacement first to obtain unweighted
+        events that get binned. (default: ``None``)
+    upper_bound : int, optional
+        Upper bound for the search algorithm. If ``None`` twice as much bins as
+        needed if the data were uniformly distributed is chosen, which might
+        fail. (default: ``None``)
+    min_evts_per_bin : int, optional
+        Number of events that must be left in any bin. Computed by the sum of
+        weights. (default: 100)
+
+    Return
+    ------
+    b : array-like
+        Bin edges that match the ``min_evts_per_bin`` condition.
+    """
+    def fun(nbins, data, lo, hi, min_evts_per_bin):
+        """ Return -1 if any bin has to few events and 1 if all have enough """
+        b = np.linspace(lo, hi, int(nbins + 1))
+        h, b = np.histogram(data, bins=b, weights=None, density=False)
+        if np.any(h < min_evts_per_bin):
+            return -1
+        else:
+            return 1
+
+    if weights is not None:
+        # If we had weighted data, resample to get unweighted events
+        weights = np.atleast_1d(weights) / np.sum(weights)
+        data = np.random.choice(data, p=weights, replace=True, size=len(data))
+    if upper_bound is None:
+        # Assume uniform distribution, might fail
+        upper_bound = 2 * int(len(data) // min_evts_per_bin)
+
+    # Find the root, but only with integer values
+    nbins = int(sco.brentq(f=fun, a=1, b=upper_bound,
+                           args=(data, lo, hi, min_evts_per_bin)))
+
+    b = np.linspace(lo, hi, nbins + 1)
+    h, b = np.histogram(data, bins=b, weights=None, density=False)
+    if np.any(h < min_evts_per_bin):
+        # If the higher integer nbins end is closest to the solution
+        b = np.linspace(lo, hi, nbins)
+        h, b = np.histogram(data, bins=b, weights=None, density=False)
+    return b
+
+
 class delta_chi2_gen(rv_continuous):
     """
     Class for a probability denstiy distribution modelled by using a ``chi2``
