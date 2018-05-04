@@ -18,6 +18,7 @@ from ..utils import random_choice
 from ..utils import fit_spl_to_hist, make_time_dep_dec_splines, spl_normed
 from ..utils import arr2str, fill_dict_defaults, logger, dict_map
 from ..utils import rotator, thetaphi2decra, get_pixel_in_sigma_region
+from ..utils import make_equdist_bins
 
 
 ##############################################################################
@@ -984,13 +985,17 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             - 'n_scan_bins', optional: Number of bins used to scan the rate
               model fir chi2 landscape to obtain errors for the spline fit.
               (default: 50)
+            - 'n_data_evts_min' : int, optional
+              Number of events that must be left in any bin while building the
+              allsky ``sin(dec)`` histogram for the declination sampling
+              weights. (default: 100)
         random_state : None, int or np.random.RandomState, optional
             Used as PRNG, see ``sklearn.utils.check_random_state``.
             (default: None)
         """
         # Check injector options
         req_keys = ["sindec_bins", "rate_rebins"]
-        opt_keys = {"spl_s": None, "n_scan_bins": 50}
+        opt_keys = {"spl_s": None, "n_scan_bins": 50, "n_data_evts_min": 100}
         inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys)
         inj_opts["sindec_bins"] = np.atleast_1d(inj_opts["sindec_bins"])
         inj_opts["rate_rebins"] = np.atleast_1d(inj_opts["rate_rebins"])
@@ -998,6 +1003,8 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             raise ValueError("'spl_s' must be `None` or >= 0.")
         if inj_opts["n_scan_bins"] < 20:
             raise ValueError("'n_scan_bins' should be > 20 for proper scans.")
+        if inj_opts["n_data_evts_min"] < 1:
+            raise ValueError("'n_data_evts_min' must > 0.")
 
         self._provided_data = np.array(
             ["time", "dec", "ra", "sigma", "logE"])
@@ -1172,22 +1179,22 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         # Make sampling CDFs to sample sindecs per source per trial
         # First a PDF spline to estimate intrinsic data sindec distribution
         ev_sin_dec = np.sin(X["dec"])
-        hist = np.histogram(ev_sin_dec, bins=sin_dec_bins,
-                            density=False)[0]
-        stddev = np.sqrt(hist)
-        norm = np.diff(sin_dec_bins) * np.sum(hist)
-        hist = hist / norm
-        stddev = stddev / norm
-        weight = 1. / stddev
-        data_spl = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight,
-                                   s=self._inj_opts["spl_s"])[0]
+        _bins = make_equdist_bins(
+            ev_sin_dec, lo, hi, weights=None,
+            min_evts_per_bin=self._inj_opts["n_data_evts_min"])
+        # Spline is interpolating to cover the data densitiy as fine as possible
+        # because for resampling we divide by the initial densitiy.
+        hist = np.histogram(ev_sin_dec, bins=_bins, density=True)[0]
+        data_spl = fit_spl_to_hist(hist, bins=_bins, w=None, s=0)[0]
         data_spl = spl_normed_factory(data_spl, lo, hi, norm=1.)
+        print(self._log.INFO("Made {} bins for allsky hist".format(len(_bins))))
 
         # Build sampling weights from PDF ratios
         sample_w = np.empty((len(sin_dec_pdf_splines), len(ev_sin_dec)),
                             dtype=float)
+        _vals = data_spl(ev_sin_dec)
         for i, spl in enumerate(sin_dec_pdf_splines):
-            sample_w[i] = spl(ev_sin_dec) / data_spl(ev_sin_dec)
+            sample_w[i] = spl(ev_sin_dec) / _vals
 
         # Cache fixed sampling CDFs for fast random choice
         CDFs = np.cumsum(sample_w, axis=1)

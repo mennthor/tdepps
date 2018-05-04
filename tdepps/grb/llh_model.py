@@ -8,7 +8,7 @@ import scipy.interpolate as sci
 from ..backend import soverb_time_box, pdf_spatial_signal
 from ..base import BaseModel
 from ..utils import fill_dict_defaults, logger
-from ..utils import spl_normed, fit_spl_to_hist
+from ..utils import spl_normed, fit_spl_to_hist, make_equdist_bins
 from ..utils import make_time_dep_dec_splines, make_grid_interp_from_hist_ratio
 
 
@@ -25,7 +25,7 @@ class GRBModel(BaseModel):
         # Check and setup spatial PDF options
         req_keys = ["sindec_bins", "rate_rebins"]
         opt_keys = {"select_ev_sigma": 5., "spl_s": None, "n_scan_bins": 50,
-                    "kent": True}
+                    "kent": True, "n_mc_evts_min": 500}
         spatial_opts = fill_dict_defaults(spatial_opts, req_keys, opt_keys)
 
         spatial_opts["sindec_bins"] = np.atleast_1d(spatial_opts["sindec_bins"])
@@ -33,12 +33,12 @@ class GRBModel(BaseModel):
 
         if spatial_opts["select_ev_sigma"] <= 0.:
             raise ValueError("'select_ev_sigma' must be > 0.")
-
         if (spatial_opts["spl_s"] is not None and spatial_opts["spl_s"] < 0):
             raise ValueError("'spl_s' must be `None` or >= 0.")
-
         if spatial_opts["n_scan_bins"] < 20:
             raise ValueError("'n_scan_bins' should be > 20 for proper scans.")
+        if spatial_opts["n_mc_evts_min"] < 1:
+            raise ValueError("'n_mc_evts_min' must > 0.")
 
         # Check and setup energy PDF options
         req_keys = ["bins", "flux_model"]
@@ -269,17 +269,21 @@ class GRBModel(BaseModel):
 
         # Get source weights from the signal weighted MC sindec spline fitted
         # to a histogram. True dec, to match selection in signal injector
+        mc_sin_dec = np.sin(MC["trueDec"])
         w_sig = MC["ow"] * self._energy_opts["flux_model"](MC["trueE"])
-        hist = np.histogram(np.sin(MC["trueDec"]), bins=sin_dec_bins,
-                            weights=w_sig, density=False)[0]
-        variance = np.histogram(np.sin(MC["dec"]), bins=sin_dec_bins,
-                                weights=w_sig**2, density=False)[0]
-        dA = np.diff(sin_dec_bins)
+        _bins = make_equdist_bins(
+            mc_sin_dec, sin_dec_bins[0], sin_dec_bins[-1],
+            weights=w_sig, min_evts_per_bin=self._spatial_opts["n_mc_evts_min"])
+        print(self._log.INFO("Made {} bins for allsky hist".format(len(_bins))))
+        hist = np.histogram(mc_sin_dec, bins=_bins, weights=w_sig,
+                            density=False)[0]
+        variance = np.histogram(mc_sin_dec, bins=_bins, weights=w_sig**2,
+                                density=False)[0]
+        dA = np.diff(_bins)  # Bin diffs is enough, weights get renormed later
         hist = hist / dA
         stddev = np.sqrt(variance) / dA
         weight = 1. / stddev
-        mc_spline = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight,
-                                    s=self._spatial_opts["spl_s"])[0]
+        mc_spline = fit_spl_to_hist(hist, bins=_bins, w=weight, s=len(hist))[0]
         src_w_dec = mc_spline(np.sin(srcs["dec"]))
 
         # Renormalize sindec splines to include the 2pi from RA normalization
