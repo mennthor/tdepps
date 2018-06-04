@@ -4,6 +4,7 @@ from __future__ import absolute_import
 
 import numpy as np
 import scipy.interpolate as sci
+from copy import deepcopy
 
 from ..backend import soverb_time_box, pdf_spatial_signal
 from ..base import BaseModel
@@ -347,7 +348,7 @@ class GRBModel(BaseModel):
 
         return llh_args, spatial_bg_spls, energy_interpol, spl_info
 
-    def set_new_srcs_dt(self, dt0, dt1):
+    def set_new_srcs_dt(self, dt0, dt1, copy=True):
         """
         Sets new time windows borders ``dt0`` and ``dt1`` for all stored sources
         and rebuilds the background expectation and background splines, without
@@ -358,22 +359,36 @@ class GRBModel(BaseModel):
         dt0, dt1 : float
             Lower and upper time window borders in seconds relativ to the source
             times. Is applied to all sources stored in the class instance.
+        copy : bool, optional
+            If ``True`` return a copy with the new time windows set and leaves
+            this class instance intact. (default: ``True``)
+
+        Returns
+        -------
+        grb_model : GRBModel instance
+            Copy of the class instance with the new time windows if ``copy`` was
+            ``True``, otherwise the current instance with changes made inplace.
         """
         if dt0 >= dt1:
             raise ValueError("`dt0 >= dt1`. This means we test for no sources.")
 
+        if copy:
+            grb_model = deepcopy(self)
+        else:
+            grb_model = self
+
         # Setup and store new BG splines (repeats some code from utils.spline)
         # Broadcast params to get the rate func vals for each sindec
-        lo, hi = self._spatial_opts["sindec_bins"][[0, -1]]
+        lo, hi = grb_model._spatial_opts["sindec_bins"][[0, -1]]
         sin_dec_pts = np.linspace(lo, hi, 1000)
-        param_splines = self._spl_info["param_splines"]
+        param_splines = grb_model._spl_info["param_splines"]
         amp = param_splines["amp"](sin_dec_pts)
         base = param_splines["base"](sin_dec_pts)
         sin_dec_splines = []
-        for ti in self._srcs["time"]:
+        for ti in grb_model._srcs["time"]:
             # Average over source time window
-            vals = self._spl_info["rate_func"].integral(t=ti, trange=[dt0, dt1],
-                                                        pars=(amp, base))
+            vals = grb_model._spl_info["rate_func"].integral(
+                t=ti, trange=[dt0, dt1], pars=(amp, base))
             # Leave splines unnormalized, unit is then events / dec
             sin_dec_splines.append(sci.InterpolatedUnivariateSpline(
                 sin_dec_pts, vals, k=1, ext="raise"))
@@ -389,18 +404,19 @@ class GRBModel(BaseModel):
             spatial_bg_spls.append(spl_normed_factory(spl, lo, hi, norm=norm))
 
         # Re-cache expected nb for each source from allsky rate func integral
-        src_t = self._srcs["time"]
+        src_t = grb_model._srcs["time"]
         src_trange = np.repeat([[dt0], [dt1]],
-                               repeats=len(self._srcs), axis=1).T
-        nb = self._spl_info["allsky_rate_func"].integral(
-            src_t, src_trange, self._spl_info["allsky_best_params"])
+                               repeats=len(grb_model._srcs), axis=1).T
+        nb = grb_model._spl_info["allsky_rate_func"].integral(
+            src_t, src_trange, grb_model._spl_info["allsky_best_params"])
         assert len(nb) == len(src_t)
 
         # Store new values
-        self._llh_args["nb"] = nb
-        self._srcs["dt0"] = dt0
-        self._srcs["dt1"] = dt1
-        self._spatial_bg_spls = spatial_bg_spls
+        grb_model._llh_args["nb"] = nb
+        grb_model._srcs["dt0"] = dt0
+        grb_model._srcs["dt1"] = dt1
+        grb_model._spatial_bg_spls = spatial_bg_spls
 
-        print(self._log.INFO("Setup new time window: " +
-                             "[{:.2f}, {:.2f}]".format(dt0, dt1)))
+        print(grb_model._log.INFO("Setup new time window: " +
+                                  "[{:.2f}, {:.2f}]".format(dt0, dt1)))
+        return grb_model
