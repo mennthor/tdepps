@@ -289,10 +289,48 @@ class GRBLLHAnalysis(object):
         return {"mu_bf": mu_bf, "ts": ts, "ns": ns, "mus": mus, "ninj": nsig,
                 "beta": beta, "tsval": ts_val, "cdfs": cdfs, "pars": pars}
 
-    def post_trials(self, n_trials, time_windows, ns0):
+    def post_trials(self, n_trials, test_llhs, ns0=1.):
         """
-        Use an analysis object with a BG model with different injection and
-        PDF models. Injects BG only for the largest time window but test the
-        injected data with a LLH having each of the different timewindows.
+        Do post trials for the GRB case when scanning multiple time windows
+        which include each other, instead of fitting them.
+
+        Per post-trial, samples are drawn once from the classes BG injector
+        time window and the LLH is then tested for all given time windows on the
+        same trial data to include the correlated nature of the time windows.
+        All tested sources are given the same time window per post-trial per
+        time window.
+
+        Parameters
+        ----------
+        n_trials : int
+            Number of post-trials to perform.
+        test_llhs : list
+            List of LLH classes to test against. This classes BG injector should
+            inject the largest time window for sane results.
+        ns0 : float, optional
+            Seed value for the ns fit parameter. (Default: 1.)
+
+        Returns
+        -------
+        res : record-array, shape (n_trials, n_test_llhs)
+            Has names ``'ts', 'ns'`` and holds the fit results of each
+            post-trial for each tested LLH class.
         """
-        pass
+        for i, test_llh in enumerate(test_llhs):
+            print(self._log.INFO("Test test LLH {} ".format(i) +
+                  "against class BG injector."))
+            self._check_llh_inj_harmony(test_llh, self.bg_inj, None)
+
+        n_tw = len(test_llhs)
+        res = np.empty((n_trials, n_tw),
+                       dtype=[("ns", np.float), ("ts", np.float)])
+        for i in range(n_trials):
+            # Sample from the stored bg injector
+            X = self._bg_inj.sample()
+            for j, test_llh in enumerate(test_llhs):
+                # Test each given LLH object
+                ns_ij, ts_ij = test_llh.fit_lnllh_ratio(ns0=ns0, X=X)
+                res["ns"][i, j] = ns_ij
+                res["ts"][i, j] = ts_ij
+
+        return res
