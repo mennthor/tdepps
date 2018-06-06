@@ -644,7 +644,7 @@ class emp_with_exp_tail_dist(object):
 
     def sf(self, x):
         """
-        Survival function values, ``sf = 1 - cdf``.
+        Survival function values, ``sf = 1 - cdf``. ``sf(0) = 1.``.
 
         Parameters
         ----------
@@ -656,7 +656,10 @@ class emp_with_exp_tail_dist(object):
         sf : array-like
             Survival function values.
         """
-        return 1. - self.cdf(x)
+        sf = np.ones_like(x)
+        m = (x > 0)
+        sf[m] = 1. - self.cdf(x[m])
+        return sf
 
     def ppf(self, q):
         """
