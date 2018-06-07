@@ -13,6 +13,8 @@ from .coords import get_pixel_in_sigma_region
 from .io import dict_map, fill_dict_defaults
 from .io import arr2str, all_equal, logger
 
+from .misc import interval_overlap
+
 from .phys import power_law_flux, make_src_records
 from .phys import make_rate_records, rebin_rate_rec
 from .phys import flux_model_factory
