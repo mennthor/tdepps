@@ -216,7 +216,7 @@ class GRBLLHAnalysis(object):
                     n_batch_trials=1000):
         """
         Make independent trials within given range and fit a ``chi2`` CDF to the
-        resulting percentiles, becasue they are surprisingly well described by
+        resulting percentiles, because they are surprisingly well described by
         that.
 
         The returned CDF and best fit ``chi2`` values are valid for the given
@@ -317,8 +317,8 @@ class GRBLLHAnalysis(object):
             post-trial for each tested LLH class.
         """
         for i, test_llh in enumerate(test_llhs):
-            print(self._log.INFO("Test test LLH {} ".format(i) +
-                  "against class BG injector."))
+            print(self._log.INFO("Test if test-LLH {} is".format(i) +
+                  " compatible with internal BG injector."))
             self._check_llh_inj_harmony(test_llh, self.bg_inj, None)
 
         n_tw = len(test_llhs)
