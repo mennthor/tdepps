@@ -140,8 +140,9 @@ def make_rate_records(ev_runids, run_list):
     mask = (runtime > 0.)
     runtime_mjd = runtime[mask] * _SECINDAY
     rate[mask] = evts[mask] / runtime_mjd
-    print(log.INFO("{} / {} runs with zero livetime.".format(np.sum(~mask),
-                                                             _nruns)))
+
+    print(log.INFO("{} / {} runs with no events.".format(
+        np.sum(~np.isin(runs, np.unique(ev_runids))), _nruns)))
 
     # Calculate poisson sqrt(N) stddev for scaled rates
     rate_std = np.zeros_like(runtime, dtype=float)
