@@ -393,7 +393,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         assert len(mc_idx) == len(w)
 
         raw_flux_per_src = np.array(
-            [np.sum(w[src_idx == j]) for j in np.unique(src_idx)])
+            [np.sum(w[src_idx == j]) for j in np.arange(len(srcs))])
         raw_flux = np.sum(w)
         assert np.isclose(np.sum(raw_flux_per_src), raw_flux)
 
