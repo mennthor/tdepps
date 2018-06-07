@@ -814,6 +814,6 @@ class emp_with_exp_tail_dist(object):
             A new class instance made from the saved state.
         """
         sav = json.load(fp)
-        return emp_with_exp_tail_dist(data=sav["data"],
+        return emp_with_exp_tail_dist(data=np.array(sav["data"]),
                                       nzeros=sav["nzeros"],
                                       thresh=sav["thresh"])
