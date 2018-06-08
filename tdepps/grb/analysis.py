@@ -317,12 +317,11 @@ class GRBLLHAnalysis(object):
             post-trial for each tested LLH class.
         """
         for i, test_llh in enumerate(test_llhs):
-            print(self._log.INFO("Test if test-LLH {} is".format(i) +
+            print(self._log.DEBUG("Test if test-LLH {} is".format(i) +
                   " compatible with internal BG injector."))
             self._check_llh_inj_harmony(test_llh, self.bg_inj, None)
 
-        n_tw = len(test_llhs)
-        res = np.empty((n_trials, n_tw),
+        res = np.empty((n_trials, len(test_llhs)),
                        dtype=[("ns", np.float), ("ts", np.float)])
         for i in range(n_trials):
             # Sample from the stored bg injector
