@@ -113,8 +113,8 @@ class GRBLLH(BaseLLH):
                 return 0., 0.
             else:
                 ns = 1. - (1. / sob)
-                TS = 2. * (-ns + math.log(sob))
-            return ns, TS
+                ts = 2. * (-ns + math.log(sob))
+            return ns, ts
         elif nevts == 2:
             sum_sob = sob[0] + sob[1]
             if sum_sob <= 1.:  # More complicated to show but same as above
@@ -123,20 +123,20 @@ class GRBLLH(BaseLLH):
                 a = 1. / (sob[0] * sob[1])
                 c = sum_sob * a
                 ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
-                TS = 2. * (-ns + np.sum(np.log1p(ns * sob)))
-                return ns, TS
+                ts = 2. * (-ns + np.sum(np.log1p(ns * sob)))
+                return ns, ts
         else:  # Fit other cases
             res = sco.minimize(fun=_neglnllh, x0=[ns0],
                                jac=True, args=(sob,),
                                bounds=[self._llh_opts["ns_bounds"]],
                                method=self._llh_opts["minimizer"],
                                options=self._llh_opts["minimizer_opts"])
-            ns, TS = res.x[0], -res.fun[0]
-            if TS < 0.:
+            ns, ts = res.x[0], -res.fun[0]
+            if ts < 0.:
                 # Some times the minimizer doesn't go all the way to 0., so
                 # TS vals might end up negative for a truly zero fit result
-                TS = 0.
-            return ns, TS
+                ts = 0.
+            return ns, ts
 
     def _soverb(self, X, band_select=True):
         """ Make an additional cut on small sob values to save time """
@@ -163,10 +163,10 @@ class GRBLLH(BaseLLH):
     def _lnllh_ratio(self, ns, sob):
         """ Calculate TS = 2 * ln(L1 / L0) """
         x = ns * sob
-        TS = 2. * (-ns + np.sum(np.log1p(x)))
+        ts = 2. * (-ns + np.sum(np.log1p(x)))
         # Gradient in ns (chain rule: ln(ns * a + 1)' = 1 / (ns * a + 1) * a)
         ns_grad = 2. * (-1. + np.sum(sob / (x + 1.)))
-        return TS, np.array([ns_grad])
+        return ts, np.array([ns_grad])
 
 
 class MultiGRBLLH(BaseMultiLLH):
@@ -247,16 +247,16 @@ class MultiGRBLLH(BaseMultiLLH):
             Fixed data to evaluate the LHL at
         """
         # Loop over ln-LLHs and add their contribution
-        TS = 0.
+        ts = 0.
         ns_grad = 0.
         # Add up LLHs for each single LLH
         for key, llh in self._llhs.items():
             ns_w = self._ns_weights[key]
-            TS_i, ns_grad_i = llh.lnllh_ratio(X[key], ns * ns_w)
-            TS += TS_i
+            ts_i, ns_grad_i = llh.lnllh_ratio(ns=ns * ns_w, X=X[key])
+            ts += ts_i
             ns_grad += ns_grad_i * ns_w  # Chain rule
 
-        return TS, ns_grad
+        return ts, ns_grad
 
     def fit_lnllh_ratio(self, ns0, X):
         """
@@ -267,14 +267,14 @@ class MultiGRBLLH(BaseMultiLLH):
         """
         def _neglnllh(ns, sob_dict):
             """ Multi LLH wrapper directly using a dict of sob values """
-            TS = 0.
+            ts = 0.
             ns_grad = 0.
             for key, sob in sob_dict.items():
-                TS_i, ns_grad_i = self._llhs[key]._lnllh_ratio(
+                ts_i, ns_grad_i = self._llhs[key]._lnllh_ratio(
                     ns * self._ns_weights[key], sob)
-                TS -= TS_i
+                ts -= ts_i
                 ns_grad -= ns_grad_i * self._ns_weights[key]  # Chain rule
-            return TS, ns_grad
+            return ts, ns_grad
 
         # No events given for any LLH, fit is zero
         if sum(map(len, X.values())) == 0:
@@ -306,8 +306,8 @@ class MultiGRBLLH(BaseMultiLLH):
                 return 0., 0.
             else:
                 ns = 1. - (1. / sob)
-                TS = 2. * (-ns + math.log(sob))
-            return ns, TS
+                ts = 2. * (-ns + math.log(sob))
+            return ns, ts
         elif nevts == 2:
             # Same case as in single LLH because sob is multi year weighted
             sum_sob = sob[0] + sob[1]
@@ -317,8 +317,8 @@ class MultiGRBLLH(BaseMultiLLH):
                 a = 1. / (sob[0] * sob[1])
                 c = sum_sob * a
                 ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
-                TS = 2. * (-ns + np.sum(np.log1p(ns * sob)))
-                return ns, TS
+                ts = 2. * (-ns + np.sum(np.log1p(ns * sob)))
+                return ns, ts
         else:  # Fit other cases
             res = sco.minimize(fun=_neglnllh, x0=[ns0],
                                jac=True, args=(sob_dict,),
@@ -334,12 +334,12 @@ class MultiGRBLLH(BaseMultiLLH):
                                    bounds=[self._llh_opts["ns_bounds"]],
                                    method=self._llh_opts["minimizer"],
                                    options=self._llh_opts["minimizer_opts"])
-            ns, TS = res.x[0], -res.fun[0]
-            if TS < 0.:
+            ns, ts = res.x[0], -res.fun[0]
+            if ts < 0.:
                 # Some times the minimizer doesn't go all the way to 0., so
                 # TS vals might end up negative for a truly zero fit result
-                TS = 0.
-            return ns, TS
+                ts = 0.
+            return ns, ts
 
     def _ns_split_weights(self, llhs):
         """
