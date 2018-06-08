@@ -184,15 +184,15 @@ class GRBLLHAnalysis(object):
                     Xsig = self._sig_inj.sample(nsig_i)
                     X = _concat(X, Xsig)
 
-            ns_i, TS_i = self.llh.fit_lnllh_ratio(ns0=ns0, X=X)
+            ns_i, ts_i = self.llh.fit_lnllh_ratio(ns0=ns0, X=X)
 
             if full_out:
                 ns.append(ns_i)
-                ts.append(TS_i)
+                ts.append(ts_i)
                 nsig.append(nsig_i)
-            elif (ns_i > 0) and (TS_i > 0):
+            elif (ns_i > 0) and (ts_i > 0):
                 ns.append(ns_i)
-                ts.append(TS_i)
+                ts.append(ts_i)
             else:
                 nzeros += 1
 
