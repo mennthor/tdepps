@@ -792,6 +792,7 @@ class emp_with_exp_tail_dist(object):
         sf : array-like
             Survival function values.
         """
+        x = np.atleast_1d(x)
         sf = np.ones_like(x)
         m = (x > 0)
         sf[m] = 1. - self.cdf(x[m])
