@@ -489,6 +489,142 @@ class delta_chi2_gen(rv_continuous):
 delta_chi2 = delta_chi2_gen(name="delta_chi2")
 
 
+class emp_dist(object):
+    """
+    Class for a probability denstiy distribution modelled by using the empirical
+    PDF defined by trial data only, eg. for a post-trial test statistic.
+    """
+    def __init__(self, data):
+        """
+        Parameters
+        ----------
+        data : array-like
+            Data points of the empirical distribution.
+        """
+        self._data = np.sort(data)
+        self._min, self._max = self._data[[0, -1]]
+
+    @property
+    def data(self):
+        return self._data
+
+    def pdf(self, x, dx=1.):
+        """
+        PDF value(s) at point(s) x. The PDF is modelled using a simple
+        histogram.
+
+        Parameters
+        ----------
+        x : array-like
+            Points to evaluate the PDF at.
+        dx : float, optional
+            Bin stepsize for the histogram used to model the PDF. (default: 1.)
+
+        Returns
+        -------
+        pdf : array-like
+            PDF values.
+        """
+        x = np.atleast_1d(x)
+        bins = np.arange(self._min, self._max + dx, dx)
+        h, _ = np.histogram(self._data, bins=bins, density=True)
+        # Read hist values bin heights for each x, ignore over-/underflow
+        idx = np.digitize(x, bins) - 1
+        valid = np.where((idx > -1) & (idx < len(bins) - 1))[0]
+        pdf = np.zeros_like(x, dtype=float)
+        pdf[valid] = h[idx[valid]]
+        return pdf
+
+    def cdf(self, x):
+        """
+        CDF value(s) at point(s) x using the empirical CDF.
+
+        Parameters
+        ----------
+        x : array-like
+            Points to evaluate the CDF at.
+
+        Returns
+        -------
+        cdf : array-like
+            CDF values.
+        """
+        return cdf_nzeros(self._data, nzeros=0, vals=x, sorted=True)
+
+    def sf(self, x):
+        """
+        Survival function values, ``sf = 1 - cdf``. ``sf(0) = 1.``.
+
+        Parameters
+        ----------
+        x : array-like
+            Points to evaluate the survival function at.
+
+        Returns
+        -------
+        sf : array-like
+            Survival function values.
+        """
+        return 1. - self.cdf(x)
+
+    def ppf(self, q):
+        """
+        Get distribution values for given percentiles ``q``. The empirical part
+        is evaluated using empirical percentiles.
+
+        Parameters
+        ----------
+        q : array-like
+            Percentile(s) in ``[0, 100]``.
+
+        Returns
+        -------
+        ppf: array-like, shape (len(q))
+            Percentile values.
+        """
+        return percentile_nzeros(self._data, nzeros=0, q=q, sorted=True)
+
+    def to_json(self, dtype=np.float, **json_args):
+        """
+        Get a representation of this class in JSON format to save on disk.
+
+        Parameters
+        ----------
+        dtype : numpy data type
+            Type to store the data array in. To save space, it might be
+            sufficient to save the data 16bit floats and still have enough
+            precision. (default: ``np.float``)
+        json_args : keyword arguments
+            Arguments given to ``json.dumps``.
+
+        Note
+        ----
+        See 'https://docs.scipy.org/doc/numpy-1.13.0/user/basics.types.html' for
+        numpy data types.
+        """
+        out = {"data": self._data.astype(dtype).tolist(),
+               "dtype": "Data array was saved with {}".format(str(dtype))}
+        return json.dumps(out, **json_args)
+
+    @staticmethod
+    def from_json(fp):
+        """
+        Build a new class object from a JSON string.
+
+        Parameters
+        ----------
+        fp : file object
+            File object given to ``json.dump``.
+
+        Returns
+        -------
+        emp_dist : `emp_with_exp_tail_dist` object
+            A new class instance made from the saved state.
+        """
+        sav = json.load(fp)
+        return emp_dist(data=np.array(sav["data"]))
+
+
 class emp_with_exp_tail_dist(object):
     """
     Class for a probability denstiy distribution modelled by using the empirical
@@ -801,16 +937,16 @@ class emp_with_exp_tail_dist(object):
     @staticmethod
     def from_json(fp):
         """
-        Build a new class object from a saved JSN file.
+        Build a new class object from a saved JSON file.
 
         Parameters
         ----------
         fp : file object
-            File object given to   ``json.dump``.
+            File object given to ``json.dump``.
 
         Returns
         -------
-        self : `emp_with_exp_tail_dist` object
+        emp_with_exp_tail_dist : `emp_with_exp_tail_dist` object
             A new class instance made from the saved state.
         """
         sav = json.load(fp)
