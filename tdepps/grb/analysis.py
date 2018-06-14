@@ -260,7 +260,7 @@ class GRBLLHAnalysis(object):
             - "ts": For each bunch ``mu`` trials the resulting test satistic
               values. From these we can in principle  calculate other
               ``ts_val, beta`` combinations by calculating new percentiles and
-              refit the ``chi2`` wthout doing more trials.
+              refit the ``chi2`` without doing more trials.
             - "ns": Same as ``'ts'`` but for the fitted signal parameter.
             - "ninj": Same as ``'ns'`` but the number of injected signal events
               per trial per bunch of trials.

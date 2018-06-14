@@ -54,7 +54,7 @@ def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
     Returns
     -------
     flux : array-like
-        Per nu+anti-nu particle flux :math:`\phi \sim E^{-\gamma}`.
+        Combined nu + anti-nu particle flux :math:`\phi \sim E^{-\gamma}`.
     """
     return phi0 * (trueE / E0)**(-gamma)
 
