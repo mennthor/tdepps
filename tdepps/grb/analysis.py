@@ -337,7 +337,7 @@ class GRBLLHAnalysis(object):
         return res
 
     def unblind(self, X, test_llhs, bg_pdfs, post_trial_pdf=None, ns0=1.,
-                dry=True, n_signal=None):
+                really_unblind=False, n_signal=None):
         """
         Unblind the analysis on data ``X`` by testing each LLH in ``test_llh``.
         Reports fit values for each test LLH, the pre-trial p-values obtained
@@ -361,10 +361,11 @@ class GRBLLHAnalysis(object):
             p-value is returned. (default: ``None``)
         ns0 : float, optional
             Seed value for the ns fit parameter. (Default: 1.)
-        dry : bool, optional
+        really_unblind : bool, optional
             If ``True`` ignores given data ``X`` and makes a BG trial with the
             stored BG injector instead. If ``False`` tests the given data.
-            (default: ``True``)
+            Additional safety line to avoid accidental unblinding.
+            (default: ``False``)
         n_signal : int or None, optional
             Number of mean signal events to inject per trial. If ``None``, no
             signal is injected, only do background trials. (Default: ``None``)
@@ -381,8 +382,10 @@ class GRBLLHAnalysis(object):
             - "post_pval": Pos-trial corrected p-value for the best time window.
             - "time_window_ids": All tested time window IDs.
         """
-        if dry:
-            print("Using fake data from internal BG injector to unblind")
+        if really_unblind:
+            print("## Using the given data to unblind ##")
+        else:
+            print("Using trial data from internal BG injector to fake unblind.")
             X = self._bg_inj.sample()
             if n_signal is None:
                 n_signal = 0
@@ -398,8 +401,6 @@ class GRBLLHAnalysis(object):
                 Xsig = self._sig_inj.sample(n_signal)
                 X = _concat(X, Xsig)
             print("  Also injected {} signal events.".format(n_signal))
-        else:
-            print("## Using the given data to unblind ##")
 
         res = {"ns": [], "ts": [], "pvals": [], "post_pval": None,
                "time_window_ids": [], "best_idx": None}
