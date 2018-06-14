@@ -8,6 +8,7 @@ from __future__ import division, absolute_import
 from future import standard_library
 standard_library.install_aliases()
 
+import abc
 import json
 import numpy as np
 from scipy.stats import rv_continuous, norm, chi2, expon, kstest
@@ -283,12 +284,12 @@ def fit_chi2_cdf(ts_val, beta, ts, mus, p0=[1., 1., 1.]):
 
 def scan_best_thresh(emp_dist, thresh_vals, pval_thresh=0.5):
     """
-    Scans thresholds for the ``emp_with_exp_tail_dist`` distribution using a
+    Scans thresholds for the ``ExpTailEmpiricalDist`` distribution using a
     KS-test to test how good the tails fits to the data.
 
     Parameters
     ----------
-    emp_dist : ``emp_with_exp_tail_dist`` instance
+    emp_dist : ExpTailEmpiricalDist instance
         Distribution object used to fit the tails to the stored data. The
         threshold is set to the best threshold found here after the scan.
     thresh_vals : array-like
@@ -489,7 +490,46 @@ class delta_chi2_gen(rv_continuous):
 delta_chi2 = delta_chi2_gen(name="delta_chi2")
 
 
-class emp_dist(object):
+class BaseEmpiricalDist(object):
+    __metaclass__ = abc.ABCMeta
+
+    @abc.abstractproperty
+    def data(self):
+        """ Data this distribtuion was built from. """
+        pass
+
+    @abc.abstractmethod
+    def pdf(self):
+        """ Calculates the probability density function """
+        return
+
+    @abc.abstractmethod
+    def cdf(self):
+        """ Calculates the cumulative distribution """
+        return
+
+    @abc.abstractmethod
+    def sf(self):
+        """ Calculates the survival function """
+        return
+
+    @abc.abstractmethod
+    def ppf(self):
+        """ Calculates the point percentile function """
+        return
+
+    @abc.abstractmethod
+    def to_json(self):
+        """ Encodes this class in JSON format for human readable storage """
+        return
+
+    @abc.abstractmethod
+    def from_json(self):
+        """ Creates a new instance from a ``to_json`` representation """
+        return
+
+
+class PureEmpiricalDist(BaseEmpiricalDist):
     """
     Class for a probability denstiy distribution modelled by using the empirical
     PDF defined by trial data only, eg. for a post-trial test statistic.
@@ -597,6 +637,12 @@ class emp_dist(object):
         json_args : keyword arguments
             Arguments given to ``json.dumps``.
 
+        Returns
+        -------
+        json : str
+            This class representation in JSON format. Can be used to restore the
+            class using the ``from_json``method.
+
         Note
         ----
         See 'https://docs.scipy.org/doc/numpy-1.13.0/user/basics.types.html' for
@@ -618,14 +664,14 @@ class emp_dist(object):
 
         Returns
         -------
-        emp_dist : `emp_with_exp_tail_dist` object
+        emp_dist : PureEmpiricalDist instance
             A new class instance made from the saved state.
         """
         sav = json.load(fp)
-        return emp_dist(data=np.array(sav["data"]))
+        return PureEmpiricalDist(data=np.array(sav["data"]))
 
 
-class emp_with_exp_tail_dist(object):
+class ExpTailEmpiricalDist(object):
     """
     Class for a probability denstiy distribution modelled by using the empirical
     PDF defined by trial data and a fitted exponetial tail, replacing the
@@ -843,8 +889,7 @@ class emp_with_exp_tail_dist(object):
         data : array-like
             Data array used for the empirical or the exponential part.
         mask : array-like
-            Bool mask to mask the full data array
-            ``data = emp_with_exp_tail_dist.data[mask]``.
+            Bool mask to mask the full data array ``data = self.data[mask]``.
         """
         is_exp = (self._data >= self._thresh)
         if emp:
@@ -947,10 +992,10 @@ class emp_with_exp_tail_dist(object):
 
         Returns
         -------
-        emp_with_exp_tail_dist : `emp_with_exp_tail_dist` object
+        emp_with_exp_tail_dist : ExpTailEmpiricalDist object
             A new class instance made from the saved state.
         """
         sav = json.load(fp)
-        return emp_with_exp_tail_dist(data=np.array(sav["data"]),
-                                      nzeros=sav["nzeros"],
-                                      thresh=sav["thresh"])
+        return ExpTailEmpiricalDist(data=np.array(sav["data"]),
+                                    nzeros=sav["nzeros"],
+                                    thresh=sav["thresh"])
