@@ -925,6 +925,16 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
 ##############################################################################
 class UniformTimeSampler(BaseTimeSampler):
     def __init__(self, random_state=None):
+        """
+        Samples events times uniformly distributed in a time window around a
+        source.
+
+        Parameters
+        ----------
+        random_state : None, int or np.random.RandomState, optional
+            Used as PRNG, see ``sklearn.utils.check_random_state``.
+            (default: None)
+        """
         self.rndgen = random_state
 
     def sample(self, src_t, src_dt):
@@ -934,7 +944,8 @@ class UniformTimeSampler(BaseTimeSampler):
         Parameters
         ----------
         src_t : array-like (nevts)
-            Source time in MJD per event.
+            Source time in MJD per event used to transform the sampled relativ
+            event times to absolute MJD times around each source.
         src_dt : array-like, shape (nevts, 2)
             Time window in seconds centered around ``src_t`` in which the signal
             time PDF is assumed to be uniform.
@@ -942,11 +953,68 @@ class UniformTimeSampler(BaseTimeSampler):
         Returns
         -------
         times : array-like, shape (nevts)
-            Sampled times for this trial.
+            Sampled MJD times for this trial.
         """
         # Sample uniformly in [0, 1] and scale to time windows per source in MJD
         r = self._rndgen.uniform(0, 1, size=len(src_t))
         times_rel = r * np.diff(src_dt, axis=1).ravel() + src_dt[:, 0]
+
+        return src_t + times_rel / self._SECINDAY
+
+
+class SplineTimeSampler(BaseTimeSampler):
+    def __init__(self, spl, bins, random_state=None):
+        """
+        Samples event times from a given spline modeling the time distribution
+        relativ to the sources' times assumed at ``t=0``. Sampling is done using
+        an empirical CDF.
+
+        Parameters
+        ----------
+        spl : scipy.interpolate.UnivariateSpline instance
+            Spline used to describe the time distribution to inject. The spline
+            should describe the distribution relativ to the source's time at
+            ``t=0`` and using time in seconds.
+        bins : array-like
+            Explicit bin edges used to create the empirical CDF by sampling the
+            given spline's integral function at the bin edges. This also defines
+            how much the sampled values can vary, as only the bin edges can be
+            sampled. ``bins[0]`` and ``bins[-1]`` define the definition range of
+            the PDF spline.
+        random_state : None, int or np.random.RandomState, optional
+            Used as PRNG, see ``sklearn.utils.check_random_state``.
+            (default: None)
+
+        """
+        # Cache the CDF
+        bins = np.atleast_1d(bins)
+        cdf = np.array([spl.integral(bins[0], ti) for ti in bins])
+
+        self._spl = spl
+        self._bins = bins
+        self._cdf = cdf / cdf[-1]
+
+        self.rndgen = random_state
+
+    def sample(self, src_t):
+        """
+        Sample times from given spline in on-time signal PDF region.
+
+        Parameters
+        ----------
+        src_t : array-like (nevts)
+            Source time in MJD per event used to transform the sampled relativ
+            event times to absolute MJD times around each source.
+
+        Returns
+        -------
+        times : array-like, shape (nevts)
+            Sampled MJD times for this trial.
+        """
+        # Sample uniformly in [0, 1] and scale to time windows per source in MJD
+        r = self._rndgen.uniform(0, 1, size=len(src_t))
+        idx = np.searchsorted(self._cdf, r, side="right") - 1
+        times_rel = self._bins[idx]
 
         return src_t + times_rel / self._SECINDAY
 
