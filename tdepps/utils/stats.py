@@ -954,20 +954,24 @@ class ExpTailEmpiricalDist(object):
             err = err / norm * _norm
         return h, bins, err, _norm
 
-    def to_json(self, fp, dtype=np.float, **json_args):
+    def to_json(self, dtype=np.float, **json_args):
         """
-        Save this class to disk in JSON format.
+        Get a representation of this class in JSON format to save on disk.
 
         Parameters
         ----------
-        fp : file object
-            File object given to   ``json.dump``.
         dtype : numpy data type
-            Type to store the data array in. To save space, the test statisitc
-            can be saved in 16bit floats and still have more than sufficient
+            Type to store the data array in. To save space, it might be
+            sufficient to save the data 16bit floats and still have enough
             precision. (default: ``np.float``)
         json_args : keyword arguments
-            Arguments given to ``json.dump``.
+            Arguments given to ``json.dumps``.
+
+        Returns
+        -------
+        json : str
+            This class representation in JSON format. Can be used to restore the
+            class using the ``from_json``method.
 
         Note
         ----
