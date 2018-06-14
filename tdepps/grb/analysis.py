@@ -18,8 +18,10 @@ class GRBLLHAnalysis(object):
         LLH model used for testing hypothesis.
     bg_inj : BaseBGDataInjector or BaseMultiBGDataInjector
         Background injector model injecting background-like events in trials.
-    sig_inj : BaseSignalInjector or BaseMultiSignalInjector
-        Signal injector model injecting signal-like events in trials.
+    sig_inj : BaseSignalInjector or BaseMultiSignalInjector or None
+        Signal injector model injecting signal-like events in trials. If
+        ``None`` no signal or performance trials can be done.
+        (default: ``None``)
     random_state : None, int or np.random.RandomState, optional
         Used as PRNG, see ``sklearn.utils.check_random_state``.
         (default: ``None``)
@@ -331,5 +333,91 @@ class GRBLLHAnalysis(object):
                 ns_ij, ts_ij = test_llh.fit_lnllh_ratio(ns0=ns0, X=X)
                 res["ns"][i, j] = ns_ij
                 res["ts"][i, j] = ts_ij
+
+        return res
+
+    def unblind(self, X, test_llhs, bg_pdfs, post_trial_pdf=None, ns0=1.,
+                dry=True, n_signal=None):
+        """
+        Unblind the analysis on data ``X`` by testing each LLH in ``test_llh``.
+        Reports fit values for each test LLH, the pre-trial p-values obtained
+        from the ``bg_pdfs`` and the final post-trial p-value from the
+        ``post_trial_pdf``.
+
+        Parameters
+        ----------
+        test_llhs : dict
+            Dict of LLH classes to test against. Must have time window IDs as
+            keys to match correctly against the ``bg_pdfs``.
+        bg_pdfs : dict
+            Dict of background PDFs as ``tdepps.utils.stats.EmpiricalDist``
+            instances to calculate p-values from the test results. Must have
+            time window IDs as keys to match correctly against the
+            ``test_llhs``.
+        post_trial_pdf : tdepps.utils.stats.EmpiricalDist instance or None
+            Post trial ``-log10(p)`` distribution for the final p-value
+            calculation. Must match the number of tested time windows ot the
+            post trial p-value won't make sense. If ``None`` no post_trial
+            p-value is returned. (default: ``None``)
+        ns0 : float, optional
+            Seed value for the ns fit parameter. (Default: 1.)
+        dry : bool, optional
+            If ``True`` ignores given data ``X`` and makes a BG trial with the
+            stored BG injector instead. If ``False`` tests the given data.
+            (default: ``True``)
+        n_signal : int or None, optional
+            Number of mean signal events to inject per trial. If ``None``, no
+            signal is injected, only do background trials. (Default: ``None``)
+
+        Returns
+        -------
+        res : dict
+            Result dictionary with keys:
+
+            - "ns": Best fit ``ns`` parameters for each tested LLH.
+            - "ts": Best fit ``ns`` parameters for each tested LLH.
+            - "pvals": Pre-trial p-value for each tested LLH.
+            - "best_tw_id": Best time window ID, having the lowest p-value.
+            - "post_pval": Pos-trial corrected p-value for the best time window.
+            - "time_window_ids": All tested time window IDs.
+        """
+        if dry:
+            print("Using fake data from internal BG injector to unblind")
+            X = self._bg_inj.sample()
+            if n_signal is None:
+                n_signal = 0
+            n_signal = self._rndgen.poisson(n_signal, size=None)
+            if n_signal > 0:
+                if hasattr(self._llh, "llhs"):
+                    def _concat(X, Xsig):
+                        return dict_map(
+                            lambda k, Xi: np.concatenate((Xi, Xsig[k])), X)
+                else:
+                    def _concat(X, Xsig):
+                        return np.concatenate((X, Xsig))
+                Xsig = self._sig_inj.sample(n_signal)
+                X = _concat(X, Xsig)
+            print("  Also injected {} signal events.".format(n_signal))
+        else:
+            print("## Using the given data to unblind ##")
+
+        res = {"ns": [], "ts": [], "pvals": [], "post_pval": None,
+               "time_window_ids": [], "best_idx": None}
+
+        for idx, test_llh in test_llhs.items():
+            # Fit LLH and compute pre-trial p-value
+            ns_i, ts_i = test_llh.fit_lnllh_ratio(ns0=ns0, X=X)
+            pval_i = bg_pdfs[idx].sf(ts_i)
+
+            res["ns"].append(ns_i)
+            res["ts"].append(ts_i)
+            res["pvals"].append(pval_i)
+            res["time_window_ids"].append(idx)
+
+        # Obtain the final post-trial p-value
+        res["best_idx"] = np.argmin(res["pvals"])
+        if post_trial_pdf is not None:
+            best_neg_log10_pval = -np.log10(res["pvals"][res["best_idx"]])
+            res["post_pval"] = post_trial_pdf.sf(best_neg_log10_pval)
 
         return res
