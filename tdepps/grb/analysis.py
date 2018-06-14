@@ -407,7 +407,7 @@ class GRBLLHAnalysis(object):
         for idx, test_llh in test_llhs.items():
             # Fit LLH and compute pre-trial p-value
             ns_i, ts_i = test_llh.fit_lnllh_ratio(ns0=ns0, X=X)
-            pval_i = bg_pdfs[idx].sf(ts_i)
+            pval_i = bg_pdfs[idx].sf(ts_i)[0]
 
             res["ns"].append(ns_i)
             res["ts"].append(ts_i)
@@ -418,6 +418,6 @@ class GRBLLHAnalysis(object):
         res["best_idx"] = np.argmin(res["pvals"])
         if post_trial_pdf is not None:
             best_neg_log10_pval = -np.log10(res["pvals"][res["best_idx"]])
-            res["post_pval"] = post_trial_pdf.sf(best_neg_log10_pval)
+            res["post_pval"] = post_trial_pdf.sf(best_neg_log10_pval)[0]
 
         return res
