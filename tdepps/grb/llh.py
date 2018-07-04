@@ -34,7 +34,7 @@ class GRBLLH(BaseLLH):
             - 'minimizer', optional: String selecting a scipy minizer.
             - 'minimizer_opts', optional: Options dict for the scipy minimizer.
         """
-        self._needed_args = ["src_w_dec", "src_w_theo" "nb"]
+        self._needed_args = ["src_w_dec", "src_w_theo", "nb"]
         self.model = llh_model
         self.llh_opts = llh_opts
 
