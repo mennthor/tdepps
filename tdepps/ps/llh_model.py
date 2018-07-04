@@ -61,9 +61,9 @@ class PSModel(BaseModel):
             raise ValueError("sinDec declination bins for energy hist not " +
                              "in valid range `[-1, 1]`.")
 
-        if self._model_opts["mc_bg_w"] is not None:
-            self._model_opts["mc_bg_w"] = np.atleast_1d(
-                self._model_opts["mc_bg_w"])
+        if model_opts["mc_bg_w"] is not None:
+            model_opts["mc_bg_w"] = np.atleast_1d(
+                model_opts["mc_bg_w"])
 
         self._model_opts = model_opts
         self._model_opts = model_opts
@@ -178,16 +178,17 @@ class PSModel(BaseModel):
         sob = pdf_spatial_signal(
             self._srcs["ra"], self._srcs["dec"], ev_ra, ev_sin_dec, ev_sig,
             self._model_opts["kent"])
+        return sob / self._spatial_bg_spl(ev_sin_dec)
 
-        # Divide by background PDF per event. Needs caching for the bg PDF
-        ev_sin_dec.flags.writeable = False
-        new_hash = hash(ev_sin_dec.data)
-        if (self._spatial_bg_hash is None or self._spatial_bg_hash != new_hash):
-            self._spatial_bg_cache = self._spatial_bg_spl(ev_sin_dec)
-            self._spatial_bg_hash = new_hash
-        sob = sob / self._spatial_bg_cache
+        # # Divide by background PDF per event. Needs caching for the bg PDF
+        # ev_sin_dec.flags.writeable = False
+        # new_hash = hash(ev_sin_dec.data)
+        # if (self._spatial_bg_hash is None or self._spatial_bg_hash != new_hash):
+        #     self._spatial_bg_cache = self._spatial_bg_spl(ev_sin_dec)
+        #     self._spatial_bg_hash = new_hash
+        # sob = sob / self._spatial_bg_cache
 
-        return sob
+        # return sob
 
     def _soverb_energy(self, ev_sin_dec, ev_logE):
         """
@@ -214,17 +215,19 @@ class PSModel(BaseModel):
         soverb_energy_ratio : array-like, shape (nevts)
             Ratio of the energy signal and background PDF for each given event.
         """
-        ev_sin_dec.flags.writeable = False
-        ev_logE.flags.writeable = False
-        new_hash = hash(ev_sin_dec.data) + hash(ev_logE.data)
+        return np.exp(self._energy_interpol(
+            np.vstack((ev_sin_dec, ev_logE)).T))
+        # ev_sin_dec.flags.writeable = False
+        # ev_logE.flags.writeable = False
+        # new_hash = hash(ev_sin_dec.data) + hash(ev_logE.data)
 
-        if (self._soverb_energy_hash is None or
-                self._soverb_energy_hash != new_hash):
-            self._soverb_energy_cache = np.exp(self._energy_interpol(
-                np.vstack((ev_sin_dec, ev_logE)).T))
-            self._soverb_energy_hash = new_hash
+        # if (self._soverb_energy_hash is None or
+        #         self._soverb_energy_hash != new_hash):
+        #     self._soverb_energy_cache = np.exp(self._energy_interpol(
+        #         np.vstack((ev_sin_dec, ev_logE)).T))
+        #     self._soverb_energy_hash = new_hash
 
-        return self._soverb_energy_cache
+        # return self._soverb_energy_cache
 
     def _setup_model(self, X, livetime_days, MC, srcs):
         """
@@ -262,7 +265,7 @@ class PSModel(BaseModel):
         ev_sin_dec = np.sin(X["dec"])
         _bins = make_equdist_bins(
             ev_sin_dec, lo, hi, weights=None,
-            min_evts_per_bin=self._inj_opts["n_data_evts_min"])
+            min_evts_per_bin=self._model_opts["n_data_evts_min"])
         hist = np.histogram(ev_sin_dec, bins=_bins, density=False)[0]
         dA = np.diff(_bins)  # Bin diffs is enough, spline gets renormed later
         stddev = np.sqrt(hist) / dA
@@ -274,7 +277,8 @@ class PSModel(BaseModel):
         # normalization so it can be used as the BG PDF
         norm = 1. / 2. / np.pi
         data_spline = spl_normed_factory(data_spline, lo, hi, norm=norm)
-        print(self._log.INFO("Made {} bins for allsky hist".format(len(_bins))))
+        print(self._log.INFO("Made {} bins for data allsky hist".format(
+            len(_bins))))
 
         # Step 2: Get source weights from the signal weighted MC sindec spline
         # fitted to a histogram. True dec, to match selection in signal injector
@@ -284,7 +288,8 @@ class PSModel(BaseModel):
         _bins = make_equdist_bins(
             mc_sin_dec, lo, hi,
             weights=w_sig, min_evts_per_bin=self._model_opts["n_mc_evts_min"])
-        print(self._log.INFO("Made {} bins for allsky hist".format(len(_bins))))
+        print(self._log.INFO("Made {} bins for MC allsky hist".format(
+            len(_bins))))
         hist = np.histogram(mc_sin_dec, bins=_bins, weights=w_sig,
                             density=False)[0]
         variance = np.histogram(mc_sin_dec, bins=_bins, weights=w_sig**2,
