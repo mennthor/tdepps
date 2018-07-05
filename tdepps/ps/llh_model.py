@@ -178,6 +178,7 @@ class PSModel(BaseModel):
         sob = pdf_spatial_signal(
             self._srcs["ra"], self._srcs["dec"], ev_ra, ev_sin_dec, ev_sig,
             self._model_opts["kent"])
+        # signal is (nsrcs x nevts), background (nevts,)
         return sob / self._spatial_bg_spl(ev_sin_dec)
 
         # # Divide by background PDF per event. Needs caching for the bg PDF
@@ -341,6 +342,7 @@ class PSModel(BaseModel):
             interp_col_log=self._model_opts["interp_col_log"],
             force_y_asc=self._model_opts["force_logE_asc"])
 
+        # Step 4: Store model params and debug infos
         llh_args = {"src_w_dec": src_w_dec, "src_w_theo": srcs["w_theo"]}
 
         spl_info = {
