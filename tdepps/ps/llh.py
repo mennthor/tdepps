@@ -10,9 +10,9 @@ from ..base import BaseLLH, BaseMultiLLH
 from ..utils import fill_dict_defaults, all_equal, dict_map
 
 
-class GRBLLH(BaseLLH):
+class PSLLH(BaseLLH):
     """
-    Stacking GRB LLH
+    Stacking time integrated PS LLH
 
     Stacking weights are a-priori fixed with w_theo * w_dec and only a single
     signal strength parameter ns is fitted.
@@ -34,7 +34,7 @@ class GRBLLH(BaseLLH):
             - 'minimizer', optional: String selecting a scipy minizer.
             - 'minimizer_opts', optional: Options dict for the scipy minimizer.
         """
-        self._needed_args = ["src_w_dec", "src_w_theo", "nb"]
+        self._needed_args = ["src_w_dec", "src_w_theo"]
         self.model = llh_model
         self.llh_opts = llh_opts
 
@@ -53,8 +53,8 @@ class GRBLLH(BaseLLH):
         # Cache fixed src weights over background estimation, shape (nsrcs, 1)
         args = model.get_args()
         src_w = args["src_w_dec"] * args["src_w_theo"]
-        # Shape is (1, nsrcs) for stacking GRB LLH
-        self._src_w_over_nb = ((src_w / np.sum(src_w)) / args["nb"])[:, None]
+        # Shape is (1, nsrcs) for general stacking LLH
+        self._src_w = (src_w / np.sum(src_w))[:, None]
         self._model = model
 
     @property
@@ -93,64 +93,40 @@ class GRBLLH(BaseLLH):
         """ Fit TS with optimized analytic cases """
         def _neglnllh(ns, sob):
             """ Wrapper for minimizing the negative lnLLH ratio """
-            lnllh, lnllh_grad = self._lnllh_ratio(ns, sob)
+            lnllh, lnllh_grad = self._lnllh_ratio(ns, sob, nevts)
             return -lnllh, -lnllh_grad
 
-        if len(X) == 0:  # Fit is always 0 if no events are given
-            return 0., 0.
-
-        # Get the best fit parameter and TS. Analytic cases are handled:
-        # For nevts = [1 | 2] we get a [linear | quadratic] equation to solve.
+        # If selection cuts are applied the number
+        nevts = len(X)
         sob = self._soverb(X, band_select=band_select)
-        nevts = len(sob)
+        assert nevts >= len(sob)
 
-        # Test again, because we applied some threshold cuts
-        if nevts == 0:
-            return 0., 0.
-        elif nevts == 1:
-            sob = sob[0]
-            if sob <= 1.:  # sob <= 1 => ns <= 0, so fit will be 0
-                return 0., 0.
-            else:
-                ns = 1. - (1. / sob)
-                ts = 2. * (-ns + math.log(sob))
-            return ns, ts
-        elif nevts == 2:
-            sum_sob = sob[0] + sob[1]
-            if sum_sob <= 1.:  # More complicated to show but same as above
-                return 0., 0.
-            else:
-                a = 1. / (sob[0] * sob[1])
-                c = sum_sob * a
-                ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
-                ts = 2. * (-ns + np.sum(np.log1p(ns * sob)))
-                return ns, ts
-        else:  # Fit other cases
-            res = sco.minimize(fun=_neglnllh, x0=[ns0],
-                               jac=True, args=(sob,),
-                               bounds=[self._llh_opts["ns_bounds"]],
-                               method=self._llh_opts["minimizer"],
-                               options=self._llh_opts["minimizer_opts"])
-            ns, ts = res.x[0], -res.fun[0]
-            if ts < 0.:
-                # Some times the minimizer doesn't go all the way to 0., so
-                # TS vals might end up negative for a truly zero fit result
-                ts = 0.
-            return ns, ts
+        # Get the best fit parameter and TS
+        res = sco.minimize(fun=_neglnllh, x0=[ns0],
+                           jac=True, args=(sob, nevts),
+                           bounds=[self._llh_opts["ns_bounds"]],
+                           method=self._llh_opts["minimizer"],
+                           options=self._llh_opts["minimizer_opts"])
+        ns, ts = res.x[0], -res.fun[0]
+        if ts < 0.:
+            # Some times the minimizer doesn't go all the way to 0., so
+            # TS vals might end up negative for a truly zero fit result
+            ts = 0.
+        return ns, ts
 
     def _soverb(self, X, band_select=True):
-        """ Make an additional cut on small sob values to save time """
-        if len(X) == 0:  # With no events given, we can skip this step
+        """
+        Compute the the signal over background stacking sum and make an
+        additional cut on small sob values to save time
+        """
+        # Stacking case: Weighted signal sum per source: shape (nevts,)
+        sob = self._model.get_soverb(X, band_select=band_select)
+        sob = np.sum(sob * self._src_w, axis=0)
+        if len(sob) < 1:
             return np.empty(0, dtype=np.float)
 
-        # Stacking case: Weighted signal sum per source
-        sob = self._model.get_soverb(X, band_select=band_select)
-        sob = np.sum(sob * self._src_w_over_nb, axis=0)
-        if len(sob) < 1:
-            return np.empty(0)
-
         # Apply a SoB ratio cut, to save computation time on events that don't
-        # contribute anyway. We have a relative and an absolute threshold
+        # contribute anyway. There is a relative and an absolute threshold
         sob_max = np.amax(sob)
         if sob_max > 0:
             sob_rel_mask = (sob / sob_max) < self._llh_opts["sob_rel_eps"]
@@ -160,19 +136,32 @@ class GRBLLH(BaseLLH):
 
         return sob[~(sob_rel_mask | sob_abs_mask)]
 
-    def _lnllh_ratio(self, ns, sob):
-        """ Calculate TS = 2 * ln(L1 / L0) """
-        x = ns * sob
-        ts = 2. * (-ns + np.sum(np.log1p(x)))
-        # Gradient in ns (chain rule: ln(ns * a + 1)' = 1 / (ns * a + 1) * a)
-        ns_grad = 2. * (-1. + np.sum(sob / (x + 1.)))
+    def _lnllh_ratio(self, ns, sob, nevts):
+        """
+        Calculate TS = 2 * ln(L1 / L0)
+
+        nevts gives the number of original used events. A subset of them may
+        have been set to zero due to selection cuts. These terms need to be
+        added manually to the LLH and the gradient.
+        """
+        nsel = len(sob)
+        nzero = nevts - nsel
+        assert nevts >= nsel
+
+        x = (sob - 1.) / nevts
+        alpha = ns * x
+        ts = 2. * (np.sum(np.log1p(alpha)) +
+                   nzero * np.log1p(-ns / nevts))
+        ns_grad = 2. * (np.sum(x / ((alpha) + 1.)) -
+                        nzero / (nevts - ns))
+
         return ts, np.array([ns_grad])
 
 
 class MultiGRBLLH(BaseMultiLLH):
     """
-    Class holding multiple GRBLLH objects, implementing the combined GRBLLH
-    from all single GRBLLHs.
+    Class holding multiple PSLLH objects, implementing the combined PSLLH
+    from all single PSLLHs.
     """
     def __init__(self, llh_opts=None):
         self._ns_weights = None
@@ -217,7 +206,7 @@ class MultiGRBLLH(BaseMultiLLH):
 
     def fit(self, llhs):
         """
-        Takes multiple single GRBLLHs in a dict and manages them.
+        Takes multiple single PSLLHs in a dict and manages them.
 
         Parameters
         ----------
@@ -226,12 +215,24 @@ class MultiGRBLLH(BaseMultiLLH):
             dict keys of provided multi-injector data.
         """
         for name, llh in llhs.items():
-            if not isinstance(llh, GRBLLH):
+            if not isinstance(llh, PSLLH):
                 raise ValueError("LLH object " +
-                                 "`{}` is not of type `GRBLLH`.".format(name))
+                                 "`{}` is not of type `PSLLH`.".format(name))
+
+        # Check if all sources are equal
+        srcs = dict_map(lambda k, v: v.model.srcs, llhs)
+        keys = srcs.keys()
+        ref = keys[0]
+        for key in keys[1:]:
+            if not np.array_equal(srcs[ref], srcs[key]):
+                raise ValueError(
+                    "Sources in sample '{}' are not equal to ".format(ref) +
+                    "sources in sample '{}'.".format(key))
+
+        nsrcs = len(srcs.values()[0])
 
         # Cache ns plit weights used in combined LLH evaluation
-        self._ns_weights = self._ns_split_weights(llhs)
+        self._ns_weights = self._ns_split_weights(llhs, nsrcs)
         self._llhs = llhs
         return
 
@@ -261,17 +262,14 @@ class MultiGRBLLH(BaseMultiLLH):
     def fit_lnllh_ratio(self, ns0, X):
         """
         Fit single ns parameter simultaneously for all LLHs.
-
-        TODO: This relies on calls into private LLH methods directly using sob
-              for speed reasons. Maybe we can change that.
         """
-        def _neglnllh(ns, sob_dict):
+        def _neglnllh(ns, sob_dict, nevts_dict):
             """ Multi LLH wrapper directly using a dict of sob values """
             ts = 0.
             ns_grad = 0.
             for key, sob in sob_dict.items():
                 ts_i, ns_grad_i = self._llhs[key]._lnllh_ratio(
-                    ns * self._ns_weights[key], sob)
+                    ns * self._ns_weights[key], sob, nevts_dict[key])
                 ts -= ts_i
                 ns_grad -= ns_grad_i * self._ns_weights[key]  # Chain rule
             return ts, ns_grad
@@ -294,57 +292,50 @@ class MultiGRBLLH(BaseMultiLLH):
                 sob_dict[key] = sob_i
 
         sob = np.concatenate(sob)
-        nevts = len(sob)
+        nevts_dict = dict_map(lambda k, v: len(v), X)
 
-        # Test again, because we may have applied sob threshold cuts per LLH
-        if nevts == 0:
-            return 0., 0.
-        elif nevts == 1:
-            # Same case as in single LLH because sob is multi year weighted
-            sob = sob[0]
-            if sob <= 1.:  # sob <= 1 => ns <= 0, so fit will be 0
-                return 0., 0.
-            else:
-                ns = 1. - (1. / sob)
-                ts = 2. * (-ns + math.log(sob))
-            return ns, ts
-        elif nevts == 2:
-            # Same case as in single LLH because sob is multi year weighted
-            sum_sob = sob[0] + sob[1]
-            if sum_sob <= 1.:  # More complicated to show but same as above
-                return 0., 0.
-            else:
-                a = 1. / (sob[0] * sob[1])
-                c = sum_sob * a
-                ns = 1. - 0.5 * c + math.sqrt(c * c / 4. - a + 1.)
-                ts = 2. * (-ns + np.sum(np.log1p(ns * sob)))
-                return ns, ts
-        else:  # Fit other cases
-            res = sco.minimize(fun=_neglnllh, x0=[ns0],
-                               jac=True, args=(sob_dict,),
-                               bounds=[self._llh_opts["ns_bounds"]],
-                               method=self._llh_opts["minimizer"],
-                               options=self._llh_opts["minimizer_opts"])
-            if not res.success:
-                def _neglnllh_numgrad(ns, sob_dict):
-                    """ Use numerical gradient if LINESRCH problem arises. """
-                    return _neglnllh(ns, sob_dict)[0]
-                res = sco.minimize(fun=_neglnllh_numgrad, x0=[ns0],
-                                   jac=False, args=(sob_dict,),
-                                   bounds=[self._llh_opts["ns_bounds"]],
-                                   method=self._llh_opts["minimizer"],
-                                   options=self._llh_opts["minimizer_opts"])
-            ns, ts = res.x[0], -res.fun[0]
-            if ts < 0.:
-                # Some times the minimizer doesn't go all the way to 0., so
-                # TS vals might end up negative for a truly zero fit result
-                ts = 0.
-            return ns, ts
+        res = sco.minimize(fun=_neglnllh, x0=[ns0],
+                           jac=True, args=(sob_dict, nevts_dict),
+                           bounds=[self._llh_opts["ns_bounds"]],
+                           method=self._llh_opts["minimizer"],
+                           options=self._llh_opts["minimizer_opts"])
+        ns, ts = res.x[0], -res.fun[0]
+        if ts < 0.:
+            # Some times the minimizer doesn't go all the way to 0., so
+            # TS vals might end up negative for a truly zero fit result
+            ts = 0.
+        return ns, ts
 
-    def _ns_split_weights(self, llhs):
+    def _ns_split_weights(self, llhs, nsrcs):
         """
-        Set up the ``ns`` splitting weights: The weights simply renormalize the
-        source weights for all single LLHs over all samples.
+        Set up the ``ns`` splitting weights that allow to fit a global ns in the
+        multi LLH case, by splitting the expected signal portion to each sample.
+
+        wj = \sum_{k=1}^{N_\text{srcs}} (P(j | k) * P(k))
+
+        where
+
+            P(k): Relative detection efficiency of src k, normalized over all
+                  sources. This is obtained by summing each unnormalized
+                  P(j | k) over j and then normalize over all k terms.
+            P(j | k): Relative detection efficiency of sample j for source k,
+                      normalized over all samples for each source. This is
+                      obtained by getting all unnormalized source weights for
+                      each sample and then normalizing per source over all
+                      samples.
+
+        This can also be written as a matrix equation
+
+            |w_1,  |   |P(j=1,k=0)    ... P(j=1,k=nsrcs)   |   |P(k=0)    |
+            |...,  | = |...           ... ...              | * |...       |
+            |w_nsam|   |P(j=nsam,k=0) ... P(j=nsam,k=nsrcs)|   |P(k=nsrcs)|
+
+        where the matrix columns are normalized and the P(k) vector is
+        normalized separately.
+
+        In code:
+            * p_k := P(k), shape (nsrcs,)
+            * p_kj := P(j | k), shape (nsamples, nsrcs)
 
         Parameters
         ----------
@@ -356,12 +347,25 @@ class MultiGRBLLH(BaseMultiLLH):
         ns_weigths : dict of array-like
             Weight per LLH to split up ``ns`` among different samples.
         """
-        ns_weights = {}
-        ns_w_sum = 0
-        for key, llh in llhs.items():
-            args = llh.model.get_args()
-            ns_weights[key] = np.sum(args["src_w_dec"] * args["src_w_theo"])
-            ns_w_sum += ns_weights[key]
+        nsamples = len(llhs)
 
-        # Normalize weights over all sample source weights
-        return dict_map(lambda key, nsw: nsw / ns_w_sum, ns_weights)
+        # First get all unnormalized P(k | j)
+        p_kj = np.empty((nsamples, nsrcs), dtype=float)
+        for j, key in enumerate(llhs.keys()):
+            args = llhs[key].model.get_args()
+            p_kj[j] = args["src_w_dec"] * args["src_w_theo"]
+
+        # Get the unnormalized P(k)
+        p_k = np.sum(p_kj, axis=1)
+
+        # Normalize cols of P(k | j) and P(k) vector
+        p_kj = p_kj / np.sum(p_kj, axis=0)
+        p_k = p_k / np.sum(p_k)
+
+        # Store ns weight per sample
+        ns_weights = {}
+        for j, key in enumerate(llhs.keys()):
+            ns_weights[key] = np.sum(p_kj[j] * p_k)
+
+        assert np.isclose(np.sum(ns_weights.values()), 1.)
+        return ns_weights
