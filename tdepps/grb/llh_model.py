@@ -120,6 +120,14 @@ class GRBModel(BaseModel):
     def get_args(self):
         return self._llh_args
 
+    # Note: the general case is sum_k (signal) / sum_k (background)
+    # Summing the ratio is not valid in general
+    # def get_signal_pdf_vals():
+    #     return  # shape (nevts, nsrcs)
+
+    # def get_bg_pdf_vals():
+    #     return  # shape (nevts, nsrcs)
+
     def get_soverb(self, X, band_select=True):
         """
         Calculate sob values per source per event for given data X
