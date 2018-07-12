@@ -2,7 +2,6 @@
 
 from __future__ import division, absolute_import
 
-import math
 import numpy as np
 import scipy.optimize as sco
 
@@ -84,19 +83,21 @@ class PSLLH(BaseLLH):
             raise ValueError("'minimizer_opts' must be a dictionary.")
         self._llh_opts = llh_opts
 
-    def lnllh_ratio(self, ns, X, band_select=True):
+    def lnllh_ratio(self, ns, X, band_select=False):
         """ Public method wrapper """
+        nevts = len(X)
         sob = self._soverb(X, band_select=band_select)
-        return self._lnllh_ratio(ns, sob)
+        return self._lnllh_ratio(ns, sob, nevts)
 
-    def fit_lnllh_ratio(self, ns0, X, band_select=True):
+    def fit_lnllh_ratio(self, ns0, X, band_select=False):
         """ Fit TS with optimized analytic cases """
-        def _neglnllh(ns, sob):
+        def _neglnllh(ns, sob, nevts):
             """ Wrapper for minimizing the negative lnLLH ratio """
             lnllh, lnllh_grad = self._lnllh_ratio(ns, sob, nevts)
             return -lnllh, -lnllh_grad
 
-        # If selection cuts are applied the number
+        # If selection cuts are applied, the number of injected events may
+        # differ from the actual used one. This is acocunted for in the LLH.
         nevts = len(X)
         sob = self._soverb(X, band_select=band_select)
         assert nevts >= len(sob)
@@ -114,7 +115,7 @@ class PSLLH(BaseLLH):
             ts = 0.
         return ns, ts
 
-    def _soverb(self, X, band_select=True):
+    def _soverb(self, X, band_select=False):
         """
         Compute the the signal over background stacking sum and make an
         additional cut on small sob values to save time
@@ -158,7 +159,7 @@ class PSLLH(BaseLLH):
         return ts, np.array([ns_grad])
 
 
-class MultiGRBLLH(BaseMultiLLH):
+class MultiPSLLH(BaseMultiLLH):
     """
     Class holding multiple PSLLH objects, implementing the combined PSLLH
     from all single PSLLHs.
@@ -356,9 +357,10 @@ class MultiGRBLLH(BaseMultiLLH):
             p_kj[j] = args["src_w_dec"] * args["src_w_theo"]
 
         # Get the unnormalized P(k)
-        p_k = np.sum(p_kj, axis=1)
+        p_k = np.sum(p_kj, axis=0)
 
         # Normalize cols of P(k | j) and P(k) vector
+        # Info: Same as p_kj / p_k and p_k / sum(p_kj)
         p_kj = p_kj / np.sum(p_kj, axis=0)
         p_k = p_k / np.sum(p_k)
 
