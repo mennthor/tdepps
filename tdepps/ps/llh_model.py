@@ -114,7 +114,7 @@ class PSModel(BaseModel):
         # Cache repeatedly used values
         self._src_dec_col_vec = self._srcs["dec"][:, None]
 
-        # Debug
+        # Debug info
         self._spl_info = _out[3]
 
         return
