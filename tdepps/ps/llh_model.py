@@ -108,7 +108,7 @@ class PSModel(BaseModel):
 
         # Setup internals for model evaluation
         self._srcs = srcs
-        _out = self._setup_model(X, livetime_days, MC, srcs)
+        _out = self._setup_model(X, livetime_days, MC, self._srcs)
         self._llh_args, self._spatial_bg_spl, self._energy_interpol, _ = _out
 
         # Cache repeatedly used values
