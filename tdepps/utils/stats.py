@@ -982,7 +982,7 @@ class ExpTailEmpiricalDist(object):
                "nzeros": self._nzeros,
                "thresh": self._thresh,
                "dtype": "Data array was saved with {}".format(str(dtype))}
-        json.dump(out, fp=fp, **json_args)
+        json.dumps(out, **json_args)
 
     @staticmethod
     def from_json(fp):
