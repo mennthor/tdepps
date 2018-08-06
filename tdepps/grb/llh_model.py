@@ -17,8 +17,7 @@ class GRBModel(BaseModel):
     """
     Models the PDF part for the GRB LLH function.
     """
-    def __init__(self, X, MC, srcs, run_list, spatial_opts=None,
-                 energy_opts=None):
+    def __init__(self, spatial_opts=None, energy_opts=None):
         """
         Build PDFs that decsribe BG and/or signal-like events in the LLH.
         The LLH PDFs must not necessarily match the injected data model.
@@ -74,27 +73,17 @@ class GRBModel(BaseModel):
 
         if energy_opts["mc_bg_w"] is not None:
             energy_opts["mc_bg_w"] = np.atleast_1d(energy_opts["mc_bg_w"])
-            if len(energy_opts["mc_bg_w"]) != len(MC):
-                raise ValueError("Length of MC BG weights and MC must match.")
 
         self._spatial_opts = spatial_opts
         self._energy_opts = energy_opts
-        self._srcs = srcs
 
         self._needed_data = np.array(
             ["time", "dec", "ra", "sigma", "logE"])
-        self._provided_args = ["src_w_dec", "src_w_theo" "nb"]
+        self._provided_args = ["src_w_dec", "src_w_theo", "nb"]
 
-        # Setup internals for model evaluation
+        # Internal defaults
         self._log = logger(name=self.__class__.__name__, level="ALL")
-        _out = self._setup_model(X, MC, srcs, run_list)
-        self._llh_args, self._spatial_bg_spls, self._energy_interpol, _ = _out
-
-        # Cache repeatedly used values
-        self._src_dec_col_vec = self._srcs["dec"][:, None]
-
-        # Debug
-        self._spl_info = _out[3]
+        self._spl_info = None
 
     @property
     def needed_data(self):
@@ -117,8 +106,36 @@ class GRBModel(BaseModel):
     def energy_opts(self):
         return self._energy_opts.copy()
 
+    def fit(self, X, MC, srcs, run_list):
+        """
+        Setup the LLH model and make it ready to use.
+        """
+        if self._energy_opts["mc_bg_w"] is not None:
+            if len(self._energy_opts["mc_bg_w"]) != len(MC):
+                raise ValueError("Length of MC BG weights and MC must match.")
+
+        self._srcs = srcs
+        _out = self._setup_model(X, MC, self._srcs, run_list)
+        self._llh_args, self._spatial_bg_spls, self._energy_interpol, _ = _out
+
+        # Cache repeatedly used values
+        self._src_dec_col_vec = self._srcs["dec"][:, None]
+
+        # Debug info
+        self._spl_info = _out[3]
+
+        return
+
     def get_args(self):
         return self._llh_args
+
+    # Note: the general case is sum_k (signal) / sum_k (background)
+    # Summing the ratio is not valid in general
+    # def get_signal_pdf_vals():
+    #     return  # shape (nevts, nsrcs)
+
+    # def get_bg_pdf_vals():
+    #     return  # shape (nevts, nsrcs)
 
     def get_soverb(self, X, band_select=True):
         """
