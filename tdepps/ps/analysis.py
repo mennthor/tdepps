@@ -8,9 +8,9 @@ from sklearn.utils import check_random_state
 from ..utils import fit_chi2_cdf, logger, arr2str, all_equal, dict_map
 
 
-class GRBLLHAnalysis(object):
+class PSLLHAnalysis(object):
     """
-    Providing methods to do analysis stuff on a GRBLLH.
+    Providing methods to do analysis stuff on a PS LLH.
 
     Parameters
     ----------
@@ -18,7 +18,7 @@ class GRBLLHAnalysis(object):
         LLH model used for testing hypothesis.
     bg_inj : BaseBGDataInjector or BaseMultiBGDataInjector
         Background injector model injecting background-like events in trials.
-    sig_inj : BaseSignalInjector or BaseMultiSignalInjector or None
+    sig_inj : BaseSignaalInjector or BaseMultiSignalInjector or None
         Signal injector model injecting signal-like events in trials. If
         ``None`` no signal or performance trials can be done.
         (default: ``None``)

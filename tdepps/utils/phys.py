@@ -8,11 +8,30 @@ from __future__ import division, absolute_import
 from future import standard_library
 standard_library.install_aliases()
 
+import sys
 import numpy as np
 from astropy.time import Time as astrotime
 
 from .io import fill_dict_defaults, logger
 log = logger(name="utils.phys", level="ALL")
+thismodule = sys.modules[__name__]
+
+
+def flux_model_factory(model, **model_args):
+    """
+    Constructs a flux method from string descriptions.
+
+    Parameters
+    ----------
+    model : str
+        Must be a method name from ``tdepps.utils.phys``.
+    model_args : dict
+        Keyword arguments for the chosen model method.
+    """
+    def flux_model(trueE):
+        flux_mod = getattr(thismodule, model)
+        return flux_mod(trueE, **model_args)
+    return flux_model
 
 
 def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
@@ -35,7 +54,7 @@ def power_law_flux(trueE, gamma=2., phi0=1., E0=1.):
     Returns
     -------
     flux : array-like
-        Per nu+anti-nu particle flux :math:`\phi \sim E^{-\gamma}`.
+        Combined nu + anti-nu particle flux :math:`\phi \sim E^{-\gamma}`.
     """
     return phi0 * (trueE / E0)**(-gamma)
 
@@ -121,8 +140,9 @@ def make_rate_records(ev_runids, run_list):
     mask = (runtime > 0.)
     runtime_mjd = runtime[mask] * _SECINDAY
     rate[mask] = evts[mask] / runtime_mjd
-    print(log.INFO("{} / {} runs with zero livetime.".format(np.sum(~mask),
-                                                             _nruns)))
+
+    print(log.INFO("{} / {} runs with no events.".format(
+        np.sum(~np.isin(runs, np.unique(ev_runids))), _nruns)))
 
     # Calculate poisson sqrt(N) stddev for scaled rates
     rate_std = np.zeros_like(runtime, dtype=float)
@@ -236,7 +256,7 @@ def make_src_records(dict_list, dt0, dt1):
     src_recs = np.empty((nsrcs,), dtype=dtype)
     for i, src in enumerate(dict_list):
         src = fill_dict_defaults(src, required_keys=["ra", "dec", "mjd"],
-                                 opt_keys={"w_theo": 1.}, noleft=False)
+                                 opt_keys={"w_theo": 1.}, noleft="drop")
         src_recs["ra"][i] = src["ra"]
         src_recs["dec"][i] = src["dec"]
         src_recs["time"][i] = src["mjd"]

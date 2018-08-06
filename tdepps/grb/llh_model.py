@@ -4,11 +4,12 @@ from __future__ import absolute_import
 
 import numpy as np
 import scipy.interpolate as sci
+from copy import deepcopy
 
 from ..backend import soverb_time_box, pdf_spatial_signal
 from ..base import BaseModel
 from ..utils import fill_dict_defaults, logger
-from ..utils import spl_normed, fit_spl_to_hist
+from ..utils import spl_normed, fit_spl_to_hist, make_equdist_bins
 from ..utils import make_time_dep_dec_splines, make_grid_interp_from_hist_ratio
 
 
@@ -16,8 +17,7 @@ class GRBModel(BaseModel):
     """
     Models the PDF part for the GRB LLH function.
     """
-    def __init__(self, X, MC, srcs, run_list, spatial_opts=None,
-                 energy_opts=None):
+    def __init__(self, spatial_opts=None, energy_opts=None):
         """
         Build PDFs that decsribe BG and/or signal-like events in the LLH.
         The LLH PDFs must not necessarily match the injected data model.
@@ -25,7 +25,7 @@ class GRBModel(BaseModel):
         # Check and setup spatial PDF options
         req_keys = ["sindec_bins", "rate_rebins"]
         opt_keys = {"select_ev_sigma": 5., "spl_s": None, "n_scan_bins": 50,
-                    "kent": True}
+                    "kent": True, "n_mc_evts_min": 500}
         spatial_opts = fill_dict_defaults(spatial_opts, req_keys, opt_keys)
 
         spatial_opts["sindec_bins"] = np.atleast_1d(spatial_opts["sindec_bins"])
@@ -33,12 +33,12 @@ class GRBModel(BaseModel):
 
         if spatial_opts["select_ev_sigma"] <= 0.:
             raise ValueError("'select_ev_sigma' must be > 0.")
-
         if (spatial_opts["spl_s"] is not None and spatial_opts["spl_s"] < 0):
             raise ValueError("'spl_s' must be `None` or >= 0.")
-
         if spatial_opts["n_scan_bins"] < 20:
             raise ValueError("'n_scan_bins' should be > 20 for proper scans.")
+        if spatial_opts["n_mc_evts_min"] < 1:
+            raise ValueError("'n_mc_evts_min' must > 0.")
 
         # Check and setup energy PDF options
         req_keys = ["bins", "flux_model"]
@@ -73,27 +73,17 @@ class GRBModel(BaseModel):
 
         if energy_opts["mc_bg_w"] is not None:
             energy_opts["mc_bg_w"] = np.atleast_1d(energy_opts["mc_bg_w"])
-            if len(energy_opts["mc_bg_w"]) != len(MC):
-                raise ValueError("Length of MC BG weights and MC must match.")
 
         self._spatial_opts = spatial_opts
         self._energy_opts = energy_opts
-        self._srcs = srcs
 
         self._needed_data = np.array(
             ["time", "dec", "ra", "sigma", "logE"])
-        self._provided_args = ["src_w_dec", "src_w_theo" "nb"]
+        self._provided_args = ["src_w_dec", "src_w_theo", "nb"]
 
-        # Setup internals for model evaluation
+        # Internal defaults
         self._log = logger(name=self.__class__.__name__, level="ALL")
-        _out = self._setup_model(X, MC, srcs, run_list)
-        self._llh_args, self._spatial_bg_spls, self._energy_interpol, _ = _out
-
-        # Cache repeatedly used values
-        self._src_dec_col_vec = self._srcs["dec"][:, None]
-
-        # Debug
-        self._spl_info = _out[3]
+        self._spl_info = None
 
     @property
     def needed_data(self):
@@ -116,8 +106,36 @@ class GRBModel(BaseModel):
     def energy_opts(self):
         return self._energy_opts.copy()
 
+    def fit(self, X, MC, srcs, run_list):
+        """
+        Setup the LLH model and make it ready to use.
+        """
+        if self._energy_opts["mc_bg_w"] is not None:
+            if len(self._energy_opts["mc_bg_w"]) != len(MC):
+                raise ValueError("Length of MC BG weights and MC must match.")
+
+        self._srcs = srcs
+        _out = self._setup_model(X, MC, self._srcs, run_list)
+        self._llh_args, self._spatial_bg_spls, self._energy_interpol, _ = _out
+
+        # Cache repeatedly used values
+        self._src_dec_col_vec = self._srcs["dec"][:, None]
+
+        # Debug info
+        self._spl_info = _out[3]
+
+        return
+
     def get_args(self):
         return self._llh_args
+
+    # Note: the general case is sum_k (signal) / sum_k (background)
+    # Summing the ratio is not valid in general
+    # def get_signal_pdf_vals():
+    #     return  # shape (nevts, nsrcs)
+
+    # def get_bg_pdf_vals():
+    #     return  # shape (nevts, nsrcs)
 
     def get_soverb(self, X, band_select=True):
         """
@@ -269,17 +287,21 @@ class GRBModel(BaseModel):
 
         # Get source weights from the signal weighted MC sindec spline fitted
         # to a histogram. True dec, to match selection in signal injector
+        mc_sin_dec = np.sin(MC["trueDec"])
         w_sig = MC["ow"] * self._energy_opts["flux_model"](MC["trueE"])
-        hist = np.histogram(np.sin(MC["trueDec"]), bins=sin_dec_bins,
-                            weights=w_sig, density=False)[0]
-        variance = np.histogram(np.sin(MC["dec"]), bins=sin_dec_bins,
-                                weights=w_sig**2, density=False)[0]
-        dA = np.diff(sin_dec_bins)
+        _bins = make_equdist_bins(
+            mc_sin_dec, sin_dec_bins[0], sin_dec_bins[-1],
+            weights=w_sig, min_evts_per_bin=self._spatial_opts["n_mc_evts_min"])
+        print(self._log.INFO("Made {} bins for allsky hist".format(len(_bins))))
+        hist = np.histogram(mc_sin_dec, bins=_bins, weights=w_sig,
+                            density=False)[0]
+        variance = np.histogram(mc_sin_dec, bins=_bins, weights=w_sig**2,
+                                density=False)[0]
+        dA = np.diff(_bins)  # Bin diffs is enough, weights get renormed later
         hist = hist / dA
         stddev = np.sqrt(variance) / dA
         weight = 1. / stddev
-        mc_spline = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight,
-                                    s=self._spatial_opts["spl_s"])[0]
+        mc_spline = fit_spl_to_hist(hist, bins=_bins, w=weight, s=len(hist))[0]
         src_w_dec = mc_spline(np.sin(srcs["dec"]))
 
         # Renormalize sindec splines to include the 2pi from RA normalization
@@ -345,31 +367,41 @@ class GRBModel(BaseModel):
 
     def set_new_srcs_dt(self, dt0, dt1):
         """
-        Sets new time windows borders ``dt0`` and ``dt1`` for all stored sources
-        and rebuilds the background expectation and background splines, without
-        rebuilding each spline from scratch. Used for post trials.
+        Sets new time windows borders ``dt0`` and ``dt1`` for all stored
+        sources, rebuilds the background expectation and background splines,
+        without rebuilding each spline from scratch and returns a new model
+        instance that can be registered with the LLH. Used for post trials.
 
         Parameters
         ----------
         dt0, dt1 : float
             Lower and upper time window borders in seconds relativ to the source
             times. Is applied to all sources stored in the class instance.
+
+        Returns
+        -------
+        new_model : GRBModel instance
+            Copy of the class instance with the new time windows set. Don't
+            forget to register the new model with the LLH:
+            ``llh.model = new_model``.
         """
         if dt0 >= dt1:
             raise ValueError("`dt0 >= dt1`. This means we test for no sources.")
 
+        new_model = deepcopy(self)
+
         # Setup and store new BG splines (repeats some code from utils.spline)
         # Broadcast params to get the rate func vals for each sindec
-        lo, hi = self._spatial_opts["sindec_bins"][[0, -1]]
+        lo, hi = new_model._spatial_opts["sindec_bins"][[0, -1]]
         sin_dec_pts = np.linspace(lo, hi, 1000)
-        param_splines = self._spl_info["param_splines"]
+        param_splines = new_model._spl_info["param_splines"]
         amp = param_splines["amp"](sin_dec_pts)
         base = param_splines["base"](sin_dec_pts)
         sin_dec_splines = []
-        for ti in self._srcs["time"]:
+        for ti in new_model._srcs["time"]:
             # Average over source time window
-            vals = self._spl_info["rate_func"].integral(t=ti, trange=[dt0, dt1],
-                                                        pars=(amp, base))
+            vals = new_model._spl_info["rate_func"].integral(
+                t=ti, trange=[dt0, dt1], pars=(amp, base))
             # Leave splines unnormalized, unit is then events / dec
             sin_dec_splines.append(sci.InterpolatedUnivariateSpline(
                 sin_dec_pts, vals, k=1, ext="raise"))
@@ -385,18 +417,19 @@ class GRBModel(BaseModel):
             spatial_bg_spls.append(spl_normed_factory(spl, lo, hi, norm=norm))
 
         # Re-cache expected nb for each source from allsky rate func integral
-        src_t = self._srcs["time"]
+        src_t = new_model._srcs["time"]
         src_trange = np.repeat([[dt0], [dt1]],
-                               repeats=len(self._srcs), axis=1).T
-        nb = self._spl_info["allsky_rate_func"].integral(
-            src_t, src_trange, self._spl_info["allsky_best_params"])
+                               repeats=len(new_model._srcs), axis=1).T
+        nb = new_model._spl_info["allsky_rate_func"].integral(
+            src_t, src_trange, new_model._spl_info["allsky_best_params"])
         assert len(nb) == len(src_t)
 
         # Store new values
-        self._llh_args["nb"] = nb
-        self._srcs["dt0"] = dt0
-        self._srcs["dt1"] = dt1
-        self._spatial_bg_spls = spatial_bg_spls
+        new_model._llh_args["nb"] = nb
+        new_model._srcs["dt0"] = dt0
+        new_model._srcs["dt1"] = dt1
+        new_model._spatial_bg_spls = spatial_bg_spls
 
-        print(self._log.INFO("Setup new time window: " +
-                             "[{:.2f}, {:.2f}]".format(dt0, dt1)))
+        print(new_model._log.INFO("Setup new time window: " +
+                                  "[{:.2f}, {:.2f}]".format(dt0, dt1)))
+        return new_model

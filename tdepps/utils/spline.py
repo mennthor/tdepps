@@ -10,7 +10,6 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
-import matplotlib.pyplot as plt
 import scipy.interpolate as sci
 from scipy.stats import chi2
 
@@ -271,23 +270,25 @@ def make_time_dep_dec_splines(X, srcs, run_list, sin_dec_bins, rate_rebins,
                 if (_last_max_der2 <= _max_der2_cur) and not _last_down:
                     spl_s_ *= 0.8
                     _last_down = True
-                    print(log.DEBUG("  Goin down. 2nd der.: " +
+                    print(log.DEBUG("Going down. 2nd der.: " +
                                     "{:.1f}, new s: {:.2f}, stat: {}".format(
                                         _max_der2_cur, spl_s_, _last_down)))
                 elif (_last_max_der2 <= _max_der2_cur) and _last_down:
                     spl_s_ *= 1.2
                     _last_down = False
-                    print(log.DEBUG("  Going up. 2nd der.: " +
+                    print(log.DEBUG("Going up. 2nd der.: " +
                                     "{:.1f}, new s: {:.2f}, stat: {}".format(
                                         _max_der2_cur, spl_s_, _last_down)))
                 elif _last_down:
                     spl_s_ *= 0.8
-                    print(log.DEBUG("  Going down. 2nd der.: " +
-                                    "{:.1f}".format(_max_der2_cur)))
+                    print(log.DEBUG("Going down. 2nd der.: " +
+                                    "{:.1f}, new s: {:.2f}".format(
+                                        _max_der2_cur, spl_s_)))
                 else:
                     spl_s_ *= 1.2
-                    print(log.DEBUG("  Going up. 2nd der.: " +
-                                    "{:.1f}".format(_max_der2_cur)))
+                    print(log.DEBUG("Going up. 2nd der.: " +
+                                    "{:.1f}, new s: {:.2f}".format(
+                                        _max_der2_cur, spl_s_)))
                 _last_max_der2 = _max_der2_cur
             i += 1
             if i == _max_tries:
@@ -404,6 +405,17 @@ def get_stddev_from_scan(func, args, bfs, rngs, nbins=50):
         x_min, x_max = np.amin(x), np.amax(x)
         y_min, y_max = np.amin(y), np.amax(y)
         return 0.5 * (x_max - x_min), 0.5 * (y_max - y_min)
+
+    import warnings
+    import matplotlib
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error")
+        try:
+            # Only if no backend was set. Try 'template' if 'agg' is not working
+            matplotlib.use("agg")
+        except UserWarning:
+            pass
+    import matplotlib.pyplot as plt
 
     # Scan the LLH, adapt scan range if contour is not closed
     bf_x, bf_y = bfs

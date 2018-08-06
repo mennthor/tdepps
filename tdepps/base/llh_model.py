@@ -30,6 +30,11 @@ class BaseModel(object):
         pass
 
     @abc.abstractmethod
+    def fit(self):
+        """ Sets up the model and makes it ready to use """
+        pass
+
+    @abc.abstractmethod
     def get_soverb(self):
         """ Returns the signal over bg ratio for each given data point """
         pass

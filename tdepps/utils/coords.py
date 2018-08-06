@@ -10,6 +10,8 @@ from future import standard_library
 standard_library.install_aliases()
 
 import numpy as np
+from scipy.stats import chi2
+import healpy as hp
 
 
 def thetaphi2decra(theta, phi):
@@ -56,6 +58,41 @@ def cos_angdist(ra1, dec1, ra2, dec2):
     cos_dist = (np.cos(ra1 - ra2) * np.cos(dec1) * np.cos(dec2) +
                 np.sin(dec1) * np.sin(dec2))
     return np.clip(cos_dist, -1., 1.)
+
+
+def get_pixel_in_sigma_region(pdf_map, sigma=3.):
+    """
+    Get the pixel indices and equatorial coordinates falling inside ``sigma``
+    region in a healpy normal space PDF map with convention
+    ``dec = pi / 2 - theta``.
+
+    Parameters
+    ----------
+    pdf_map : array-like
+        Healpy PDF map on the unit sphere. Equatorial coordinates are stored so
+        that ``dec = pi / 2 - theta``.
+    sigma : int, optional
+        How many sigmas the region should measure. Wilk's theorem is assumed to
+        calculate the PDF probabilities.
+
+    Returns
+    -------
+    min_dec, max_dec : float
+        Lower / upper border of the n sigma declination band, in radian.
+    m_in : array-like
+        Bool mask, pixel is inside the ``sigma`` region (not the band), where
+        maks is ``True``.
+    """
+    # Get n sigma level from Wilk's theorem
+    level = np.amax(pdf_map) * chi2.sf(sigma**2, df=2)
+    # Select pixels inside contour
+    m = (pdf_map >= level)
+    pix = np.arange(len(pdf_map))[m]
+    # Convert to ra, dec and get min(dec), max(dec) for the band
+    NSIDE = hp.get_nside(pdf_map)
+    th, phi = hp.pix2ang(NSIDE, pix)
+    decs, ras = thetaphi2decra(th, phi)
+    return decs, ras, pix
 
 
 def rotator(ra1, dec1, ra2, dec2, ra3, dec3):

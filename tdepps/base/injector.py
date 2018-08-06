@@ -17,15 +17,11 @@ from ..utils import fill_dict_defaults
 # Signal injector
 ##############################################################################
 class BaseSignalInjector(object):
-    """
-    Signal Injector base class
-    """
+    """ Signal Injector base class """
     __metaclass__ = abc.ABCMeta
 
     # Public defaults
-    _provided_data = None
     _rndgen = None
-    _srcs = None
 
     @abc.abstractproperty
     def provided_data(self):
@@ -69,8 +65,6 @@ class BaseSignalInjector(object):
 
 class BaseMultiSignalInjector(BaseSignalInjector):
     """ Interface for managing multiple BaseSignalInjector type classes """
-    _injs = None
-
     @abc.abstractproperty
     def injs(self):
         """ Dict of sub-injectors, identifies this as a MultiInjector """
@@ -81,12 +75,12 @@ class BaseMultiSignalInjector(BaseSignalInjector):
 # Time sampler
 ##############################################################################
 class BaseTimeSampler(object):
-    """
-    Base class to describe time samplers used by SignalFluenceInjector.
-    """
+    """ Base class to describe time samplers used by SignalFluenceInjector """
     __metaclass__ = abc.ABCMeta
+
     # Public defaults
     _rndgen = None
+
     # Internal defaults
     _SECINDAY = 24. * 60. * 60
 
@@ -111,6 +105,7 @@ class BaseBGDataInjector(object):
     Base class for classes generating events from a given data record array.
     """
     __metaclass__ = abc.ABCMeta
+
     # Public defaults
     _rndgen = None
 
@@ -145,8 +140,6 @@ class BaseBGDataInjector(object):
 
 class BaseMultiBGDataInjector(BaseBGDataInjector):
     """ Interface for managing multiple BaseBGDataInjector type classes """
-    _injs = None
-
     @abc.abstractproperty
     def injs(self):
         """ Dict of sub-injectors, identifies this as a MultiInjector """

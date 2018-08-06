@@ -8,7 +8,7 @@ from __future__ import print_function, division, absolute_import
 
 import numpy as np
 from numpy.lib.recfunctions import drop_fields
-import scipy.stats as scs
+from numpy.core.records import fromarrays
 import healpy as hp
 
 from ..base import BaseSignalInjector, BaseMultiSignalInjector
@@ -17,7 +17,8 @@ from ..base import BaseTimeSampler, BaseRateFunction
 from ..utils import random_choice
 from ..utils import fit_spl_to_hist, make_time_dep_dec_splines, spl_normed
 from ..utils import arr2str, fill_dict_defaults, logger, dict_map
-from ..utils import rotator, thetaphi2decra
+from ..utils import rotator, thetaphi2decra, get_pixel_in_sigma_region
+from ..utils import make_equdist_bins
 
 
 ##############################################################################
@@ -50,6 +51,10 @@ class SignalFluenceInjector(BaseSignalInjector):
             spatial rotation part done by the injector.
         inj_opts : dict, optional
             Injector options:
+            - 'sindec_inj_width', optional: Size in ``sin(angle)`` of the region
+              from which MC events are selected and rotated to each source. See
+              'mode' for how the region is chosen corresponding to
+              'sindec_inj_width'. (default: ``0.035 ~ sin(2°)``)
             - 'mode', optional: One of ``['circle'|'band']``. Selects MC events
               to inject based on their true location (default: 'band'):
               + 'circle': Select in a circle with radius 'sindec_inj_width'
@@ -74,10 +79,11 @@ class SignalFluenceInjector(BaseSignalInjector):
             raise ValueError("`time_sampler` must have type `BaseTimeSampler`.")
 
         # Check injector options
-        req_keys = []
+        req_keys = None
         opt_keys = {"mode": "band", "sindec_inj_width": 0.035,
                     "dec_range": np.array([-np.pi / 2., np.pi / 2.])}
-        inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys)
+        inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys,
+                                      noleft="use")
         if inj_opts["mode"] not in ["band", "circle"]:
             raise ValueError("'mode' must be one of ['band', 'circle']")
         _sindw = inj_opts["sindec_inj_width"]
@@ -113,8 +119,6 @@ class SignalFluenceInjector(BaseSignalInjector):
         self._skylab_band = False
 
         self._log = logger(name=self.__class__.__name__, level="ALL")
-
-        return
 
     @property
     def provided_data(self):
@@ -229,7 +233,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
-        srcs, MC = self._check_fit_input(srcs, MC)
+        self._check_fit_input(srcs, MC)
         nsrcs = len(srcs)
 
         # Set injection solid angles for all sources
@@ -319,7 +323,8 @@ class SignalFluenceInjector(BaseSignalInjector):
             return np.empty(0, dtype=self._sample_dtype)
 
         # Draw IDs from the whole stored pool of MC events
-        sam_idx = random_choice(self._rndgen, self._sample_w_CDF, n=n_samples)
+        sam_idx = random_choice(self._rndgen, self._sample_w_CDF,
+                                size=n_samples)
         sam_idx = self._mc_idx[sam_idx]
 
         # Select events from pool and rotate them to corresponding src positions
@@ -388,7 +393,7 @@ class SignalFluenceInjector(BaseSignalInjector):
         assert len(mc_idx) == len(w)
 
         raw_flux_per_src = np.array(
-            [np.sum(w[src_idx == j]) for j in np.unique(src_idx)])
+            [np.sum(w[src_idx == j]) for j in np.arange(len(srcs))])
         raw_flux = np.sum(w)
         assert np.isclose(np.sum(raw_flux_per_src), raw_flux)
 
@@ -419,7 +424,6 @@ class SignalFluenceInjector(BaseSignalInjector):
 
         if self._inj_opts["mode"] == "band":
             sinL, sinU = np.sin(self._inj_opts["dec_range"])
-
             if self._skylab_band:
                 # Recenter sources somewhat so that bands get bigger at poles
                 m = (sinL - sinU + 2. * sin_inj_w) / (sinL - sinU)
@@ -489,7 +493,6 @@ class SignalFluenceInjector(BaseSignalInjector):
         if (np.any(srcs["dec"] < self._inj_opts["dec_range"][0]) or
                 np.any(srcs["dec"] > self._inj_opts["dec_range"][1])):
             raise ValueError("Source position(s) found outside 'dec_range'.")
-        return srcs, MC
 
 
 class HealpySignalFluenceInjector(SignalFluenceInjector):
@@ -501,43 +504,47 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
     If fixed source positions are tested in the analysis, this injection should
     decrease sensitivity systematically.
     Injection mode is constrained to ``band`` here.
-
-    Parameters
-    ----------
-    model : callable
-        Function of true energy ``f(MC['trueE'])``, describing the model flux
-        that will be injected from. Values are used to weight events to a
-        physics scenario by ``w[i] ~ f(MC['trueE'][i] * MC['ow'][i]``. Make
-        sure the model fits to the units of the true energy and the OneWeights.
-    time_sampler : TimeSampler instance
-        Time sampler for sampling the signal times in addition to the spatial
-        rotation part done by the injector.
-    sindec_inj_width : float, optional
-        This is different form the ``SignalFluenceInjector`` behaviour because
-        depending on the prior localization we may select a different bandwidth
-        for each source. Here, ``sindec_inj_width`` is the minimum selection
-        bandwidth, preventing the band to become too small for very narrow
-        priors. It is therefore used in combination with the new attribute
-        ``inj_sigma``. (default: 0.035 ~ 2°)
-    inj_sigma : float, optional
-        Angular size in sigma around each source region from the prior map from
-        which MC events are injected. Use in combination with
-        ``sindec_inj_width`` to make sure, the injection band is wide enough.
-        (default: 3.)
-    dec_range : array-like, shape (2), optional
-        Global declination interval in which events can be injected in rotated
-        coordinates. Events rotated outside are dropped even if selected, which
-        drops sensitivity as desired. (default: ``[-pi/2, pi/2]``)
-    random_state : None, int or np.random.RandomState, optional
-        Used as PRNG, see ``sklearn.utils.check_random_state``. (default: None)
     """
-    def __init__(self, model, time_sampler, sindec_inj_width=0.035,
-                 inj_sigma=3., dec_range=None, random_state=None):
-        raise DeprecationWarning("Must be adapted to new super class layout!")
-
-        if inj_sigma <= 0.:
-            raise ValueError("Injection sigma must be >0.")
-        self._inj_sigma = inj_sigma
+    def __init__(self, flux_model, time_sampler, inj_opts=None,
+                 random_state=None):
+        """
+        Parameters
+        ----------
+        flux_model : callable
+            Function of true energy ``f(MC['trueE'])``, describing the model
+            flux that will be injected from. Values are used to weight events to
+            a physics scenario by ``w[i] ~ f(MC['trueE'][i] * MC['ow'][i]``.
+            Model must fit to the units of true energy and the event weights.
+        time_sampler : TimeSampler instance
+            Time sampler for sampling the signal times in addition to the
+            spatial rotation part done by the injector.
+        inj_opts : dict, optional
+            Injector options:
+            - 'sindec_inj_width', optional: This is different form the
+              ``SignalFluenceInjector`` behaviour because depending on the prior
+              localization we may select a different bandwidth for each source.
+              Here ``sindec_inj_width`` is the minimum selection bandwidth,
+              preventing the band to become too small for very narrow priors.
+              It is therefore used in combination with the new setting
+              ``inj_sigma``. (default: ``0.035 ~ sin(2°)``)
+            - 'inj_sigma', optional: Angular size in prior sigmas around each
+              source region from the prior map from which MC events are
+              injected. Use in combination with ``sindec_inj_width`` to make
+              sure, the injection band is wide enough. (default: 3.)
+            - 'dec_range', optional: Global declination interval in which events
+              can be injected in rotated coordinates. Events rotated outside are
+              dropped even if selected, which drops sensitivity as desired.
+              (default: ``[-pi/2, pi/2]``)
+        random_state : None, int or np.random.RandomState, optional
+            Used as PRNG, see ``sklearn.utils.check_random_state``.
+            (default: None)
+        """
+        req_keys = None
+        opt_keys = {"mode": "band", "inj_sigma": 3.}  # Fix band mode for super
+        inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys,
+                                      noleft="use")
+        if inj_opts["inj_sigma"] <= 0.:
+            raise ValueError("Injection sigma must be > 0.")
 
         # Defaults for private class attributes
         self._src_map_CDFs = None
@@ -545,18 +552,14 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         self._NPIX = None
         self._pix2ra = None
         self._pix2dec = None
+        self._src_idx = None
 
         # Debug attributes
         self._src_ra = None
         self._src_dec = None
 
         return super(HealpySignalFluenceInjector, self).__init__(
-            model, time_sampler, "band", sindec_inj_width, dec_range,
-            random_state)
-
-    @property
-    def inj_sigma(self):
-        return self._inj_sigma
+            flux_model, time_sampler, inj_opts, random_state)
 
     def fit(self, srcs, src_maps, MC):
         """
@@ -577,7 +580,6 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
               window in seconds, centered around each source time ``t``.
             - 'w_theo', float: Theoretical source weight per source, eg. from
               a known gamma flux.
-
         src_maps : array-like, shape (nsrcs, NPIX)
             List of valid healpy map arrays per source, all in same resolution
             used as spatial priors for injecting source positions each sample
@@ -586,7 +588,7 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
             probability region of the true source position per source.
         MC : recarray
             Structured array describing Monte Carlo events, must contain the
-            same names as given in ``provided_names`` and additonally MC truths:
+            same names as given in ``provided_data`` and additonal MC truths:
             - 'trueE', float: True event energy in GeV.
             - 'trueRa', 'trueDec', float: True MC equatorial coordinates.
             - 'trueE', float: True event energy in GeV.
@@ -594,15 +596,12 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
               so it is already divided by ``nevts * nfiles`.
               Units are 'GeV sr cm^2'. Final event weights are obtained by
               multiplying with desired sum flux for nu and anti-nu flux.
-
         Notes
         -----
         .. [1] http://software.icecube.wisc.edu/documentation/projects/neutrino-generator/weightdict.html#oneweight
         """
-        srcs, MC = self._check_fit_input(srcs, MC)
-        nsrcs = len(srcs)
-
         # Check if maps match srcs
+        nsrcs = len(srcs)
         if hp.maptype(src_maps) != nsrcs:
                 raise ValueError("Not as many prior maps as srcs given.")
 
@@ -615,72 +614,24 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
         if not np.allclose(areas, 1.) or np.any(src_maps < 0.):
             raise ValueError("Not all given maps for key are valid PDFs.")
 
-        # Select the injection band depending on the given source prior maps
-        decL, decU = self._dec_range
-        sinL, sinU = np.sin(self._dec_range)
-        # Get band [min dec, max dec] from n sigma contour of the prior maps
-        for i, map_i in enumerate(src_maps):
-            min_dec, max_dec = self.get_nsigma_dec_band(map_i, self._inj_sigma)
-            self._min_dec.append(min_dec)
-            self._max_dec.append(max_dec)
-            if (min_dec <= srcs["dec"][i]) or (srcs["dec"][i] <= max_dec):
-                raise ValueError("Source {} not within {} sigma band ".format(
-                    i, self._inj_sigma) + "of corresponding prior map.")
-
-        # Enlarge bands if they got too narrow
-        sin_dec = np.sin(srcs["dec"])
-        min_sin_dec = np.minimum(np.sin(self._min_dec),
-                                 sin_dec - self._sindec_inj_width)
-        max_sin_dec = np.maximum(np.sin(self._max_dec),
-                                 sin_dec + self._sindec_inj_width)
-        # Clip if we ran over the set dec range
-        self._min_dec = np.arcsin(np.clip(min_sin_dec, sinL, sinU))
-        self._max_dec = np.arcsin(np.clip(max_sin_dec, sinL, sinU))
-        assert not np.any(self._max_dec < srcs["dec"])
-        assert not np.any(srcs["dec"] < self._min_dec)
+        # Temporary save src maps for the super call. Then del them to save RAM
+        self._src_maps = src_maps
+        super_out = super(HealpySignalFluenceInjector, self).fit(srcs, MC)
+        del self._src_maps
 
         # Pre-compute normalized sampling CDFs from the maps for fast sampling
         CDFs = np.cumsum(src_maps, axis=1)
         self._src_map_CDFs = CDFs / CDFs[:, [-1]]
         assert np.allclose(self._src_map_CDFs[:, -1], 1.)
-        assert len(self._src_map_CDFs) == self._NPIX
+        assert len(self._src_map_CDFs) == nsrcs
+        assert self._src_map_CDFs.shape[1] == self._NPIX
 
-        # Prepare other fixed elements to save time during sampling
-        # Precompute pix2ang conversion, directly in ra, dec
+        # Pre-compute pix2ang conversion, directly in ra, dec
         th, phi = hp.pix2ang(self._NSIDE, np.arange(self._NPIX))
         self._pix2dec, self._pix2ra = thetaphi2decra(th, phi)
+        self._src_idx = np.empty(nsrcs, dtype=int)
 
-        return super(HealpySignalFluenceInjector, self).fit(srcs, MC)
-
-    @staticmethod
-    def get_nsigma_dec_band(pdf_map, sigma=3.):
-        """
-        Get the ns sigma declination band around a source position from a
-        prior healpy normal space PDF map.
-
-        Parameters
-        ----------
-        pdf_map : array-like
-            Healpy PDF map on the unit sphere.
-        sigma : int, optional
-            How many sigmas the band should measure. Wilk's theorem is assumed
-            to calculate the sigmas.
-
-        Returns
-        -------
-        min_dec, max_dec : float
-            Lower / upper border of the n sigma declination band, in radian.
-        """
-        # Get n sigma level from Wilk's theorem
-        level = np.amax(pdf_map) * scs.chi2.sf(sigma**2, df=2)
-        # Select pixels inside contour
-        m = (pdf_map >= level)
-        pix = np.arange(len(pdf_map))[m]
-        # Convert to ra, dec and get min(dec), max(dec) for the band
-        NSIDE = hp.get_nside(pdf_map)
-        th, phi = hp.pix2ang(NSIDE, pix)
-        dec, _ = thetaphi2decra(th, phi)
-        return np.amin(dec), np.amax(dec)
+        return super_out
 
     def sample(self, n_samples=1):
         """
@@ -706,17 +657,17 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
             raise ValueError("Injector has not been filled with MC data yet.")
 
         if n_samples < 1:
-            dtype = [(name, float) for name in self._provided_data]
-            return np.empty(0, dtype=dtype)
+            return np.empty(0, dtype=self._sample_dtype)
 
         # Sample new source positions from prior maps
-        src_idx = np.empty(len(self._srcs), dtype=int)
         for i, CDFi in enumerate(self._src_map_CDFs):
-            src_idx[i] = random_choice(self._rndgen, CDF=CDFi, n=None)
-        src_ras, src_decs = self._pix2ra[src_idx], self._pix2dec[src_idx]
+            self._src_idx[i] = random_choice(self._rndgen, CDF=CDFi, size=None)
+        src_ras = self._pix2ra[self._src_idx]
+        src_decs = self._pix2dec[self._src_idx]
 
         # Draw IDs from the whole stored pool of MC events
-        sam_idx = random_choice(self._rndgen, self._sample_w_CDF, n=n_samples)
+        sam_idx = random_choice(self._rndgen, self._sample_w_CDF,
+                                size=n_samples)
         sam_idx = self._mc_idx[sam_idx]
 
         # Select events from pool and rotate them to corresponding src positions
@@ -736,16 +687,44 @@ class HealpySignalFluenceInjector(SignalFluenceInjector):
 
     def _set_solid_angle(self, srcs):
         """
-        Setup solid angles of injection area for selected MC events and sources.
-
-        Only sets up the solid angle here to not break inheritance, band
-        boundaries have been calculated from prior maps in ``fit``.
+        Setup solid angles of injection area for selected MC events and sources,
+        by selecting the injection band depending on the given source prior maps
+        and the injection width in sigma.
         """
+        nsrcs = len(srcs)
+        sin_inj_w = self._inj_opts["sindec_inj_width"]
+        decL, decU = self._inj_opts["dec_range"]
+        sinL, sinU = np.clip(np.sin(self._inj_opts["dec_range"]), -1., 1.)
+
+        # Get band [min dec, max dec] from n sigma contour of the prior maps
+        min_dec, max_dec = np.empty((2, nsrcs), dtype=float)
+        for i, map_i in enumerate(self._src_maps):
+            decs, _, _ = get_pixel_in_sigma_region(
+                map_i, self._inj_opts["inj_sigma"])
+            min_dec[i], max_dec[i] = np.amin(decs), np.amax(decs)
+            if (max_dec[i] < srcs["dec"][i]) or (srcs["dec"][i] < min_dec[i]):
+                raise ValueError(
+                    "Source {} not within {} sigma band ".format(
+                        i, self._inj_opts["inj_sigma"]) +
+                    "of corresponding prior map.")
+
+        # Enlarge bands if they got too narrow
+        sin_dec = np.sin(srcs["dec"])
+        min_sin_dec = np.minimum(np.sin(min_dec), sin_dec - sin_inj_w)
+        max_sin_dec = np.maximum(np.sin(max_dec), sin_dec + sin_inj_w)
+
+        # Clip if we ran over the set dec range
+        min_dec = np.arcsin(np.clip(min_sin_dec, sinL, sinU))
+        max_dec = np.arcsin(np.clip(max_sin_dec, sinL, sinU))
+        assert not np.any((max_dec < srcs["dec"]) | (srcs["dec"] < min_dec))
+
         # Solid angles of selected events around each source
-        min_sin_dec = np.sin(self._min_dec)
-        max_sin_dec = np.sin(self._max_dec)
-        self._omega = 2. * np.pi * (max_sin_dec - min_sin_dec)
-        assert np.all((0. < self._omega) & (self._omega <= 4. * np.pi))
+        min_sin_dec = np.sin(min_dec)
+        max_sin_dec = np.sin(max_dec)
+        omega = 2. * np.pi * (max_sin_dec - min_sin_dec)
+        assert len(omega) == len(min_dec) == len(max_dec) == nsrcs
+        assert np.all((0. < omega) & (omega <= 4. * np.pi))
+        return omega, min_dec, max_dec
 
 
 class MultiSignalFluenceInjector(BaseMultiSignalInjector):
@@ -946,6 +925,16 @@ class MultiSignalFluenceInjector(BaseMultiSignalInjector):
 ##############################################################################
 class UniformTimeSampler(BaseTimeSampler):
     def __init__(self, random_state=None):
+        """
+        Samples events times uniformly distributed in a time window around a
+        source.
+
+        Parameters
+        ----------
+        random_state : None, int or np.random.RandomState, optional
+            Used as PRNG, see ``sklearn.utils.check_random_state``.
+            (default: None)
+        """
         self.rndgen = random_state
 
     def sample(self, src_t, src_dt):
@@ -955,7 +944,8 @@ class UniformTimeSampler(BaseTimeSampler):
         Parameters
         ----------
         src_t : array-like (nevts)
-            Source time in MJD per event.
+            Source time in MJD per event used to transform the sampled relativ
+            event times to absolute MJD times around each source.
         src_dt : array-like, shape (nevts, 2)
             Time window in seconds centered around ``src_t`` in which the signal
             time PDF is assumed to be uniform.
@@ -963,11 +953,68 @@ class UniformTimeSampler(BaseTimeSampler):
         Returns
         -------
         times : array-like, shape (nevts)
-            Sampled times for this trial.
+            Sampled MJD times for this trial.
         """
         # Sample uniformly in [0, 1] and scale to time windows per source in MJD
         r = self._rndgen.uniform(0, 1, size=len(src_t))
         times_rel = r * np.diff(src_dt, axis=1).ravel() + src_dt[:, 0]
+
+        return src_t + times_rel / self._SECINDAY
+
+
+class SplineTimeSampler(BaseTimeSampler):
+    def __init__(self, spl, bins, random_state=None):
+        """
+        Samples event times from a given spline modeling the time distribution
+        relativ to the sources' times assumed at ``t=0``. Sampling is done using
+        an empirical CDF.
+
+        Parameters
+        ----------
+        spl : scipy.interpolate.UnivariateSpline instance
+            Spline used to describe the time distribution to inject. The spline
+            should describe the distribution relativ to the source's time at
+            ``t=0`` and using time in seconds.
+        bins : array-like
+            Explicit bin edges used to create the empirical CDF by sampling the
+            given spline's integral function at the bin edges. This also defines
+            how much the sampled values can vary, as only the bin edges can be
+            sampled. ``bins[0]`` and ``bins[-1]`` define the definition range of
+            the PDF spline.
+        random_state : None, int or np.random.RandomState, optional
+            Used as PRNG, see ``sklearn.utils.check_random_state``.
+            (default: None)
+
+        """
+        # Cache the CDF
+        bins = np.atleast_1d(bins)
+        cdf = np.array([spl.integral(bins[0], ti) for ti in bins])
+
+        self._spl = spl
+        self._bins = bins
+        self._cdf = cdf / cdf[-1]
+
+        self.rndgen = random_state
+
+    def sample(self, src_t):
+        """
+        Sample times from given spline in on-time signal PDF region.
+
+        Parameters
+        ----------
+        src_t : array-like (nevts)
+            Source time in MJD per event used to transform the sampled relativ
+            event times to absolute MJD times around each source.
+
+        Returns
+        -------
+        times : array-like, shape (nevts)
+            Sampled MJD times for this trial.
+        """
+        # Sample uniformly in [0, 1] and scale to time windows per source in MJD
+        r = self._rndgen.uniform(0, 1, size=len(src_t))
+        idx = np.searchsorted(self._cdf, r, side="right") - 1
+        times_rel = self._bins[idx]
 
         return src_t + times_rel / self._SECINDAY
 
@@ -1006,13 +1053,17 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             - 'n_scan_bins', optional: Number of bins used to scan the rate
               model fir chi2 landscape to obtain errors for the spline fit.
               (default: 50)
+            - 'n_data_evts_min' : int, optional
+              Number of events that must be left in any bin while building the
+              allsky ``sin(dec)`` histogram for the declination sampling
+              weights. (default: 100)
         random_state : None, int or np.random.RandomState, optional
             Used as PRNG, see ``sklearn.utils.check_random_state``.
             (default: None)
         """
         # Check injector options
         req_keys = ["sindec_bins", "rate_rebins"]
-        opt_keys = {"spl_s": None, "n_scan_bins": 50}
+        opt_keys = {"spl_s": None, "n_scan_bins": 50, "n_data_evts_min": 100}
         inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys)
         inj_opts["sindec_bins"] = np.atleast_1d(inj_opts["sindec_bins"])
         inj_opts["rate_rebins"] = np.atleast_1d(inj_opts["rate_rebins"])
@@ -1020,6 +1071,8 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             raise ValueError("'spl_s' must be `None` or >= 0.")
         if inj_opts["n_scan_bins"] < 20:
             raise ValueError("'n_scan_bins' should be > 20 for proper scans.")
+        if inj_opts["n_data_evts_min"] < 1:
+            raise ValueError("'n_data_evts_min' must > 0.")
 
         self._provided_data = np.array(
             ["time", "dec", "ra", "sigma", "logE"])
@@ -1097,7 +1150,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
 
         return
 
-    def sample(self):
+    def sample(self, debug=False):
         """
         Get a complete data sample for one trial.
 
@@ -1120,7 +1173,7 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             if nevts > 0:
                 # Resample dec, logE, sigma from exp data with each source CDF
                 idx = random_choice(self._rndgen, CDF=self._sample_CDFs[j],
-                                    n=nevts)
+                                    size=nevts)
                 sam_i = self._X[idx]
                 # Sample missing ra uniformly
                 sam_i["ra"] = self._rndgen.uniform(0., 2. * np.pi, size=nevts)
@@ -1132,6 +1185,16 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
             else:
                 sam_i = np.empty(0, dtype=self._sample_dtype)
             sam.append(sam_i)
+
+        # Debug purpose
+        if debug:
+            try:
+                self._sample_idx = fromarrays(
+                    [np.concatenate(ev_idx), np.concatenate(src_idx)],
+                    dtype=[("ev_idx", float), ("src_idx", float)])
+            except ValueError:
+                self._sample_idx = np.empty(0, dtype=[("ev_idx", float),
+                                            ("src_idx", float)])
 
         return np.concatenate(sam)
 
@@ -1184,22 +1247,22 @@ class TimeDecDependentBGDataInjector(BaseBGDataInjector):
         # Make sampling CDFs to sample sindecs per source per trial
         # First a PDF spline to estimate intrinsic data sindec distribution
         ev_sin_dec = np.sin(X["dec"])
-        hist = np.histogram(ev_sin_dec, bins=sin_dec_bins,
-                            density=False)[0]
-        stddev = np.sqrt(hist)
-        norm = np.diff(sin_dec_bins) * np.sum(hist)
-        hist = hist / norm
-        stddev = stddev / norm
-        weight = 1. / stddev
-        data_spl = fit_spl_to_hist(hist, bins=sin_dec_bins, w=weight,
-                                   s=self._inj_opts["spl_s"])[0]
+        _bins = make_equdist_bins(
+            ev_sin_dec, lo, hi, weights=None,
+            min_evts_per_bin=self._inj_opts["n_data_evts_min"])
+        # Spline is interpolating to cover the data densitiy as fine as possible
+        # because for resampling we divide by the initial densitiy.
+        hist = np.histogram(ev_sin_dec, bins=_bins, density=True)[0]
+        data_spl = fit_spl_to_hist(hist, bins=_bins, w=None, s=0)[0]
         data_spl = spl_normed_factory(data_spl, lo, hi, norm=1.)
+        print(self._log.INFO("Made {} bins for allsky hist".format(len(_bins))))
 
         # Build sampling weights from PDF ratios
         sample_w = np.empty((len(sin_dec_pdf_splines), len(ev_sin_dec)),
                             dtype=float)
+        _vals = data_spl(ev_sin_dec)
         for i, spl in enumerate(sin_dec_pdf_splines):
-            sample_w[i] = spl(ev_sin_dec) / data_spl(ev_sin_dec)
+            sample_w[i] = spl(ev_sin_dec) / _vals
 
         # Cache fixed sampling CDFs for fast random choice
         CDFs = np.cumsum(sample_w, axis=1)
