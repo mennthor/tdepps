@@ -79,7 +79,7 @@ class GRBModel(BaseModel):
 
         self._needed_data = np.array(
             ["time", "dec", "ra", "sigma", "logE"])
-        self._provided_args = ["src_w_dec", "src_w_theo" "nb"]
+        self._provided_args = ["src_w_dec", "src_w_theo", "nb"]
 
         # Internal defaults
         self._log = logger(name=self.__class__.__name__, level="ALL")
