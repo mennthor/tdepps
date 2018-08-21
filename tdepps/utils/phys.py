@@ -17,6 +17,8 @@ log = logger(name="utils.phys", level="ALL")
 thismodule = sys.modules[__name__]
 
 
+# FIX: Replace with a class handling this more transparent
+#      Class should be savable as JSON and easy to setup via JSON args
 def flux_model_factory(model, **model_args):
     """
     Constructs a flux method from string descriptions.
