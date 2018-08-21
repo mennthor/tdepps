@@ -539,11 +539,12 @@ class HealpyPowerLawFluxInjector(PowerLawFluxInjector):
             (default: None)
         """
         req_keys = None
-        opt_keys = {"mode": "band", "inj_sigma": 3.}  # Fix band mode for super
+        opt_keys = {"mode": "band", "inj_sigma": 3.}
         inj_opts = fill_dict_defaults(inj_opts, req_keys, opt_keys,
                                       noleft="use")
         if inj_opts["inj_sigma"] <= 0.:
             raise ValueError("Injection sigma must be > 0.")
+        inj_opts["mode"] = "band"  # Fix to band mode, circle not supported
 
         # Defaults for private class attributes
         self._src_map_CDFs = None
