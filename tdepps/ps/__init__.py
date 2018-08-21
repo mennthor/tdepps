@@ -8,6 +8,8 @@ from __future__ import absolute_import
 
 
 from .injector import ScrambledBGDataInjector, MultiBGDataInjector
+from .injector import PowerLawFluxInjector, HealpyPowerLawFluxInjector
+from .injector import MultiPowerLawFluxInjector
 
 from .llh import PSLLH, MultiPSLLH
 
