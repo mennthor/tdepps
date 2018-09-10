@@ -220,7 +220,8 @@ def percentile_nzeros(x, nzeros, q, sorted=False):
     return percentile
 
 
-def fit_chi2_cdf(ts_val, beta, ts, mus, p0=[1., 1., 1.]):
+def fit_chi2_cdf(
+        ts_val, beta, ts, mus, p0=[1., 1., 1.], floc=None, fscale=None):
     """
     Use collection of trials with different injected mean signal events to
     calculate the CDF values above a certain test statistic value ``ts_val``
@@ -263,9 +264,21 @@ def fit_chi2_cdf(ts_val, beta, ts, mus, p0=[1., 1., 1.]):
         errs.append(err_i)
     cdfs, errs = np.array(cdfs), np.array(errs)
 
-    def _cdf_func(x, df, loc, scale):
-        """ Somehow we can't use scs.chi2.cdf directly for curve fit... """
-        return chi2.cdf(x, df, loc, scale)
+    if floc is not None and fscale is not None:
+        p0 = p0[0]
+        def _cdf_func(x, df):
+            return chi2.cdf(x, df, floc, fscale)
+    elif floc is not None:
+        p0 = [p0[0], p0[2]]
+        def _cdf_func(x, df, scale):
+            return chi2.cdf(x, df, floc, scale)
+    elif fscale is not None:
+        p0 = p0[:2]
+        def _cdf_func(x, df, loc):
+            return chi2.cdf(x, df, loc, fscale)
+    else:
+        def _cdf_func(x, df, loc, scale):
+            return chi2.cdf(x, df, loc, scale)
 
     try:
         # Missing stats get the largest global error estimate for the fit
