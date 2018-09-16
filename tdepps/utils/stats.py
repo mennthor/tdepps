@@ -251,7 +251,8 @@ def fit_chi2_cdf(
         Best fit mean injected number of signal events to fullfill the
         tested performance level from ``ts_val`` and ``beta``.
     cdfs : array-like, shape (len(mus))
-
+        Empiric CDF value for given given ``ts_val`` and distributions ``ts``
+        per ``mu`` in ``mus``.
     pars : tuple
         Best fit parameters ``(df, loc, scale)`` for the ``chi2`` CDF.
     """
